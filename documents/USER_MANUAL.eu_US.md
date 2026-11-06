@@ -408,8 +408,11 @@ wasm-git sign-commit ./work EXPECTED_HEAD_ID \
   --author 'Alice <alice@example.org>' --key author.key
 ```
 
-Keys use uwgit's binary Ed25519 format, not SSH or OpenPGP key encoding. Keep
-private keys outside source control. Verification distinguishes cryptographic
+The default uses uwgit's binary Ed25519 keys. `--format ssh` accepts OpenSSH keys;
+`--format openpgp` uses a full GPG fingerprint for signing and a public certificate
+for trust import. See the [signing and PR guide](WASMHUB.eu_US.md) for agent,
+revocation and verification behavior. Keep private keys outside source control.
+Verification distinguishes cryptographic
 validity from the author/public-key binding in the supplied trust table. A signed
 timestamp is the signer's declaration, not independently trusted time.
 `sign-commit` creates a new immutable signed commit and requires the expected

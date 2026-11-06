@@ -31,11 +31,13 @@ mod partial_storage;
 #[path = "repository_pool.rs"]
 mod pool_storage;
 pub use pool_storage::PoolConfig;
+#[path = "repository_pulls.rs"]
+mod pulls;
 #[path = "repository_signing.rs"]
 mod signing_storage;
 pub use partial_storage::{CloneFilter, PromiseSource, SelectOptions};
 pub use signing_storage::cli as signing_cli;
-pub use signing_storage::{AuthorSignature, SigningIdentity};
+pub use signing_storage::{AuthorSignature, SignatureFormat, SigningIdentity};
 #[path = "repository_notes.rs"]
 mod notes_storage;
 #[path = "repository_pack.rs"]
@@ -1557,6 +1559,7 @@ impl Repository {
     pub fn fsck(&self) -> RepositoryResult<FsckReport> {
         let _lock = self.lock()?;
         let snapshot = self.snapshot()?;
+        self.pull_roots(&snapshot.objects)?;
         let reachable = reachable_objects(&snapshot.manifest, &snapshot.objects)?;
         let commits = snapshot
             .objects
@@ -4152,6 +4155,11 @@ fn object_id(bytes: &[u8]) -> String {
         let _ = write!(id, "{byte:02x}");
     }
     id
+}
+
+pub(crate) fn wasm_payload_id(bytes: &[u8]) -> RepositoryResult<String> {
+    validate_wasm_header(bytes)?;
+    Ok(object_id(&encode_object(WASM_KIND, bytes)?))
 }
 
 fn valid_id(id: &str) -> bool {

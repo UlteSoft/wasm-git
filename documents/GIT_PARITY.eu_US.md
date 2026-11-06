@@ -14,6 +14,12 @@ publication, rejection, recovery, and original-byte preservation must work.
 
 - Authenticated HTTP/SSH, binary principal/repository/write-ref policy, read-only
   operation, exact old-value leases, fast-forward enforcement and force grants.
+- Native Ed25519, standard SSHSIG and OpenPGP commit signing, exact author trust,
+  current-certificate revocation enforcement and signed receive/merge admission.
+- Durable cross-fork PRs with binary compressed records, review/check gates,
+  protected branches, original-byte section/function diffs, fast-forward/merge/
+  squash publication, exact snapshot leases, GC retention and lost-ack recovery.
+  See [WasmHub integration](WASMHUB.eu_US.md).
 - Atomic multi-ref publication and ordinary batches with individual results.
   One negotiated bundle is decoded per batch. Accepted refs share one durable
   decision; graph/system errors and pre-receive rejection stop the request.
@@ -58,6 +64,9 @@ See the [user manual](USER_MANUAL.eu_US.md),
 
 These items are **not implemented**, not claims of completion:
 
+- SSH CA/KRL signing policy, X.509 and signed tags; hosted account/UI/CI execution,
+  issues/releases, inline review threads, CODEOWNERS, merge queues and webhook
+  delivery/retry. PR records and check admission do not provide these services.
 - Arbitrary refs such as `refs/pull/*`, general symbolic aliases, and namespace
   virtualization inside one physical repository. Repository path namespaces
   are distinct from reference namespaces.
@@ -78,7 +87,8 @@ These items are **not implemented**, not claims of completion:
 
 ## Evidence and format boundary
 
-[Hosting tests](../tests/server_hosting_cli.rs), [transport tests](../tests/remote_cli.rs),
+[PR tests](../tests/server_pulls.rs), [standard signature tests](../tests/external_signatures.rs),
+[hosting tests](../tests/server_hosting_cli.rs), [transport tests](../tests/remote_cli.rs),
 [maintenance tests](../tests/maintenance_cli.rs), and
 [reference recovery tests](../src/repository_ref_transactions.rs) cover real
 HTTP/stdio, mixed acceptance, exact leases, hook order, quarantine rejection,

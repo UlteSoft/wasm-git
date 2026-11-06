@@ -22,6 +22,9 @@ replacing it with a normalized representation. The command-line client is
   forks, cross-pack bases, shallow and partial clones, and on-demand hydration.
 - HTTP and SSH transport, repository/reference authorization, atomic reference
   batches, receive hooks, author signatures, and replicated immutable object pools.
+- SSH/OpenPGP commit signing, durable cross-fork PRs, review and CI gates,
+  protected branches, and recoverable fast-forward/merge/squash publication.
+  See the [WasmHub guide](documents/WASMHUB.eu_US.md).
 
 The [white paper](documents/WHITEPAPER.eu_US.md) explains the evidence model and
 implementation boundaries. The [user manual](documents/USER_MANUAL.eu_US.md)

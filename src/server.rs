@@ -10,17 +10,21 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "server --root DIR [--listen 127.0.0.1:9419] [--token-file FILE | --policy FILE] [--allow-write | --read-only] [--allow-force] [--signed-authors BINARY_TRUST_FILE] [--pre-receive PROGRAM] [--update PROGRAM] [--post-receive PROGRAM] [--post-update PROGRAM] [--max-connections N]; server --stdio --root DIR [--policy FILE --principal NAME] [--read-only] [--allow-force]; server compile-policy INPUT_JSON NEW_BINARY_FILE; server audit-log BINARY_LOG";
+const USAGE: &str = "server --root DIR [--listen 127.0.0.1:9419] [--token-file FILE | --policy FILE] [--allow-write | --read-only] [--allow-force] [--signed-authors BINARY_TRUST_FILE] [--protection BINARY_PROTECTION_FILE] [--merge-author NAME --merge-signing-key KEY --merge-signing-format native|ssh|openpgp] [--pre-receive PROGRAM] [--update PROGRAM] [--post-receive PROGRAM] [--post-update PROGRAM] [--max-connections N]; server --stdio --root DIR [--policy FILE --principal NAME] [--read-only] [--allow-force]; server compile-policy INPUT_JSON NEW_BINARY_FILE; server compile-protection INPUT_JSON NEW_BINARY_FILE; server audit-log BINARY_LOG";
 const MAX_HEADER: usize = 16 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(15);
 
 #[path = "server_policy.rs"]
 mod policy;
+#[path = "server_pulls.rs"]
+mod pulls;
 #[path = "server_receive.rs"]
 mod receive;
 
 #[derive(Clone)]
 struct Settings {
+    protection: Option<Arc<pulls::Protection>>,
+    merge_signer: Option<pulls::MergeSigner>,
     root: PathBuf,
     token: Option<Vec<u8>>,
     write: bool,
@@ -110,6 +114,14 @@ fn authorize(
     payload: &[u8],
 ) -> Result<(), String> {
     let check = |reference: Option<&str>, force: bool| -> Result<(), String> {
+        if reference.is_some_and(|r| {
+            settings
+                .protection
+                .as_ref()
+                .is_some_and(|p| p.protected(repository, r))
+        }) {
+            return Err("protected branch requires an approved pull request merge".into());
+        }
         if reference.is_some() && !settings.write {
             return Err("server is read-only".into());
         }
@@ -241,6 +253,29 @@ fn process_locked(
         tip: None,
     };
     let bytes = match request.operation {
+        Operation::PullRequest {} => {
+            let command: crate::pull::PullCommand = crate::binary::decode(payload)?;
+            let mutates = command.mutates();
+            match pulls::run(settings, &request.repository, &repository, command) {
+                Ok(reply) => {
+                    use sha2::Digest;
+                    response.tip = Some(format!("{:x}", sha2::Sha256::digest(payload)));
+                    crate::binary::encode(&reply)?
+                }
+                Err(error) => {
+                    return Ok((
+                        receive_error_response(ReceiveError {
+                            publication_unknown: mutates
+                                && (error.contains("published")
+                                    || error.contains("outcome is unknown")
+                                    || error.contains("recovery required")),
+                            message: error,
+                        }),
+                        Vec::new(),
+                    ))
+                }
+            }
+        }
         Operation::ObjectSlice { id, offset } => {
             if !payload.is_empty() {
                 return Err("object slice requires empty payload".into());
@@ -899,6 +934,9 @@ pub fn run(args: &[String]) -> Result<String, String> {
         if command == "compile-policy" {
             return policy::compile(Path::new(input), Path::new(output));
         }
+        if command == "compile-protection" {
+            return pulls::compile(Path::new(input), Path::new(output));
+        }
         if command == "audit-log" {
             return Err("audit-log accepts only one path".into());
         }
@@ -909,6 +947,10 @@ pub fn run(args: &[String]) -> Result<String, String> {
         }
     }
     let mut policy_file = None;
+    let mut protection_file = None;
+    let mut merge_key = None;
+    let mut merge_author = None;
+    let mut merge_format = crate::repository::SignatureFormat::Native;
     let mut principal = None;
     let mut read_only = false;
     let mut pre_receive = None;
@@ -931,9 +973,21 @@ pub fn run(args: &[String]) -> Result<String, String> {
             "--read-only" => read_only = true,
             "--allow-write" => write = true,
             "--allow-force" => force = true,
-            flag @ ("--root" | "--listen" | "--token-file" | "--max-connections" | "--policy"
-            | "--principal" | "--pre-receive" | "--post-receive" | "--update"
-            | "--post-update" | "--signed-authors") => {
+            flag @ ("--root"
+            | "--listen"
+            | "--token-file"
+            | "--max-connections"
+            | "--policy"
+            | "--principal"
+            | "--pre-receive"
+            | "--post-receive"
+            | "--update"
+            | "--post-update"
+            | "--signed-authors"
+            | "--protection"
+            | "--merge-signing-key"
+            | "--merge-author"
+            | "--merge-signing-format") => {
                 index += 1;
                 let value = args
                     .get(index)
@@ -941,6 +995,17 @@ pub fn run(args: &[String]) -> Result<String, String> {
                 match flag {
                     "--root" => root = Some(PathBuf::from(value)),
                     "--policy" => policy_file = Some(PathBuf::from(value)),
+                    "--protection" => protection_file = Some(PathBuf::from(value)),
+                    "--merge-signing-key" => merge_key = Some(PathBuf::from(value)),
+                    "--merge-author" => merge_author = Some(value.clone()),
+                    "--merge-signing-format" => {
+                        merge_format = match value.as_str() {
+                            "native" => crate::repository::SignatureFormat::Native,
+                            "ssh" => crate::repository::SignatureFormat::Ssh,
+                            "openpgp" => crate::repository::SignatureFormat::Openpgp,
+                            _ => return Err("unknown merge signing format".into()),
+                        }
+                    }
                     "--principal" => principal = Some(value.clone()),
                     "--signed-authors" => {
                         signed_authors = Some(real_path(Path::new(value), false)?)
@@ -1004,6 +1069,26 @@ pub fn run(args: &[String]) -> Result<String, String> {
         return Err("HTTP --allow-write requires --token-file or --policy".into());
     }
     let settings = Arc::new(Settings {
+        protection: protection_file
+            .map(|p| pulls::Protection::load(&p).map(Arc::new))
+            .transpose()?,
+        merge_signer: match (merge_author, merge_key) {
+            (Some(author), Some(key)) => Some(pulls::MergeSigner {
+                author,
+                key: if merge_format == crate::repository::SignatureFormat::Openpgp {
+                    key
+                } else {
+                    real_path(&key, false)?
+                },
+                format: merge_format,
+            }),
+            (None, None) => None,
+            _ => {
+                return Err(
+                    "merge signing requires both --merge-author and --merge-signing-key".into(),
+                )
+            }
+        },
         root,
         token,
         write: !read_only && (stdio || write),
@@ -1214,6 +1299,8 @@ mod tests {
             .unwrap();
         let (server, _) = listener.accept().unwrap();
         let settings = Settings {
+            protection: None,
+            merge_signer: None,
             root: std::env::temp_dir(),
             token: Some(b"required-token".to_vec()),
             write: false,

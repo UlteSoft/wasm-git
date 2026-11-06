@@ -10,6 +10,9 @@ project-specific `.eu_US.md` and `.zh_CN.md` suffix convention.
 
 ## Reading guide
 
+- [WasmHub integration](WASMHUB.eu_US.md) — SSH/OpenPGP signing, durable PRs,
+  reviews/CI, branch protection and merge recovery. [中文](WASMHUB.zh_CN.md)
+
 - [Git workflow parity](GIT_PARITY.eu_US.md) — implemented contracts, remaining
   local/server gaps, and verification boundaries. [中文](GIT_PARITY.zh_CN.md)
 

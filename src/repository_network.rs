@@ -176,7 +176,7 @@ fn delta_candidates(snapshot: &Snapshot, known: &BTreeSet<String>) -> BTreeMap<S
     candidates
 }
 
-fn encode_transfer(
+pub(super) fn encode_transfer(
     repo: &Repository,
     snapshot: &Snapshot,
     known: &BTreeSet<String>,

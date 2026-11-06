@@ -14,6 +14,8 @@ WAT 往返转换，也不使用规范化表示替换原文件。命令行客户�
 - 原生内容寻址提交与命名模块树、分支、标签、暂存、合并与历史重放、多工作树和离线 bundle。
 - 并行 Zstandard 压缩、有界二进制 delta、历史 GC、硬链接 fork、跨 pack 基底、浅克隆、部分克隆和按需补拉。
 - HTTP 与 SSH 传输、仓库和引用授权、原子引用批次、接收 hooks、作者签名和不可变对象池复制。
+- SSH/OpenPGP 提交签名、跨 fork 持久化 PR、审批与 CI 门槛、分支保护，以及可恢复的
+  快进/merge/squash 发布。见 [WasmHub 手册](documents/WASMHUB.zh_CN.md)。
 
 [白皮书](documents/WHITEPAPER.zh_CN.md)说明证据模型和实现边界；
 [使用手册](documents/USER_MANUAL.zh_CN.md)介绍日常操作；

@@ -343,7 +343,9 @@ wasm-git sign-commit ./work EXPECTED_HEAD_ID \
   --author 'Alice <alice@example.org>' --key author.key
 ```
 
-密钥为 uwgit 二进制 Ed25519 格式，不是 SSH/OpenPGP 编码。私钥不得进入源码控制。
+默认密钥为 uwgit 二进制 Ed25519 格式。`--format ssh` 接受 OpenSSH 密钥；
+`--format openpgp` 使用完整 GPG 指纹签名、使用公钥证书导入信任。
+agent、撤销与验证行为见[签名与 PR 手册](WASMHUB.zh_CN.md)。私钥不得进入源码控制。
 验证区分密码学有效性和信任表内的作者/公钥绑定。签名时间戳是签署者声明，不是可信时间证明。
 `sign-commit` 要求预期 HEAD，适用于 tree，创建新不可变签名提交，不在旧 ID 下改写内容。
 `untrust-author` 可撤销一个公钥或某作者全部公钥。

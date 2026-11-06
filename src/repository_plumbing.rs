@@ -132,6 +132,7 @@ impl Repository {
             roots.insert(snapshot.manifest.head.clone());
         }
         roots.extend(super::notes_storage::retention_roots(&snapshot)?);
+        roots.extend(self.pull_roots(&snapshot.objects)?);
         // Fetched remote-only tags are validated by snapshot(), but are not
         // exposed as tracking branches. They still protect recovery objects.
         let remotes = self.common_metadata.join("remotes");

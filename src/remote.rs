@@ -25,8 +25,13 @@ const USAGE: &str = "selective clone/fetch: --depth N, --deepen N, --unshallow, 
 const LS_REMOTE_USAGE: &str = "ls-remote URL [PATTERN...] [--heads|--branches] [--tags] [--symref] [--refs] [--exit-code] [--json] [--allow-insecure-http]; ls-remote DIR [REMOTE [PATTERN...]] [OPTIONS]. DIR alone reads the existing origin configuration. Patterns match full refs or slash-delimited tails with * and ?; [] and backslash escapes are unsupported. -- ends options. Only HTTP(S) and SSH advertisements are queried; no objects are downloaded or verified, and no local repository metadata is written. --refs suppresses HEAD and its symbolic target. --exit-code returns 2 when no matching object-ID reference is advertised, including an unborn HEAD even if --symref prints its target.";
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+#[path = "remote_pull.rs"]
+mod pulls;
 #[path = "remote_refspec.rs"]
 mod refspec;
+pub fn pull_cli(args: &[String]) -> RepositoryResult<String> {
+    pulls::run(args)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -884,15 +889,18 @@ fn exchange(
         );
     }
     let endpoint = parse_url(&remote.url)?;
-    let publishes = matches!(
-        &operation,
-        Operation::Push { .. }
-            | Operation::UpdateRef { .. }
-            | Operation::PublishBatch {}
-            | Operation::PublishOptions {}
-            | Operation::PublishPartial { dry_run: false }
-            | Operation::Fork { .. }
-    ) || matches!(&operation, Operation::ApplyUpload { operation, .. } if !matches!(**operation, Operation::CheckBatch {} | Operation::PublishPartial { dry_run: true }));
+    let publishes = (matches!(&operation, Operation::PullRequest {})
+        && crate::binary::decode::<crate::pull::PullCommand>(payload).is_ok_and(|p| p.mutates()))
+        || matches!(
+            &operation,
+            Operation::Push { .. }
+                | Operation::UpdateRef { .. }
+                | Operation::PublishBatch {}
+                | Operation::PublishOptions {}
+                | Operation::PublishPartial { dry_run: false }
+                | Operation::Fork { .. }
+        )
+        || matches!(&operation, Operation::ApplyUpload { operation, .. } if !matches!(**operation, Operation::CheckBatch {} | Operation::PublishPartial { dry_run: true }));
     let uncertain = |error: String| {
         if publishes {
             format!("remote publication outcome is unknown: {error}; inspect the remote before retrying")

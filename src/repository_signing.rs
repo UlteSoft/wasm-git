@@ -1,6 +1,9 @@
 //! Domain-separated Ed25519 author attestations over canonical native commits.
 use super::*;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+#[path = "repository_external_signatures.rs"]
+mod external;
+pub use external::SignatureFormat;
 const DOMAIN: &[u8] = b"uwgit.author.commit.v1\0";
 const KEY_MAGIC: &[u8] = b"UWGKEY01";
 const PUBLIC_MAGIC: &[u8] = b"UWGPUB01";
@@ -21,6 +24,7 @@ pub struct SigningIdentity {
 struct TrustedAuthors {
     version: u32,
     authors: BTreeMap<String, BTreeSet<[u8; 32]>>,
+    external_keys: BTreeMap<[u8; 32], Vec<u8>>,
 }
 fn author(name: &str) -> RepositoryResult<()> {
     if name.is_empty() || name.len() > 1024 || name.chars().any(char::is_control) {
@@ -31,13 +35,20 @@ fn author(name: &str) -> RepositoryResult<()> {
 }
 fn payload(commit: &Commit, signature: &AuthorSignature) -> RepositoryResult<Vec<u8>> {
     author(&signature.author)?;
-    if signature.version != 1 {
+    if !matches!(signature.version, 1..=3) {
         return Err("unsupported author signature version".into());
     }
     let mut unsigned = commit.clone();
     unsigned.signature = None;
     unsigned.shallow = false;
-    let mut w = crate::binary::Writer(DOMAIN.to_vec());
+    let mut w = crate::binary::Writer(if signature.version == 1 {
+        DOMAIN.to_vec()
+    } else {
+        b"uwgit.author.commit.v2\0".to_vec()
+    });
+    if signature.version != 1 {
+        w.u32(signature.version);
+    }
     w.string(&signature.author)?;
     w.u64(signature.timestamp);
     w.0.extend_from_slice(&signature.public_key);
@@ -46,6 +57,14 @@ fn payload(commit: &Commit, signature: &AuthorSignature) -> RepositoryResult<Vec
 }
 pub(super) fn validate(commit: &Commit) -> RepositoryResult<()> {
     if let Some(signature) = &commit.signature {
+        author(&signature.author)?;
+        if matches!(signature.version, 2 | 3) {
+            // Reading immutable history must not execute programs or become
+            // impossible when an external key later expires. Explicit verify
+            // and trusted receive perform cryptographic/policy verification.
+            external::decode(signature)?;
+            return Ok(());
+        }
         let key = VerifyingKey::from_bytes(&signature.public_key)
             .map_err(|e| format!("invalid author key: {e}"))?;
         let sig = Signature::from_slice(&signature.signature)
@@ -55,8 +74,33 @@ pub(super) fn validate(commit: &Commit) -> RepositoryResult<()> {
     }
     Ok(())
 }
-fn sign(commit: &mut Commit, identity: &SigningIdentity) -> RepositoryResult<()> {
+fn verify_crypto(commit: &Commit, public: Option<&[u8]>) -> RepositoryResult<()> {
+    validate(commit)?;
+    if let Some(signature) = commit.signature.as_ref().filter(|s| s.version != 1) {
+        external::verify(signature, &payload(commit, signature)?, public)?;
+    }
+    Ok(())
+}
+pub(super) fn sign(
+    commit: &mut Commit,
+    identity: &SigningIdentity,
+    format: SignatureFormat,
+) -> RepositoryResult<()> {
     author(&identity.author)?;
+    if format != SignatureFormat::Native {
+        let public = external::public_for_signing(format, &identity.key)?;
+        let mut signature = AuthorSignature {
+            version: format.version(),
+            author: identity.author.clone(),
+            timestamp: identity.timestamp,
+            public_key: external::key_id(format.version(), &public)?,
+            signature: Vec::new(),
+        };
+        let signed = external::sign(format, &identity.key, public, &payload(commit, &signature)?)?;
+        signature.signature = crate::binary::encode(&signed)?;
+        commit.signature = Some(signature);
+        return verify_crypto(commit, None);
+    }
     let bytes = zeroize::Zeroizing::new(read_regular(&identity.key)?);
     let seed: &[u8; 32] = bytes
         .strip_prefix(KEY_MAGIC)
@@ -103,7 +147,24 @@ pub fn generate_key(path: &Path, public: &Path) -> RepositoryResult<()> {
     write_new_file(public, &public_bytes)
 }
 pub fn trust_key(path: &Path, name: &str, public: &Path) -> RepositoryResult<()> {
+    trust_key_format(path, name, public, SignatureFormat::Native)
+}
+fn trust_key_format(
+    path: &Path,
+    name: &str,
+    public: &Path,
+    format: SignatureFormat,
+) -> RepositoryResult<()> {
     author(name)?;
+    if format != SignatureFormat::Native {
+        let bytes = external::import_public(format, public)?;
+        let id = external::key_id(format.version(), &bytes)?;
+        return edit_trust(path, |trust| {
+            trust.authors.entry(name.into()).or_default().insert(id);
+            trust.external_keys.insert(id, bytes);
+            Ok(())
+        });
+    }
     let bytes = read_regular(public)?;
     let key: [u8; 32] = bytes
         .strip_prefix(PUBLIC_MAGIC)
@@ -139,15 +200,22 @@ fn edit_trust(
     let mut trusted = match fs::symlink_metadata(path) {
         Ok(_) => crate::binary::decode::<TrustedAuthors>(&read_regular(path)?)?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => TrustedAuthors {
-            version: 1,
+            version: 2,
             authors: BTreeMap::new(),
+            external_keys: BTreeMap::new(),
         },
         Err(e) => return Err(e.to_string()),
     };
-    if trusted.version != 1 {
+    if trusted.version != 2 {
         return Err("unsupported trust store".into());
     }
     edit(&mut trusted)?;
+    let active: BTreeSet<_> = trusted
+        .authors
+        .values()
+        .flat_map(|keys| keys.iter().copied())
+        .collect();
+    trusted.external_keys.retain(|key, _| active.contains(key));
     let temp = path.with_extension(unique_name("trust"));
     let result = (|| {
         write_new_file(&temp, &crate::binary::encode(&trusted)?)?;
@@ -168,13 +236,20 @@ fn trusted(commit: &Commit, trust: &TrustedAuthors) -> RepositoryResult<()> {
         .signature
         .as_ref()
         .ok_or("commit has no author signature")?;
-    if trust.version != 1
+    if trust.version != 2
         || !trust
             .authors
             .get(&signature.author)
             .is_some_and(|keys| keys.contains(&signature.public_key))
     {
-        return Err("signature is valid but author/key is not trusted".into());
+        return Err("author/key is not trusted".into());
+    }
+    if signature.version != 1 {
+        let public = trust
+            .external_keys
+            .get(&signature.public_key)
+            .ok_or("trusted external public key is missing")?;
+        verify_crypto(commit, Some(public))?;
     }
     Ok(())
 }
@@ -184,6 +259,15 @@ impl Repository {
         bytes: &[u8],
         message: &str,
         identity: &SigningIdentity,
+    ) -> RepositoryResult<String> {
+        self.commit_signed_format(bytes, message, identity, SignatureFormat::Native)
+    }
+    pub fn commit_signed_format(
+        &self,
+        bytes: &[u8],
+        message: &str,
+        identity: &SigningIdentity,
+        format: SignatureFormat,
     ) -> RepositoryResult<String> {
         validate_wasm_header(bytes)?;
         let _lock = self.lock()?;
@@ -207,7 +291,7 @@ impl Repository {
             parents: snapshot.manifest.tip().cloned().into_iter().collect(),
             message: message.into(),
         };
-        sign(&mut commit, identity)?;
+        sign(&mut commit, identity, format)?;
         let raw = encode_object(COMMIT_KIND, &encode_commit(&commit)?)?;
         let id = object_id(&raw);
         self.install_encoded_object(&wasm, &wasm_bytes)?;
@@ -222,6 +306,14 @@ impl Repository {
         expected: &str,
         identity: &SigningIdentity,
     ) -> RepositoryResult<String> {
+        self.sign_head_format(expected, identity, SignatureFormat::Native)
+    }
+    pub fn sign_head_format(
+        &self,
+        expected: &str,
+        identity: &SigningIdentity,
+        format: SignatureFormat,
+    ) -> RepositoryResult<String> {
         let _lock = self.lock()?;
         let snapshot = self.snapshot()?;
         if snapshot.manifest.tip().map(String::as_str) != Some(expected) {
@@ -234,7 +326,7 @@ impl Repository {
             return Err("deepen this boundary before replacing its commit".into());
         }
         let mut commit = old.clone();
-        sign(&mut commit, identity)?;
+        sign(&mut commit, identity, format)?;
         let id = self.store_object(COMMIT_KIND, &encode_commit(&commit)?)?;
         self.write_ref(&snapshot.manifest.head, &id)?;
         Ok(id)
@@ -245,9 +337,11 @@ impl Repository {
         let signature = info.commit.signature.as_ref().ok_or("commit is unsigned")?;
         if let Some(path) = trust {
             trusted(&info.commit, &crate::binary::decode(&read_regular(path)?)?)?;
+        } else {
+            verify_crypto(&info.commit, None)?;
         }
         Ok(
-            json!({"commit":info.id,"cryptographically_valid":true,"trusted":trust.is_some(),"author":signature.author,"timestamp":signature.timestamp,"public_key":crate::binary::hex(&signature.public_key)}),
+            json!({"commit":info.id,"cryptographically_valid":true,"trusted":trust.is_some(),"format":match signature.version { 1 => "native", 2 => "ssh", _ => "openpgp" },"author":signature.author,"timestamp":signature.timestamp,"public_key":crate::binary::hex(&signature.public_key)}),
         )
     }
     #[cfg(feature = "server")]
@@ -269,7 +363,7 @@ impl Repository {
         let roots = updates.iter().filter_map(|update| update.new.clone());
         let reachable = reachable_from_roots(roots, &objects)?;
         let trust: TrustedAuthors = crate::binary::decode(&read_regular(path)?)?;
-        if trust.version != 1 {
+        if trust.version != 2 {
             return Err("unsupported trust store".into());
         }
         for id in reachable.difference(&published) {
@@ -296,12 +390,16 @@ enum SigningCommand {
         trust: PathBuf,
         author: String,
         public: PathBuf,
+        #[arg(long, value_enum, default_value = "native")]
+        format: SignatureFormat,
     },
     UntrustAuthor {
         trust: PathBuf,
         author: String,
         #[arg(long)]
         public: Option<PathBuf>,
+        #[arg(long, value_enum, default_value = "native")]
+        format: SignatureFormat,
     },
     CommitSigned {
         repository: PathBuf,
@@ -314,6 +412,8 @@ enum SigningCommand {
         key: PathBuf,
         #[arg(long)]
         timestamp: Option<u64>,
+        #[arg(long, value_enum, default_value = "native")]
+        format: SignatureFormat,
     },
     SignCommit {
         repository: PathBuf,
@@ -324,6 +424,8 @@ enum SigningCommand {
         key: PathBuf,
         #[arg(long)]
         timestamp: Option<u64>,
+        #[arg(long, value_enum, default_value = "native")]
+        format: SignatureFormat,
     },
     VerifyCommit {
         repository: PathBuf,
@@ -356,19 +458,31 @@ pub fn cli(args: &[String]) -> RepositoryResult<String> {
             trust,
             author,
             public,
+            format,
         } => {
-            trust_key(&trust, &author, &public)?;
+            if format == SignatureFormat::Native {
+                trust_key(&trust, &author, &public)?;
+            } else {
+                trust_key_format(&trust, &author, &public, format)?;
+            }
             Ok("trusted author key".into())
         }
         SigningCommand::UntrustAuthor {
             trust,
             author: name,
             public,
+            format,
         } => {
             author(&name)?;
             let key = public
                 .as_ref()
                 .map(|path| -> RepositoryResult<[u8; 32]> {
+                    if format != SignatureFormat::Native {
+                        return external::key_id(
+                            format.version(),
+                            &external::import_public(format, path)?,
+                        );
+                    }
                     let bytes = read_regular(path)?;
                     bytes
                         .strip_prefix(PUBLIC_MAGIC)
@@ -399,7 +513,8 @@ pub fn cli(args: &[String]) -> RepositoryResult<String> {
             author,
             key,
             timestamp,
-        } => Repository::open(repository)?.commit_signed(
+            format,
+        } => Repository::open(repository)?.commit_signed_format(
             &read_regular(&wasm)?,
             &message,
             &SigningIdentity {
@@ -407,6 +522,7 @@ pub fn cli(args: &[String]) -> RepositoryResult<String> {
                 key,
                 timestamp: timestamp.map_or_else(now, Ok)?,
             },
+            format,
         ),
         SigningCommand::SignCommit {
             repository,
@@ -414,13 +530,15 @@ pub fn cli(args: &[String]) -> RepositoryResult<String> {
             author,
             key,
             timestamp,
-        } => Repository::open(repository)?.sign_head(
+            format,
+        } => Repository::open(repository)?.sign_head_format(
             &expected,
             &SigningIdentity {
                 author,
                 key,
                 timestamp: timestamp.map_or_else(now, Ok)?,
             },
+            format,
         ),
         SigningCommand::VerifyCommit {
             repository,

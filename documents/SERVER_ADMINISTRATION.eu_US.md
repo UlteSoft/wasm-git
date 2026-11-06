@@ -26,6 +26,10 @@ service through the Git wire protocol. A WasmHub-style platform can use it as a
 repository backend, but must supply account management, review UI, orchestration,
 external TLS, monitoring, and any stronger cross-node reference coordination.
 
+The [WasmHub integration guide](WASMHUB.eu_US.md) documents the implemented PR
+backend, reviews/checks, branch protection, standard SSH/OpenPGP signing, signed
+merge publication and recovery. It also lists hosting features still absent.
+
 ## 2. Initial filesystem layout
 
 A typical installation separates executable code, repositories, and configuration:
@@ -228,8 +232,9 @@ wasm-git-server --root /srv/uwgit --policy policy.bin --allow-write \
   --signed-authors /etc/uwgit/authors.bin
 ```
 
-The server verifies newly exposed commits with strict Ed25519 validation and the
-configured exact author/public-key trust binding. Already public ancestors may
+The server verifies newly exposed commits with native Ed25519, OpenSSH SSHSIG or
+OpenPGP verification and the configured exact author/key trust binding. External
+formats require installed `ssh-keygen` or `gpg`. Already public ancestors may
 retain earlier unsigned history. An unsigned dangling commit cannot bypass the
 policy merely because its object was already stored. Ref-only publication also
 undergoes the new-history check. Deletion and references to already-public history

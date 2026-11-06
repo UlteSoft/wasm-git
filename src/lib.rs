@@ -37,6 +37,7 @@ pub mod pathspec;
 mod plumbing_commands;
 mod porcelain;
 pub mod protocol;
+pub mod pull;
 mod query_commands;
 mod rebase_commands;
 mod ref_commands;
@@ -312,6 +313,7 @@ pub fn client_main() {
         "version" if args.len() == 3 && args[2] == "--build-options" => serde_json::to_string_pretty(&json!({"version":env!("CARGO_PKG_VERSION"),"backend":"native_uwgit","original_wasm_bytes":true,"pointer_width":usize::BITS,"object_hash":"sha256","client":cfg!(feature="client"),"server":cfg!(feature="server")})).map_err(|error|error.to_string()),
         "pool" => remote::pool_cli(&args[1..]),
         "features" => features::run(&args[1..]),
+        "pr" => remote::pull_cli(&args[2..]),
         "clone" | "fetch" if remote::selective_requested(&args[1..]) => remote::run_selective(&args[1..]),
         "promisor" | "hydrate" | "clone-status" => remote::run_selective(&args[1..]),
         "keygen" | "trust-author" | "untrust-author" | "commit-signed" | "sign-commit" | "verify-commit" => repository::signing_cli(&args[1..]),
@@ -1027,7 +1029,7 @@ fn cmd_trace(args: &[String]) -> Result<String, String> {
 }
 
 fn print_usage() {
-    println!("Additional storage commands: clone --depth/--filter; fetch --deepen/--unshallow; clone-status; hydrate; promisor; keygen; trust-author; untrust-author; commit-signed; sign-commit; verify-commit; pool attach/status/sync/release. Use COMMAND --help.");
+    println!("Additional storage commands: clone --depth/--filter; fetch --deepen/--unshallow; clone-status; hydrate; promisor; keygen; trust-author; untrust-author; commit-signed; sign-commit; verify-commit; pool attach/status/sync/release; pr URL create/list/show/update/comment/review/check/diff/merge/recover. Signing supports --format native|ssh|openpgp. Use COMMAND --help.");
     eprintln!("usage: wasm-git <command> [<args>]\n");
     eprintln!("  version [--build-options]");
     eprintln!("  features [FEATURE] [--standard STANDARD] [--json]");

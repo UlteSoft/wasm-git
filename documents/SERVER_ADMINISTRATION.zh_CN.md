@@ -21,6 +21,9 @@ Git 客户端不能通过 Git 协议访问本服务。
 WasmHub 类平台可将其作为仓库后端，但需补充账户、审阅 UI、调度、TLS、监控，以及所需的
 更强跨节点引用协调。
 
+[WasmHub 集成手册](WASMHUB.zh_CN.md) 说明已实现的 PR 后端、审批/检查、分支保护、
+标准 SSH/OpenPGP 签名、签名合并发布与恢复，并列出仍缺少的托管功能。
+
 ## 2. 初始目录布局
 
 典型部署分开保存程序、仓库和配置：
@@ -188,7 +191,8 @@ wasm-git-server --root /srv/uwgit --policy policy.bin --allow-write \
   --signed-authors /etc/uwgit/authors.bin
 ```
 
-服务端对新公开提交执行严格 Ed25519 验证及作者/公钥精确绑定检查。
+服务端对新公开提交执行原生 Ed25519、OpenSSH SSHSIG 或 OpenPGP 验证及作者/密钥精确绑定
+检查，外部格式要求安装 `ssh-keygen` 或 `gpg`。
 已有公开祖先可以保留未签名历史，但仅在 dangling 存储中的未签名提交不能凭“对象已经存在”
 绕过策略。只更新引用而不上传对象时也检查新公开历史。
 正常删除与引用已公开历史不要求重签旧祖先。

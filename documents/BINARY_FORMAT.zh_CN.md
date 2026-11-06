@@ -50,10 +50,22 @@ N bytes   payload
 拒绝重复或非法父、错误目标类型、非法路径和必要图缺失。
 本地 shallow 标记不写入提交，不改变真实父 ID 或对象 ID。
 
-签名记录依次含 version、author、timestamp、32 字节公钥和 64 字节 Ed25519 签名。
+签名记录依次含 version、author、timestamp、32 字节密钥身份和签名字节向量。
+Version 1 的密钥身份为公钥、签名为 64 字节 Ed25519。
 被签内容为用途域 `uwgit.author.commit.v1\0`，随后是显式 string 作者、u64be 时间戳、
 公钥、长度前缀的规范未签名 commit payload；该未签名形式不带签名内容。
 严格密码验证与可信作者绑定是独立操作。
+
+Version 2（SSH）和 3（OpenPGP）的签名向量内为位置式 `ExternalSignature`，依次包含二进制
+公钥材料和 detached signature。SSH armor 解码为 SSHSIG，OpenPGP 证书与签名均为二进制。
+各成员上限 1 MiB、封装上限 2 MiB。32 字节身份是对 `uwgit.external.author.key.v1\0`、
+version u32be、SSH wire 公钥或大写 OpenPGP 主指纹求 SHA-256。被签用途域为
+`uwgit.author.commit.v2\0`，后接 version u32be、author string、timestamp、密钥身份和
+长度前缀的未签提交。SSH namespace 为 `commit@wasm-git`。外部密码学检查仅在明确验签或
+可信准入时运行，普通读对象不运行，见[签名策略](WASMHUB.zh_CN.md)。
+
+Version 2 二进制信任记录依次包含 version、有序作者到密钥 ID 集合、有序密钥 ID 到公钥
+证书映射，替换未发行的 version 1 信任 schema；管理员用 `trust-author` 重建。
 
 ### 2.3 命名树 payload
 
@@ -188,7 +200,8 @@ Envelope 版本与 metadata 内逻辑请求 version 是不同概念。
 
 外层 operation 按声明顺序编号：Advertise=0、Fetch=1、FetchSlice=2、UploadSlice=3、
 ApplyUpload=4、Fork=5、Push=6、UpdateRef=7、RefsPage=8、CancelUpload=9、
-PublishBatch=10、ObjectSlice=11、PublishOptions=12、CheckBatch=13、PublishPartial=14。
+PublishBatch=10、ObjectSlice=11、PublishOptions=12、CheckBatch=13、PublishPartial=14、
+PullRequest=15。
 PublishPartial 有一个布尔字段 dry_run。上传内层使用独立非递归枚举 Push=0、UpdateRef=1、
 PublishBatch=2、PublishOptions=3、CheckBatch=4、PublishPartial=5，不可嵌套上传。
 确切位置字段见[协议类型](../src/protocol.rs)，不得猜测必要 Option 字段可以省略。
@@ -198,6 +211,12 @@ PublishOptions、CheckBatch 和 PublishPartial 的 payload 为位置编码的
 BatchPublication 依次保存有序 updates 与 bundle 字节。批次成功响应的 tip 是精确 payload 的
 SHA-256。部分发布另返回 `PartialReceipt { rejections: Vec<Option<String>> }`，与请求逐项
 对应：None 表示接受，Some 表示拒绝原因。数量不符或回执损坏不能确认发布结果。
+
+PullRequest 的 payload 为位置式 PullCommand，返回 PullReply，成功响应 tip 绑定确切命令
+payload 的 SHA-256；不能作为上传内层操作。持久 PR 为 UWGPR001、u64be 解码长度、
+Zstandard 压缩的位置式 PullRecord，存储和解码均限 16 MiB；编号计数器为位置式二进制 u64。
+字段/枚举顺序和必要 Option 见 [pull 类型](../src/pull.rs)，保留与恢复见
+[WasmHub 手册](WASMHUB.zh_CN.md)。
 
 协商压缩流为 `UWGNET01`、总解压长度 u64be，随后重复 u32be frame 长度及 Zstandard frame。
 除最后一块外，各块解压恰好 1 MiB。
@@ -218,7 +237,8 @@ repository、updates、outcome、push options、rejections。
 JSON 策略输入和审计输出都是外部接口；mergetool 导出的 manifest.json 同样只是审阅产物。
 
 独立读取器需验证 framing、整数溢出、剩余长度、schema/version、顺序、路径、压缩限制、
-delta 依赖、对象摘要、存在时的签名以及图语义。只通过外层 checksum 不够。
+delta 依赖、对象摘要、签名结构及图语义。原生 Ed25519 在对象读取时验签；外部 SSH/OpenPGP
+密码学验证在明确验签和可信发布时执行。只通过外层 checksum 不够。
 写入器优先使用共享库，不能仅抄字段布局而跳过语义验证。
 
 实现依据包括[二进制基础](../src/binary.rs)、[对象 codec](../src/repository_binary.rs)、

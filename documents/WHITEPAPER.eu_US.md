@@ -299,9 +299,12 @@ Server hooks are administrator-selected executable programs and require their ow
 operational isolation. The HTTP listener relies on a reverse proxy for public TLS.
 
 Content digests, transport identities, commit signatures, and custom-section
-signature containers have separate meanings. Ed25519 commit verification checks
-the signed commit; a trust table additionally binds a public key to an author
-identity. A custom signature-container view may report changed signed inputs
+signature containers have separate meanings. Native Ed25519, SSHSIG and OpenPGP
+commit verification check the signed commit; a trust table additionally binds a
+key to an author identity. External formats use explicit verification or signed
+receive admission; ordinary object reads do not execute external tools. The
+[WasmHub guide](WASMHUB.eu_US.md) defines PR review and publication gates.
+A custom signature-container view may report changed signed inputs
 without performing signature verification. Neither mechanism proves program safety.
 
 Administrators who can replace repository files can delete data or alter local

@@ -174,6 +174,9 @@ impl Repository {
     // interrupted operation. The shared writer lock serializes this check
     // against recording a new pending operation in every registered worktree.
     fn reflog_mutation_origins(&self) -> RepositoryResult<Vec<Repository>> {
+        if self.pending_pull_merge()? {
+            return Err("recover the pending pull request merge before changing reflogs".into());
+        }
         let origins = linked_worktrees::reflog_origins(self)?;
         for origin in &origins {
             match fs::symlink_metadata(origin.metadata.join("pending.bin")) {

@@ -63,12 +63,28 @@ wrong target types, invalid paths, and incomplete required graphs are rejected.
 The local shallow flag is not serialized into a commit and does not change its
 real parents or object ID.
 
-The signature record has version, author, timestamp, a 32-byte public key, and a
-64-byte Ed25519 signature. Its signed message is the literal domain
+The signature record has version, author, timestamp, a 32-byte key identity, and
+a byte-vector signature. Version 1 uses a public key and a 64-byte Ed25519
+signature. Its signed message is the literal domain
 `uwgit.author.commit.v1\0`, followed by the author's explicit `string`, timestamp
 `u64be`, public key, and a length-prefixed canonical unsigned commit payload.
 The signature field is absent in that unsigned form. Strict signature verification
 and trusted-author binding are separate operations.
+
+Versions 2 (SSH) and 3 (OpenPGP) store a positional `ExternalSignature` containing
+binary public material and detached signature bytes in the signature vector.
+SSH armor is decoded into SSHSIG; OpenPGP certificates and signatures remain binary.
+Each member is limited to 1 MiB and the envelope to 2 MiB. The 32-byte identity is
+SHA-256 of `uwgit.external.author.key.v1\0`, the version `u32be`, and the SSH wire
+public key or uppercase OpenPGP primary fingerprint. The signed domain is
+`uwgit.author.commit.v2\0`, followed by the version `u32be`, author string,
+timestamp, key identity and length-prefixed unsigned commit. The SSH namespace
+is `commit@wasm-git`. External cryptographic checks run only on explicit verification
+or trusted receive, not ordinary object reads. See [signature policy](WASMHUB.eu_US.md).
+
+The version 2 binary trust record contains version, ordered author-to-key-ID sets,
+and ordered key-ID-to-public-certificate entries. It replaces the unreleased
+version 1 trust schema; administrators rebuild it using `trust-author`.
 
 ### 2.3 Named tree payload
 
@@ -234,7 +250,8 @@ limit. The envelope version and metadata's logical request version are distinct.
 The current outer operation discriminants follow declaration order:
 `Advertise=0`, `Fetch=1`, `FetchSlice=2`, `UploadSlice=3`, `ApplyUpload=4`, `Fork=5`,
 `Push=6`, `UpdateRef=7`, `RefsPage=8`, `CancelUpload=9`, `PublishBatch=10`, and
-`ObjectSlice=11`, `PublishOptions=12`, `CheckBatch=13`, `PublishPartial=14`.
+`ObjectSlice=11`, `PublishOptions=12`, `CheckBatch=13`, `PublishPartial=14`,
+`PullRequest=15`.
 `PublishPartial` has one Boolean `dry_run` field. Uploaded publication uses a
 separate nonrecursive enum: `Push=0`, `UpdateRef=1`, `PublishBatch=2`,
 `PublishOptions=3`, `CheckBatch=4`, `PublishPartial=5`.
@@ -249,6 +266,15 @@ batch responses bind the exact payload SHA-256 in `tip`. Partial publication als
 returns a positional `PartialReceipt { rejections: Vec<Option<String>> }`, with
 one entry per requested update: `None` acknowledges it; `Some` states rejection.
 A count mismatch or invalid receipt cannot establish a publication outcome.
+
+`PullRequest` carries a positional `PullCommand` in its payload and returns a
+`PullReply`; successful responses bind the exact command payload SHA-256 in `tip`.
+It is not an allowed inner upload operation. Persisted PRs use `UWGPR001`, a
+`u64be` decoded byte count, and a Zstandard-compressed positional `PullRecord`.
+Both decoded and stored sizes are limited to 16 MiB. The counter is a positional
+binary `u64`. Field order, enum order and required options are defined in
+[pull types](../src/pull.rs); retention and recovery are specified in the
+[WasmHub guide](WASMHUB.eu_US.md).
 
 A negotiated compressed stream begins with `UWGNET01`, its total decoded length
 `u64be`, then repeated `u32be` frame lengths and Zstandard frames. Each non-final
@@ -276,7 +302,9 @@ storage. Similarly, an exported mergetool `manifest.json` is a review artifact.
 
 An independent reader must enforce framing, integer overflow, remaining-input
 bounds, schema/version rules, ordering, path constraints, compression limits,
-delta dependencies, object hashes, signatures where present, and graph semantics.
+delta dependencies, object hashes, signature framing and graph semantics. Native
+Ed25519 signatures are verified during object loading; external SSH/OpenPGP
+cryptography is checked by explicit verification and trusted publication.
 Passing an outer checksum alone is insufficient. Prefer the shared library for
 writers; copying illustrative layouts without semantic validation is unsafe.
 

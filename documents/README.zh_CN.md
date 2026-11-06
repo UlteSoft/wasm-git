@@ -8,6 +8,8 @@
 
 ## 阅读顺序
 
+- [WasmHub 集成](WASMHUB.zh_CN.md)：SSH/OpenPGP 签名、持久化 PR、审批/CI、分支保护
+  与合并恢复。[English](WASMHUB.eu_US.md)
 - [Git 工作流对照](GIT_PARITY.zh_CN.md)：已实现合同、本地/服务端缺口及验证边界。
   [English](GIT_PARITY.eu_US.md)
 

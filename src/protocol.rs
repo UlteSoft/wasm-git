@@ -103,6 +103,7 @@ pub enum Operation {
     PublishPartial {
         dry_run: bool,
     },
+    PullRequest {},
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

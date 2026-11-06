@@ -12,6 +12,11 @@ uwgit 保留原生 Wasm 对象、二进制控制记录及网络协议，对照�
 
 - HTTP/SSH 认证、二进制 principal/仓库/写引用策略、只读服务、精确旧值 lease、
   快进约束和 force 授权。
+- 原生 Ed25519、标准 SSHSIG 与 OpenPGP 提交签名、精确作者信任、基于当前证书的撤销
+  检查、receive/merge 签名准入。
+- 二进制压缩的跨 fork 持久化 PR、审批/检查门槛、分支保护、原字节 section/函数 diff、
+  快进/merge/squash 发布、精确快照 lease、GC 保留和丢失回执恢复，见
+  [WasmHub 集成](WASMHUB.zh_CN.md)。
 - 原子多引用发布和逐项返回结果的普通批次。每批只解码一次协商对象包，接受项共用
   一个持久决定；对象图/系统故障或 pre-receive 拒绝停止整个请求。
 - Pre-receive、update、post-receive、post-update、有界原样 push options、包含逐项
@@ -45,6 +50,9 @@ prune 保持原 ID 与原字节。详见[用户手册](USER_MANUAL.zh_CN.md)、G
 ## 待完成的真实缺口
 
 下列项目**尚未实现**，不能作为已完成功能宣称：
+
+- SSH CA/KRL 签名策略、X.509、签名 tag；托管账户/UI/CI 执行、issues/releases、行内审阅
+  线程、CODEOWNERS、合并队列和 webhook 投递重试。PR 记录与检查准入不提供这些服务。
 
 - `refs/pull/*` 等任意引用、一般符号别名和单个物理仓库内部的引用命名空间虚拟化。
   仓库路径命名空间与引用命名空间不同。

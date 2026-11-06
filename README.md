@@ -37,7 +37,9 @@ wasm-git apply old.wasm change.uwgp --output restored.wasm
 The [documentation library](documents/README.eu_US.md)
 ([中文版](documents/README.zh_CN.md)) contains the technical white paper, user
 manual, server administration manual, binary-format reference, and development
-and verification guide. Each document has matching English and Chinese editions.
+and verification guide. The [WasmHub guide](documents/WASMHUB.eu_US.md) covers
+SSH/OpenPGP signatures, PR review/check gates, branch protection and merge recovery.
+Each document has matching English and Chinese editions.
 
 uwgit uses its own repository and network formats. Git-style workflows do not
 imply Git interoperability or support for every Git option. Known Wasm grammar
