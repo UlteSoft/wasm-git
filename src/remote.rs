@@ -21,9 +21,12 @@ const MAX_TRANSFER: usize = protocol::MAX_PACKET_BYTES;
 const MAX_CONFIG: u64 = 1024 * 1024;
 const MAX_TRACKING: u64 = 64 * 1024 * 1024;
 const DEFAULT_RPC_TIMEOUT: Duration = Duration::from_secs(300);
-const USAGE: &str = "selective clone/fetch: --depth N, --deepen N, --unshallow, --branch NAME, --filter all|blob:none|blob:limit=N|path:PATH; clone-status DIR; hydrate DIR; promisor DIR SOURCE...; remote <DIR> [add <NAME> <URL>|remove <NAME>|rename <OLD> <NEW>|-v|show <NAME>]; fetch <DIR> [REMOTE]; push <DIR> [REMOTE] [SOURCE:DESTINATION] [-u|--set-upstream] [--force-with-lease <OLD_ID|absent>]; push <DIR> [REMOTE] --tags|--all|--mirror [--atomic]; push supports --dry-run, --force/-f, +SOURCE:DESTINATION, and -o/--push-option VALUE; push <DIR> REMOTE SOURCE:DESTINATION [SOURCE:DESTINATION ...] [--atomic]; push <DIR> [REMOTE] --delete <BRANCH|refs/tags/TAG> [--force-with-lease <OLD_ID>]; pull <DIR> [REMOTE] [BRANCH] [--ff-only] [-m <MESSAGE>] (message required unless --ff-only); clone <URL> <NEW_DIR>; HTTP URLs are http(s)://HOST/REPOSITORY; SSH URLs are ssh://USER@HOST/ABSOLUTE/ROOT/REPOSITORY; --allow-insecure-http explicitly permits non-loopback cleartext HTTP";
+const USAGE: &str = "selective clone/fetch: --depth N, --deepen N, --unshallow, --branch NAME, --filter all|blob:none|blob:limit=N|path:PATH; clone-status DIR; hydrate DIR; promisor DIR SOURCE...; remote <DIR> [add <NAME> <URL>|remove <NAME>|rename <OLD> <NEW>|-v|show <NAME>]; fetch <DIR> [REMOTE]; push <DIR> [REMOTE] [SOURCE:DESTINATION] [-u|--set-upstream] [--force-with-lease <OLD_ID|absent>]; push <DIR> [REMOTE] --tags|--all|--mirror [--atomic]; push supports --dry-run, --force/-f, +SOURCE:DESTINATION, full-ref wildcard mappings, ^DESTINATION exclusions, : matching branches, --prune, and -o/--push-option VALUE; push <DIR> REMOTE SOURCE:DESTINATION [SOURCE:DESTINATION ...] [--atomic]; push <DIR> [REMOTE] --delete <BRANCH|refs/tags/TAG> [--force-with-lease <OLD_ID>]; pull <DIR> [REMOTE] [BRANCH] [--ff-only] [-m <MESSAGE>] (message required unless --ff-only); clone <URL> <NEW_DIR>; HTTP URLs are http(s)://HOST/REPOSITORY; SSH URLs are ssh://USER@HOST/ABSOLUTE/ROOT/REPOSITORY; --allow-insecure-http explicitly permits non-loopback cleartext HTTP";
 const LS_REMOTE_USAGE: &str = "ls-remote URL [PATTERN...] [--heads|--branches] [--tags] [--symref] [--refs] [--exit-code] [--json] [--allow-insecure-http]; ls-remote DIR [REMOTE [PATTERN...]] [OPTIONS]. DIR alone reads the existing origin configuration. Patterns match full refs or slash-delimited tails with * and ?; [] and backslash escapes are unsupported. -- ends options. Only HTTP(S) and SSH advertisements are queried; no objects are downloaded or verified, and no local repository metadata is written. --refs suppresses HEAD and its symbolic target. --exit-code returns 2 when no matching object-ID reference is advertised, including an unborn HEAD even if --symref prints its target.";
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[path = "remote_refspec.rs"]
+mod refspec;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1585,6 +1588,7 @@ fn push_command(root: &str, args: &[&str], allow_http: bool) -> RepositoryResult
     let mut tags = false;
     let mut all = false;
     let mut mirror = false;
+    let mut prune = false;
     let mut atomic = false;
     let mut dry_run = false;
     let mut force = false;
@@ -1610,8 +1614,9 @@ fn push_command(root: &str, args: &[&str], allow_http: bool) -> RepositoryResult
                 push_options.push(option[2..].into())
             }
             "--tags" if !tags => tags = true,
-            "--all" if !all => all = true,
+            "--all" | "--branches" if !all => all = true,
             "--mirror" if !mirror => mirror = true,
+            "--prune" if !prune => prune = true,
             "--atomic" if !atomic => atomic = true,
             "--dry-run" | "-n" if !dry_run => dry_run = true,
             "--force" | "-f" if !force => force = true,
@@ -1634,11 +1639,14 @@ fn push_command(root: &str, args: &[&str], allow_http: bool) -> RepositoryResult
         dry_run,
         allow_http,
     };
-    if (positional.len() > 2 && (set_upstream || explicit_lease.is_some()))
+    let patterns = positional.iter().skip(1).any(|s| refspec::special(s));
+    let batch = tags || all || mirror || positional.len() > 2 || patterns || prune;
+    if (batch && explicit_lease.is_some())
         || ([tags, all, mirror].into_iter().filter(|v| *v).count() > 1)
         || ((tags || all || mirror) && (delete || explicit_lease.is_some() || positional.len() > 1))
         || (delete && positional.is_empty())
         || (set_upstream && (tags || mirror || delete))
+        || (delete && (patterns || prune))
     {
         return Err(USAGE.into());
     }
@@ -1660,7 +1668,7 @@ fn push_command(root: &str, args: &[&str], allow_http: bool) -> RepositoryResult
         (local, upstreams, remote)
     };
     let mut binding_source = None;
-    let planned = if tags || all || mirror || positional.len() > 2 {
+    let planned = if batch {
         None
     } else if delete {
         let (namespace, reference) = reference(specification.ok_or(USAGE)?)?;
@@ -1742,8 +1750,9 @@ fn push_command(root: &str, args: &[&str], allow_http: bool) -> RepositoryResult
         .state
         .ok_or("advertisement lacks repository state")?;
     validate_state(&state)?;
-    if tags || all || mirror || positional.len() > 2 {
+    if batch {
         let mut updates = Vec::new();
+        let mut bindings = std::collections::BTreeMap::new();
         if tags || all || mirror {
             for (namespace, local_refs, remote_refs, selected) in [
                 (
@@ -1758,6 +1767,9 @@ fn push_command(root: &str, args: &[&str], allow_http: bool) -> RepositoryResult
                     continue;
                 }
                 for (name, new) in local_refs {
+                    if set_upstream {
+                        bindings.insert(name.clone(), name.clone());
+                    }
                     updates.push(protocol::RefUpdate {
                         namespace: namespace.clone(),
                         name: name.clone(),
@@ -1766,7 +1778,7 @@ fn push_command(root: &str, args: &[&str], allow_http: bool) -> RepositoryResult
                         force: mirror || force,
                     });
                 }
-                if mirror {
+                if mirror || prune {
                     for (name, old) in remote_refs {
                         if !local_refs.contains_key(name) {
                             updates.push(protocol::RefUpdate {
@@ -1781,8 +1793,34 @@ fn push_command(root: &str, args: &[&str], allow_http: bool) -> RepositoryResult
                 }
             }
         } else {
-            for spec in &positional[1..] {
-                let (spec, forced) = spec.strip_prefix('+').map_or((*spec, force), |s| (s, true));
+            let default = if specification.is_none() {
+                if local.detached() {
+                    return Err("detached HEAD push requires an explicit SOURCE:DESTINATION".into());
+                }
+                if upstreams
+                    .get(&local.head)
+                    .is_some_and(|b| b.remote == remote.name && b.branch != local.head)
+                {
+                    return Err("simple push refused: specify SOURCE:DESTINATION explicitly".into());
+                }
+                Some(format!(
+                    "refs/heads/{}:refs/heads/{}",
+                    local.head, local.head
+                ))
+            } else {
+                None
+            };
+            let specs = if let Some(default) = &default {
+                vec![default.as_str()]
+            } else {
+                positional[1..].to_vec()
+            };
+            let expanded = refspec::expand(&specs, &local, &state, prune)?;
+            let mut bound_sources = BTreeSet::new();
+            for spec in &expanded {
+                let (spec, forced) = spec
+                    .strip_prefix('+')
+                    .map_or((spec.as_str(), force), |s| (s, true));
                 let (namespace, name, new) = if delete {
                     let (ns, name) = reference(spec)?;
                     (ns, name, None)
@@ -1791,6 +1829,23 @@ fn push_command(root: &str, args: &[&str], allow_http: bool) -> RepositoryResult
                         .split_once(':')
                         .unwrap_or((spec, if spec == "HEAD" { &local.head } else { spec }));
                     let (ns, name) = reference(dest)?;
+                    if set_upstream && !source.is_empty() {
+                        if !matches!(ns, RefNamespace::Branch) {
+                            return Err("push --set-upstream requires branch destinations".into());
+                        }
+                        let branch = if source == "HEAD" {
+                            &local.head
+                        } else {
+                            source.strip_prefix("refs/heads/").unwrap_or(source)
+                        };
+                        branch_name(branch)?;
+                        if !local.branches.contains_key(branch)
+                            || !bound_sources.insert(branch.to_owned())
+                        {
+                            return Err("each upstream source must be a committed local branch with one destination".into());
+                        }
+                        bindings.insert(name.to_owned(), branch.to_owned());
+                    }
                     (
                         ns,
                         name,
@@ -1819,12 +1874,15 @@ fn push_command(root: &str, args: &[&str], allow_http: bool) -> RepositoryResult
             }
             for update in confirmed {
                 if let Some(tip) = &update.new {
+                    let branch = bindings
+                        .get(&update.name)
+                        .ok_or("missing confirmed upstream source")?;
                     repo.set_upstream_checked(
-                        &update.name,
+                        branch,
                         &remote.name,
                         &update.name,
                         tip,
-                        upstreams.get(&update.name),
+                        upstreams.get(branch),
                     )
                     .map_err(|error| {
                         format!(

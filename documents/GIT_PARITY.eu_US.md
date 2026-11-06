@@ -24,6 +24,9 @@ publication, rejection, recovery, and original-byte preservation must work.
   `--all`, native branch/tag `--mirror`, `--force`, `+` refspecs, and explicit
   `--force-with-lease`. Force and mirror still use exact advertised leases.
   `--all -u` saves upstreams after confirmation. Dry runs do not publish or run hooks.
+- Full-name wildcard push mappings, negative destination selections, matching-branch
+  `:`/`+:` and mapped `--prune`, with exclusions protecting mapped destinations.
+  Multi-ref `-u` binds confirmed source branches to their actual destinations.
 - `team/project` repositories, scoped namespace grants and shared-pack forks.
   HTTP and explicit-root SSH address the same names. Fork refs remain independent.
 - Complete/shallow/filtered clone and fetch, deepening/unshallowing, verified lazy
@@ -63,8 +66,8 @@ These items are **not implemented**, not claims of completion:
 - Push certificates, proc-receive delegation, reference-transaction hooks, the
   full configurable receive/upload policy surface, and mutable-ref multi-node
   consensus. Existing author signatures and object pools are distinct capabilities.
-- General wildcard/negative refspecs, push pruning, all fetch mappings, remote
-  helpers and remote archives. Mirror covers native branches/tags only.
+- All fetch mappings, remote helpers and remote archives. Push patterns require
+  full refnames; mirror covers native branches/tags only.
 - Annotated tags; general unsigned author/committer metadata and associated date
   queries; interactive and merge-topology-preserving rebase; all merge strategies;
   dirty-checkout carry-forward; complete sparse-checkout and stash workflows.

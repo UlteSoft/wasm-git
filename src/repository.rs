@@ -53,7 +53,9 @@ mod plumbing_storage;
 pub use plumbing_storage::MergeBaseMode;
 #[path = "repository_ref_transactions.rs"]
 mod ref_transactions;
-pub use ref_transactions::{ReferenceEdit, ReferenceEditKind, ReferenceExpectation};
+pub use ref_transactions::{
+    ReferenceEdit, ReferenceEditKind, ReferenceExpectation, MAX_REFERENCE_EDITS,
+};
 #[path = "repository_ref_queries.rs"]
 mod ref_queries;
 pub use ref_queries::ReferenceFilter;

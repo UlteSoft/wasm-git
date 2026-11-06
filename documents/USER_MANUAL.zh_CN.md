@@ -291,6 +291,14 @@ HTTP 凭据通过 `UWGIT_REMOTE_TOKEN` 提供，不保存到 remote 配置。
 `--all` 推送全部本地分支，`--tags` 推送本地标签，`--mirror` 同步原生分支/标签集合，
 包括删除和强制替换；仍禁止删除远端 HEAD。`--all -u` 仅在确认后保存 upstream。
 
+推送映射支持完整源/目标引用各含一个 `*`，以及仅写源模式（目标同名）和以 `^` 开头的
+目标排除模式。模式需加引号，避免 shell 提前展开。`:` 只推送两侧都存在的同名分支，
+`+:` 额外允许强制更新。`--prune` 只删除所选目标映射内不存在对应源的引用；
+否定模式与 Git push 一样，在映射后匹配完整目标名，被排除的目标不会被 prune。默认单分支 push 不删除其他分支，
+`--all --prune` 选择所有分支，`--branches` 等价于 `--all`。
+映射推送的 `-u` 在回执确认后设置原始源分支的 upstream；同一请求中不能将一个源分支
+绑定到多个目标。
+
 多个 refspec 不带 `--atomic` 时一次提交批次并逐项返回结果；`--atomic` 要求任意一项
 失败均阻止整批发布。`--dry-run` 预演服务端验证，不安装对象、不改引用、不运行 hooks，
 因此实际推送仍可能被 hook 拒绝。重复 `-o VALUE` 可传递有界、原样的 push options：
@@ -298,6 +306,7 @@ HTTP 凭据通过 `UWGIT_REMOTE_TOKEN` 提供，不保存到 remote 配置。
 ```sh
 wasm-git push ./peer origin main:main topic:review --atomic -o review=ready
 wasm-git push ./peer origin --mirror --dry-run
+wasm-git push ./peer origin 'refs/heads/release/*:refs/heads/public/*' '^refs/heads/public/private/*' --prune --dry-run
 ```
 
 `--atomic` 请求多引用原子推送，任一项拒绝则不发布整批。

@@ -19,6 +19,8 @@ uwgit 保留原生 Wasm 对象、二进制控制记录及网络协议，对照�
 - 同名、显式及多 refspec、空源删除、`--tags`、`--all`、原生分支/标签 `--mirror`、
   `--force`、`+` refspec、显式 `--force-with-lease`。Force/mirror 仍带广告中的精确 lease；
   `--all -u` 在确认后保存 upstream，dry-run 不发布、不运行 hooks。
+- 完整名称的通配 push 映射、目标排除选择、同名已存在分支的 `:`/`+:` 和映射范围内
+  `--prune`；排除规则也保护映射后的目标。多引用 `-u` 将确认后的源分支绑定到实际目标。
 - `team/project` 仓库、命名空间策略和共享 pack fork。HTTP 与明确根边界的 SSH 可访问
   相同名称，fork 引用独立。
 - 完整/浅/过滤 clone/fetch、补深和补全、验证后的按需对象获取、引用分页、有界上传、
@@ -49,8 +51,8 @@ prune 保持原 ID 与原字节。详见[用户手册](USER_MANUAL.zh_CN.md)、G
 - 隐藏引用广告及匹配的对象读取限制。当前读权限以仓库为单位，ref 模式控制写入。
 - Push certificate、proc-receive 委派、reference-transaction hooks、完整 receive/upload
   可配置策略和多节点可变引用共识。已有作者签名、对象池是不同能力。
-- 通用通配/否定 refspec、push prune、全部 fetch 映射、remote helper 和远端 archive。
-  Mirror 仅覆盖原生分支/标签。
+- 全部 fetch 映射、remote helper 和远端 archive。Push 模式要求完整 ref 名称，
+  mirror 仅覆盖原生分支/标签。
 - Annotated tag、一般未签名提交的 author/committer 元数据及关联日期查询、交互式及
   保持 merge 拓扑的 rebase、全部 merge 策略、携带无关脏修改的 checkout、完整 sparse-checkout
   和 stash 工作流。

@@ -347,6 +347,17 @@ Every form retains an exact compare-and-swap lease from the advertisement;
 the native branch/tag sets, including deletions and forced replacements. Deleting
 remote HEAD remains prohibited. `--all -u` saves upstreams only after confirmation.
 
+Push mappings also accept a single `*` in both full source/destination refs,
+source-only patterns (the destination is identical), and negative destination patterns
+prefixed with `^`. Quote patterns so the shell does not expand them. `:` pushes
+branches already present on both sides; `+:` additionally permits forced updates.
+`--prune` removes absent sources only inside the selected destination mapping.
+Negative push patterns match the full destination name after mapping, as in Git;
+excluded destinations are also protected from pruning. With the default single-branch push it does not delete unrelated branches;
+`--all --prune` selects all branches. `--branches` is an alias for `--all`.
+Mapped `-u` updates the original source branch's upstream after acknowledgement;
+one source cannot bind to multiple destinations in the same request.
+
 Multiple refspecs without `--atomic` return per-reference results from one batch;
 `--atomic` makes rejection of one update prevent the entire publication.
 `--dry-run` previews server validation without object/ref installation or hooks;
@@ -356,6 +367,7 @@ literal bounded push options to administrator hooks. For example:
 ```sh
 wasm-git push ./peer origin main:main topic:review --atomic -o review=ready
 wasm-git push ./peer origin --mirror --dry-run
+wasm-git push ./peer origin 'refs/heads/release/*:refs/heads/public/*' '^refs/heads/public/private/*' --prune --dry-run
 ```
 
 After an ambiguous network failure, query remote refs before assuming the request

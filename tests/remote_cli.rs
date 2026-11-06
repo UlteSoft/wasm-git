@@ -1147,3 +1147,136 @@ fn overlapping_fetches_compare_complete_tracking_and_allow_later_remote_rewinds(
         run(&["fsck", &upstream]);
     }
 }
+
+#[test]
+fn mapped_push_pruning_preserves_excluded_refs_and_saves_confirmed_source_upstreams() {
+    use wasm_git::repository::Repository;
+    let temp = Temp::new();
+    let upstream = temp.path("upstream");
+    let local = temp.path("client");
+    let input = temp.path("module.wasm");
+    wasm(&input, 1);
+    run(&["init", &upstream]);
+    run(&["commit", &upstream, &input, "-m", "base"]);
+    let bridge = Bridge::new(&temp.0, None, Alter::None);
+    run(&["clone", &bridge.url("upstream"), &local]);
+    for branch in ["release/v1", "release/nested/v2", "release/private/x"] {
+        run(&["branch", &local, branch]);
+    }
+    for branch in ["public/stale", "public/private/stale", "unrelated"] {
+        run(&["branch", &upstream, branch]);
+    }
+    run(&["tag", &upstream, "keep-tag"]);
+    let server = Repository::open(&upstream).unwrap();
+    let client = Repository::open(&local).unwrap();
+    let before = server.state().unwrap();
+    let bindings = client.upstreams().unwrap();
+    let push = [
+        "push",
+        &local,
+        "origin",
+        "refs/heads/release/*:refs/heads/public/*",
+        "^refs/heads/public/private/*",
+        "--prune",
+        "-u",
+    ];
+    let dry: Vec<_> = push
+        .iter()
+        .copied()
+        .chain(["--dry-run", "--atomic"])
+        .collect();
+    assert_eq!(json(&dry)["status"], "dry_run");
+    assert_eq!(server.state().unwrap(), before);
+    assert_eq!(client.upstreams().unwrap(), bindings);
+    let report = json(&push);
+    assert_eq!(report["status"], "pushed");
+    assert_eq!(report["updates"].as_array().unwrap().len(), 3);
+    let after = server.state().unwrap();
+    assert_eq!(after.branches.len(), 5);
+    assert!(!after.branches.contains_key("public/stale"));
+    assert!(!after.branches.contains_key("public/private/x"));
+    for name in ["main", "public/private/stale", "unrelated"] {
+        assert_eq!(after.branches.get(name), before.branches.get(name));
+    }
+    assert_eq!(after.tags, before.tags);
+    for (source, target) in [
+        ("release/v1", "public/v1"),
+        ("release/nested/v2", "public/nested/v2"),
+    ] {
+        assert_eq!(after.branches[target], tip(&local, source));
+        let binding = client.upstream(source).unwrap().unwrap();
+        assert_eq!(binding.remote, "origin");
+        assert_eq!(binding.branch, target);
+    }
+    assert!(client.upstream("release/private/x").unwrap().is_none());
+    let duplicate = failure(&[
+        "push",
+        &local,
+        "origin",
+        "refs/heads/release/*:refs/heads/public/*",
+        "release/v1:public/v1",
+    ]);
+    assert!(
+        duplicate.contains("duplicate push destination"),
+        "{duplicate}"
+    );
+    for specs in [
+        vec!["^refs/heads/main"],
+        vec!["refs/heads/*:main"],
+        vec!["refs/heads/**:refs/heads/*"],
+    ] {
+        let mut args = vec!["push", &local, "origin"];
+        args.extend(specs);
+        failure(&args);
+    }
+    assert_eq!(server.state().unwrap(), after);
+    run(&["fsck", &upstream]);
+}
+
+#[test]
+fn matching_push_with_pruning_never_creates_unmatched_branches_or_updates_tags() {
+    use wasm_git::repository::Repository;
+    let temp = Temp::new();
+    let upstream = temp.path("upstream");
+    let local = temp.path("client");
+    let input = temp.path("module.wasm");
+    wasm(&input, 1);
+    run(&["init", &upstream]);
+    run(&["commit", &upstream, &input, "-m", "base"]);
+    for branch in ["shared", "remote-only"] {
+        run(&["branch", &upstream, branch]);
+    }
+    let bridge = Bridge::new(&temp.0, None, Alter::None);
+    run(&["clone", &bridge.url("upstream"), &local]);
+    run(&["branch", &local, "-D", "remote-only"]);
+    run(&["branch", &local, "local-only"]);
+    run(&["switch", &local, "shared"]);
+    wasm(&input, 2);
+    run(&["commit", &local, &input, "-m", "advance shared"]);
+    run(&["tag", &local, "local-tag"]);
+    let before = Repository::open(&upstream).unwrap().state().unwrap();
+    let report = json(&[
+        "push",
+        &local,
+        "origin",
+        "+:",
+        "^refs/heads/main",
+        "--prune",
+    ]);
+    assert_eq!(report["status"], "pushed");
+    let after = Repository::open(&upstream).unwrap().state().unwrap();
+    assert_eq!(after.branches.len(), 2);
+    assert_eq!(after.branches["main"], before.branches["main"]);
+    assert_eq!(after.branches["shared"], tip(&local, "shared"));
+    assert_eq!(after.tags, before.tags);
+    // --prune without a wildcard retains the default single-branch mapping.
+    run(&["branch", &upstream, "unselected"]);
+    run(&["push", &local, "origin", "--prune"]);
+    assert!(Repository::open(&upstream)
+        .unwrap()
+        .state()
+        .unwrap()
+        .branches
+        .contains_key("unselected"));
+    run(&["fsck", &upstream]);
+}
