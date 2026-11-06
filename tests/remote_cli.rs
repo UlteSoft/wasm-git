@@ -1230,6 +1230,19 @@ fn mapped_push_pruning_preserves_excluded_refs_and_saves_confirmed_source_upstre
         failure(&args);
     }
     assert_eq!(server.state().unwrap(), after);
+    run(&["branch", &upstream, "disposable/old"]);
+    let bindings = client.upstreams().unwrap();
+    let deletion = json(&[
+        "push",
+        &local,
+        "origin",
+        "refs/heads/missing/*:refs/heads/disposable/*",
+        "--prune",
+        "-u",
+    ]);
+    assert_eq!(deletion["upstream_configured"], false);
+    assert_eq!(deletion["updates"][0]["status"], "deleted");
+    assert_eq!(client.upstreams().unwrap(), bindings);
     run(&["fsck", &upstream]);
 }
 

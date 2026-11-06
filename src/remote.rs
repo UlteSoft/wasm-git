@@ -1867,7 +1867,10 @@ fn push_command(root: &str, args: &[&str], allow_http: bool) -> RepositoryResult
         }
         let (mut report, confirmed) =
             publish_selection(&repo, &remote, updates, &state, &push_options, mode)?;
-        if set_upstream && !dry_run {
+        if set_upstream {
+            report["upstream_configured"] = false.into();
+        }
+        if set_upstream && !dry_run && confirmed.iter().any(|u| u.new.is_some()) {
             let _lock = config_lock(&repo)?;
             if load(&repo, &remote.name)? != remote {
                 return Err("remote refs were acknowledged; remote configuration changed before saving upstreams".into());
