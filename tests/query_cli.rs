@@ -23,8 +23,8 @@ struct Temp {
 }
 impl Temp {
     fn new() -> Self {
-        let base = PathBuf::from(format!(
-            "/tmp/uwgit-query-{}-{}",
+        let base = std::env::temp_dir().join(format!(
+            "uwgit-query-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));

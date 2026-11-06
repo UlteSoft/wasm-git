@@ -13,7 +13,7 @@ const FUTURE_B: &[u8] = b"\0asm\x01\0\0\0\xff\x01\x43";
 struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
-        let path = Path::new("/tmp").join(format!(
+        let path = std::env::temp_dir().join(format!(
             "uwgit-tree-history-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)

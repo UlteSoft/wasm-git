@@ -1108,11 +1108,11 @@ fn merge_counts(target: &mut Counts, source: &Counts) {
 }
 
 fn save_report(path: &Path, report: &CorpusReport) -> Result<(), String> {
-    let tmp = std::fs::canonicalize("/tmp").map_err(|error| error.to_string())?;
+    let tmp = std::fs::canonicalize(std::env::temp_dir()).map_err(|error| error.to_string())?;
     let parent = path
         .parent()
         .filter(|_| path.is_absolute())
-        .ok_or("UWGIT_SPEC_REPORT must be an absolute path under /tmp")?;
+        .ok_or("UWGIT_SPEC_REPORT must be an absolute path under TMPDIR")?;
     let parent = parent
         .canonicalize()
         .map_err(|error| format!("report parent must already exist: {error}"))?;
@@ -1120,7 +1120,8 @@ fn save_report(path: &Path, report: &CorpusReport) -> Result<(), String> {
         || std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink())
     {
         return Err(
-            "UWGIT_SPEC_REPORT must name a regular file under /tmp, without a final symlink".into(),
+            "UWGIT_SPEC_REPORT must name a regular file under TMPDIR, without a final symlink"
+                .into(),
         );
     }
     let file = std::fs::File::create(path).map_err(|error| error.to_string())?;
@@ -1508,7 +1509,7 @@ fn official_core_wast_corpus_audit() {
     report.known_profile_limitations = runner.known_profile_limitations;
     if let Some(path) = std::env::var_os("UWGIT_SPEC_REPORT") {
         save_report(Path::new(&path), &report)
-            .expect("write corpus audit evidence only under /tmp");
+            .expect("write corpus audit evidence only under TMPDIR");
     }
     eprintln!("spec WASM{version}: mode={mode:?}, generated_mutations={}, files={}, modules={}, outcomes={:?}, failures={}, known_profile_discrepancies={}, runtime assertions NOT executed",
         report.generated_mutations, report.files.len(), report.files.iter().map(|file| file.modules.len()).sum::<usize>(), report.outcome_counts, report.failures.len(), report.known_profile_limitations.len());

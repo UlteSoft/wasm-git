@@ -7,7 +7,7 @@
 
 This reference describes the formats written by this checkout. It is not a
 promise that unreleased layouts remain stable. The repository format marker is
-the eight-byte value `UWGRPO\0\x02`. Old JSON repositories, textual control files,
+the eight-byte value `UWGRPO\0\x03`. Old JSON repositories, textual control files,
 and superseded pre-release pack layouts are rejected rather than migrated.
 Readers must validate the version, complete record, semantic invariants, and
 referenced object graph; recognizing a magic prefix is insufficient.
@@ -206,6 +206,17 @@ transaction journals, selective-history state, pool configuration, trust records
 and upload metadata are binary. UTF-8 strings inside some cold recovery fields
 remain schema values; they do not represent JSON persistence.
 
+Repository marker `UWGRPO\0\x03` gates timestamped reflogs and their transaction
+preimages. Version 2 repositories are rejected; no unreleased-format migration
+is performed. This change does not alter immutable object IDs or pack encoding.
+Each reflog entry is positional: `unix_seconds: u64`, `sequence: u64`,
+`reference: String`, `old: Option<String>`, `new: Option<String>`,
+`operation: String`. Sequence numbers are positive and strictly increasing;
+expiry may leave gaps. Appends continue after the last retained sequence.
+Reference plans and their HEAD images freeze timestamps before the durable
+decision so replay does not substitute recovery time. The local HEAD log is
+bounded at 4096 entries; the shared reference log has explicit expiry.
+
 HEAD and references use `UWGREF\0\x01` plus a tag. Tag 1 is a raw 32-byte object
 ID; tag 0 is a length-prefixed branch name and is valid only for symbolic HEAD.
 Writer locks use `UWGLCK\0\x01` plus a big-endian PID. The PID does not authorize
@@ -223,10 +234,21 @@ limit. The envelope version and metadata's logical request version are distinct.
 The current outer operation discriminants follow declaration order:
 `Advertise=0`, `Fetch=1`, `FetchSlice=2`, `UploadSlice=3`, `ApplyUpload=4`, `Fork=5`,
 `Push=6`, `UpdateRef=7`, `RefsPage=8`, `CancelUpload=9`, `PublishBatch=10`, and
-`ObjectSlice=11`. Uploaded publication uses a separate nonrecursive enum:
-`Push=0`, `UpdateRef=1`, `PublishBatch=2`. It cannot recursively embed uploads.
+`ObjectSlice=11`, `PublishOptions=12`, `CheckBatch=13`, `PublishPartial=14`.
+`PublishPartial` has one Boolean `dry_run` field. Uploaded publication uses a
+separate nonrecursive enum: `Push=0`, `UpdateRef=1`, `PublishBatch=2`,
+`PublishOptions=3`, `CheckBatch=4`, `PublishPartial=5`.
+It cannot recursively embed uploads.
 Read the [protocol types](../src/protocol.rs) for the exact positional field
 schemas; do not infer omission semantics for required Option fields.
+
+`PublishOptions`, `CheckBatch`, and `PublishPartial` payloads encode
+`OptionsPublication { publication: BatchPublication, options: Vec<String> }`.
+Batch publication contains ordered updates followed by bundle bytes. Successful
+batch responses bind the exact payload SHA-256 in `tip`. Partial publication also
+returns a positional `PartialReceipt { rejections: Vec<Option<String>> }`, with
+one entry per requested update: `None` acknowledges it; `Some` states rejection.
+A count mismatch or invalid receipt cannot establish a publication outcome.
 
 A negotiated compressed stream begins with `UWGNET01`, its total decoded length
 `u64be`, then repeated `u32be` frame lengths and Zstandard frames. Each non-final
@@ -245,6 +267,10 @@ before publication. Physical transfer compression never changes stored identity.
 Authorization policies and hook update records use the positional codec. Receive
 audit records are appended with a `u32be` record length; each record is bounded
 at 4 MiB. Rendering a log has a cumulative limit and refuses incomplete tails.
+The current audit schema is version 3, with fields in order: version, transaction,
+Unix milliseconds, actor, repository, updates, outcome, push options, rejections.
+Final partial-batch records carry one optional rejection reason per update;
+other phases use an empty rejection vector. Superseded audit schemas are rejected.
 JSON policy input and JSON audit output are external interfaces, not runtime
 storage. Similarly, an exported mergetool `manifest.json` is a review artifact.
 

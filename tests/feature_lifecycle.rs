@@ -106,10 +106,8 @@ fn compact_and_section_reports_keep_deprecation_in_the_displayed_scope() {
             let _ = fs::remove_dir_all(&self.0);
         }
     }
-    let root = Temp(PathBuf::from(format!(
-        "/tmp/uwgit-feature-report-{}",
-        std::process::id()
-    )));
+    let root =
+        Temp(std::env::temp_dir().join(format!("uwgit-feature-report-{}", std::process::id())));
     fs::create_dir(&root.0).unwrap();
     let a = root.0.join("old.wasm");
     let b = root.0.join("new.wasm");

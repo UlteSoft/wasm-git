@@ -628,6 +628,200 @@ fn pre_receive_rejection_has_no_public_objects_and_post_receive_failure_preserve
 }
 
 #[test]
+#[cfg(unix)]
+fn ordered_receive_hooks_share_quarantine_and_keep_atomicity_and_publication_receipts() {
+    use std::os::unix::fs::PermissionsExt;
+    use wasm_git::protocol::OptionsPublication;
+    let t = Temp::new();
+    let repo = Repository::init(t.0.join("project")).unwrap();
+    let base = repo.commit(WASM, "base").unwrap();
+    let client = Repository::clone_local(&repo.root, t.0.join("client")).unwrap();
+    let next = client.commit(&custom(97, 4), "next").unwrap();
+    let script = t.0.join("hooks.sh");
+    fs::write(&script, r#"#!/bin/sh
+set -eu
+test -s "$UWGIT_UPDATES_FILE"
+test "$UWGIT_PUSH_OPTION_COUNT" = 3
+test "$UWGIT_PUSH_OPTION_0" = skip-ci
+test "$UWGIT_PUSH_OPTION_1" = --help
+test "$UWGIT_PUSH_OPTION_2" = ''
+printf '%s|%s|%s|%s\n' "$UWGIT_HOOK" "$*" "$UWGIT_RECEIVE_TRANSACTION" "$UWGIT_QUARANTINE_BUNDLE" >> ../hook-events
+case "$UWGIT_HOOK" in
+pre-receive|update) test -s "$UWGIT_QUARANTINE_BUNDLE" ;;
+*) test ! -s "$UWGIT_QUARANTINE_BUNDLE" ;;
+esac
+if test "$UWGIT_HOOK" = update && test "$1" = refs/heads/topic && test -f ../deny-topic; then exit 1; fi
+if test "$UWGIT_HOOK" = post-receive && test -f ../fail-notification; then exit 1; fi
+"#).unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+    let server = Server::start(
+        &t.0,
+        &[
+            "--allow-write",
+            "--pre-receive",
+            script.to_str().unwrap(),
+            "--update",
+            script.to_str().unwrap(),
+            "--post-receive",
+            script.to_str().unwrap(),
+            "--post-update",
+            script.to_str().unwrap(),
+        ],
+    );
+    let bytes = binary::encode(&OptionsPublication {
+        publication: BatchPublication {
+            updates: vec![
+                update("main", Some(&base), Some(&next)),
+                update("topic", None, Some(&next)),
+            ],
+            bundle: client
+                .network_bundle(std::slice::from_ref(&next), std::slice::from_ref(&base))
+                .unwrap()
+                .1,
+        },
+        options: vec!["skip-ci".into(), "--help".into(), String::new()],
+    })
+    .unwrap();
+    fs::write(t.0.join("deny-topic"), b"").unwrap();
+    let rejected = server
+        .rpc("project", Operation::PublishOptions {}, &bytes)
+        .0;
+    assert!(
+        !rejected.ok && !rejected.publication_unknown,
+        "{rejected:?}"
+    );
+    assert!(rejected.error.unwrap().contains("update hook rejected"));
+    assert_eq!(repo.resolve("HEAD").unwrap(), base);
+    assert!(repo.resolve("topic").is_err());
+    assert!(repo.resolve(&next).is_err());
+    let events = fs::read_to_string(t.0.join("hook-events")).unwrap();
+    let rows: Vec<_> = events
+        .lines()
+        .map(|l| l.split('|').collect::<Vec<_>>())
+        .collect();
+    assert_eq!(
+        rows.iter().map(|r| r[0]).collect::<Vec<_>>(),
+        ["pre-receive", "update", "update"]
+    );
+    assert_eq!(rows[1][1], format!("refs/heads/main {base} {next}"));
+    assert_eq!(
+        rows[2][1],
+        format!("refs/heads/topic {} {next}", "0".repeat(64))
+    );
+    assert!(rows
+        .iter()
+        .all(|r| r[2] == rows[0][2] && r[3] == rows[0][3]));
+    assert!(!Path::new(rows[0][3]).exists());
+    fs::remove_file(t.0.join("deny-topic")).unwrap();
+    fs::write(t.0.join("fail-notification"), b"").unwrap();
+    fs::write(t.0.join("hook-events"), b"").unwrap();
+    let accepted = server
+        .rpc("project", Operation::PublishOptions {}, &bytes)
+        .0;
+    assert!(accepted.ok, "{accepted:?}");
+    assert_eq!(
+        accepted.tip.unwrap(),
+        format!("{:x}", Sha256::digest(&bytes))
+    );
+    assert_eq!(repo.resolve("HEAD").unwrap(), next);
+    assert_eq!(repo.resolve("topic").unwrap(), next);
+    let events = fs::read_to_string(t.0.join("hook-events")).unwrap();
+    let rows: Vec<_> = events
+        .lines()
+        .map(|l| l.split('|').collect::<Vec<_>>())
+        .collect();
+    assert_eq!(
+        rows.iter().map(|r| r[0]).collect::<Vec<_>>(),
+        [
+            "pre-receive",
+            "update",
+            "update",
+            "post-receive",
+            "post-update"
+        ]
+    );
+    assert_eq!(rows[4][1], "refs/heads/main refs/heads/topic");
+    assert!(rows.iter().all(|r| r[2] == rows[0][2]));
+    let audit: serde_json::Value = serde_json::from_str(&success(
+        Command::new(env!("CARGO_BIN_EXE_wasm-git-server"))
+            .args(["audit-log", t.0.join("receive-audit.bin").to_str().unwrap()])
+            .output()
+            .unwrap(),
+    ))
+    .unwrap();
+    assert_eq!(
+        audit
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["outcome"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "prepared",
+            "rejected",
+            "prepared",
+            "accepted",
+            "post-receive-failed"
+        ]
+    );
+    assert!(audit
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|r| r["push_options"] == json!(["skip-ci", "--help", ""])));
+    repo.fsck().unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn cli_push_options_are_literal_bounded_and_bound_to_the_publication() {
+    use std::os::unix::fs::PermissionsExt;
+    let t = Temp::new();
+    let repo = Repository::init(t.0.join("project")).unwrap();
+    let base = repo.commit(WASM, "base").unwrap();
+    let client = Repository::clone_local(&repo.root, t.0.join("client")).unwrap();
+    let next = client.commit(&custom(38, 8), "next").unwrap();
+    let hook = t.0.join("options.sh");
+    fs::write(
+        &hook,
+        r#"#!/bin/sh
+set -eu
+test "$UWGIT_PUSH_OPTION_COUNT" = 4
+test "$UWGIT_PUSH_OPTION_0" = --help
+test "$UWGIT_PUSH_OPTION_1" = --allow-insecure-http
+test "$UWGIT_PUSH_OPTION_2" = ''
+test "$UWGIT_PUSH_OPTION_3" = 审计
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o700)).unwrap();
+    let server = Server::start(
+        &t.0,
+        &["--allow-write", "--pre-receive", hook.to_str().unwrap()],
+    );
+    let root = client.root.to_str().unwrap();
+    success(server.cli(&["remote", root, "add", "origin", &server.url("project")]));
+    for bad in ["a\nb", &"x".repeat(65_537)] {
+        let output = server.cli(&["push", root, "origin", "--push-option", bad]);
+        assert!(!output.status.success());
+        assert_eq!(repo.resolve("HEAD").unwrap(), base);
+        assert!(!t.0.join("receive-audit.bin").exists());
+    }
+    success(server.cli(&[
+        "push",
+        root,
+        "origin",
+        "-o",
+        "--help",
+        "--push-option",
+        "--allow-insecure-http",
+        "--push-option=",
+        "-o审计",
+    ]));
+    assert_eq!(repo.resolve("HEAD").unwrap(), next);
+}
+
+#[test]
 fn small_changes_to_incompressible_wasm_use_verified_binary_delta_bases() {
     let t = Temp::new();
     let repo = Repository::init(t.0.join("project")).unwrap();
@@ -987,4 +1181,443 @@ fn replicated_http_pool_survives_one_server_exit_without_local_blob_copy() {
         String::from_utf8_lossy(&result.stderr)
     );
     assert_eq!(fs::read(output).unwrap(), WASM);
+}
+
+#[test]
+fn hierarchical_repositories_clone_and_fork_under_exact_policy_boundaries() {
+    let t = Temp::new();
+    fs::create_dir(t.0.join("team")).unwrap();
+    let repo = Repository::init(t.0.join("team/project")).unwrap();
+    let tip = repo.commit(WASM, "base").unwrap();
+    let config = t.0.join("policy.json");
+    fs::write(&config, json!({"version":1,"principals":[{"name":"test","token_sha256":format!("{:x}",Sha256::digest(b"hosting-test")),"grants":[{"repository":"team/*","read":true,"write":["refs/heads/*"],"force":false,"create":true}]}]}).to_string()).unwrap();
+    let policy = t.0.join("policy.bin");
+    success(
+        Command::new(env!("CARGO_BIN_EXE_wasm-git-server"))
+            .args([
+                "compile-policy",
+                config.to_str().unwrap(),
+                policy.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap(),
+    );
+    let server = Server::start(
+        &t.0,
+        &["--allow-write", "--policy", policy.to_str().unwrap()],
+    );
+    let local = t.0.join("local");
+    success(server.cli(&[
+        "clone",
+        &server.url("team/project"),
+        local.to_str().unwrap(),
+    ]));
+    assert_eq!(
+        Repository::open(&local).unwrap().resolve("HEAD").unwrap(),
+        tip
+    );
+    let (reply, _) = server.rpc(
+        "team/project",
+        Operation::Fork {
+            destination: "team/users/peer".into(),
+        },
+        &[],
+    );
+    assert!(reply.ok, "{:?}", reply.error);
+    let peer = Repository::open(t.0.join("team/users/peer")).unwrap();
+    assert_eq!(peer.resolve("HEAD").unwrap(), tip);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let packs: Vec<_> = fs::read_dir(repo.common_metadata().join("packs"))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.extension().is_some_and(|e| e == "pack"))
+            .collect();
+        assert!(!packs.is_empty());
+        for source in packs {
+            let copy = peer
+                .common_metadata()
+                .join("packs")
+                .join(source.file_name().unwrap());
+            assert_eq!(
+                fs::metadata(source).unwrap().ino(),
+                fs::metadata(copy).unwrap().ino()
+            );
+        }
+    }
+    for destination in [
+        "other/peer",
+        "team/project/nested",
+        "../escape",
+        "team//empty",
+        "team/../escape",
+        "team/.uwgit/x",
+    ] {
+        let rejected = server
+            .rpc(
+                "team/project",
+                Operation::Fork {
+                    destination: destination.into(),
+                },
+                &[],
+            )
+            .0;
+        assert!(
+            !rejected.ok && !rejected.publication_unknown,
+            "{destination}: {rejected:?}"
+        );
+    }
+    assert!(!t.0.join("other").exists());
+    assert!(!repo.root.join("nested").exists());
+    assert_eq!(peer.resolve("HEAD").unwrap(), tip);
+    #[cfg(unix)]
+    {
+        let outside = t.0.join("outside");
+        fs::create_dir(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, t.0.join("team/link")).unwrap();
+        let rejected = server
+            .rpc(
+                "team/project",
+                Operation::Fork {
+                    destination: "team/link/peer".into(),
+                },
+                &[],
+            )
+            .0;
+        assert!(!rejected.ok && !rejected.publication_unknown);
+        assert!(!outside.join("peer").exists());
+    }
+}
+
+#[test]
+fn all_and_mirror_pushes_preserve_dry_run_and_exact_native_ref_sets() {
+    let t = Temp::new();
+    let repo = Repository::init(t.0.join("project")).unwrap();
+    let base = repo.commit(WASM, "base").unwrap();
+    let client = Repository::clone_local(&repo.root, t.0.join("client")).unwrap();
+    let next = client.commit(&custom(128, 6), "next").unwrap();
+    client.create_branch("topic", &next).unwrap();
+    client.create_tag("release", &base).unwrap();
+    let server = Server::start(&t.0, &["--allow-write", "--allow-force"]);
+    let root = client.root.to_str().unwrap();
+    success(server.cli(&["remote", root, "add", "origin", &server.url("project")]));
+    let dry: serde_json::Value = serde_json::from_str(&success(server.cli(&[
+        "push",
+        root,
+        "origin",
+        "--all",
+        "--atomic",
+        "--dry-run",
+        "-u",
+    ])))
+    .unwrap();
+    assert_eq!(dry["status"], "dry_run");
+    assert_eq!(repo.resolve("HEAD").unwrap(), base);
+    assert!(repo.resolve(&next).is_err());
+    assert!(repo.resolve("topic").is_err());
+    assert!(client.upstreams().unwrap().is_empty());
+    assert!(!t.0.join("receive-audit.bin").exists());
+    success(server.cli(&["push", root, "origin", "--all", "-u"]));
+    assert_eq!(repo.resolve("main").unwrap(), next);
+    assert_eq!(repo.resolve("topic").unwrap(), next);
+    assert!(repo.tags().unwrap().is_empty());
+    assert_eq!(client.upstream("topic").unwrap().unwrap().branch, "topic");
+    repo.create_branch("obsolete", &base).unwrap();
+    repo.create_tag("stale", &base).unwrap();
+    repo.create_tag("release", &next).unwrap();
+    let before = repo.state().unwrap();
+    let audit = fs::read(t.0.join("receive-audit.bin")).unwrap();
+    success(server.cli(&["push", root, "origin", "--mirror", "--atomic", "-n"]));
+    assert_eq!(repo.state().unwrap(), before);
+    assert_eq!(fs::read(t.0.join("receive-audit.bin")).unwrap(), audit);
+    success(server.cli(&["push", root, "origin", "--mirror", "--atomic"]));
+    assert_eq!(repo.branches().unwrap(), client.branches().unwrap());
+    assert_eq!(repo.tags().unwrap(), client.tags().unwrap());
+    repo.fsck().unwrap();
+}
+
+#[test]
+fn multi_ref_pushes_report_partial_failures_and_atomic_batches_reject_every_ref() {
+    let t = Temp::new();
+    let repo = Repository::init(t.0.join("project")).unwrap();
+    repo.commit(WASM, "base").unwrap();
+    let client = Repository::clone_local(&repo.root, t.0.join("client")).unwrap();
+    let local = client.commit(&custom(54, 3), "local").unwrap();
+    let remote = repo.commit(&custom(54, 4), "remote").unwrap();
+    let server = Server::start(&t.0, &["--allow-write"]);
+    let root = client.root.to_str().unwrap();
+    success(server.cli(&["remote", root, "add", "origin", &server.url("project")]));
+    let output = server.cli(&["push", root, "origin", "HEAD:new-topic", "HEAD:main"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["status"], "partial");
+    assert_eq!(report["updates"][0]["status"], "pushed");
+    assert_eq!(report["updates"][1]["status"], "rejected");
+    assert_eq!(repo.resolve("new-topic").unwrap(), local);
+    assert_eq!(repo.resolve("HEAD").unwrap(), remote);
+    let before = repo.reflog().unwrap();
+    let rejected = server.cli(&[
+        "push",
+        root,
+        "origin",
+        "HEAD:atomic-topic",
+        "HEAD:main",
+        "--atomic",
+    ]);
+    assert!(!rejected.status.success());
+    assert!(repo.resolve("atomic-topic").is_err());
+    assert_eq!(repo.reflog().unwrap(), before);
+    assert!(!server
+        .cli(&["push", root, "origin", "HEAD:duplicate", "HEAD:duplicate"])
+        .status
+        .success());
+    assert!(repo.resolve("duplicate").is_err());
+    repo.fsck().unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn partial_receive_uses_one_quarantine_and_reports_only_accepted_refs_to_post_hooks() {
+    use std::os::unix::fs::PermissionsExt;
+    let t = Temp::new();
+    let repo = Repository::init(t.0.join("project")).unwrap();
+    let base = repo.commit(WASM, "base").unwrap();
+    let client = Repository::clone_local(&repo.root, t.0.join("client")).unwrap();
+    let next = client.commit(&custom(1024, 8), "next").unwrap();
+    let script = t.0.join("hooks");
+    fs::write(&script, b"#!/bin/sh\nprintf '%s %s\\n' \"$UWGIT_HOOK\" \"$*\" >> hooks.log\ncp \"$UWGIT_UPDATES_FILE\" \"$UWGIT_HOOK.bin\"\nif [ \"$UWGIT_HOOK\" = update ] && [ \"$1\" = refs/heads/blocked ]; then exit 1; fi\nif [ \"$UWGIT_HOOK\" = pre-receive ] && [ -f reject-all ]; then exit 1; fi\n").unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+    let hook = script.to_str().unwrap();
+    let server = Server::start(
+        &t.0,
+        &[
+            "--allow-write",
+            "--pre-receive",
+            hook,
+            "--update",
+            hook,
+            "--post-receive",
+            hook,
+            "--post-update",
+            hook,
+        ],
+    );
+    let updates = vec![
+        update("accepted", None, Some(&next)),
+        update("blocked", None, Some(&next)),
+        update("stale", Some(&base), Some(&next)),
+    ];
+    let payload = binary::encode(&wasm_git::protocol::OptionsPublication {
+        publication: BatchPublication {
+            updates: updates.clone(),
+            bundle: client
+                .network_bundle(std::slice::from_ref(&next), std::slice::from_ref(&base))
+                .unwrap()
+                .1,
+        },
+        options: vec!["test=partial".into()],
+    })
+    .unwrap();
+    let (dry, bytes) = server.rpc(
+        "project",
+        Operation::PublishPartial { dry_run: true },
+        &payload,
+    );
+    assert!(dry.ok, "{dry:?}");
+    let checked: wasm_git::protocol::PartialReceipt = binary::decode(&bytes).unwrap();
+    assert!(
+        checked.rejections[0].is_none()
+            && checked.rejections[1].is_none()
+            && checked.rejections[2].is_some()
+    );
+    assert!(repo.resolve(&next).is_err());
+    assert!(!t.0.join("receive-audit.bin").exists());
+    assert!(!repo.root.join("hooks.log").exists());
+    // Exercise the nonrecursive uploaded-operation codec as well as the direct RPC.
+    let transfer = format!("{:x}", Sha256::digest(&payload));
+    assert!(
+        server
+            .rpc(
+                "project",
+                Operation::UploadSlice {
+                    transfer: transfer.clone(),
+                    total: payload.len() as u64,
+                    offset: 0
+                },
+                &payload
+            )
+            .0
+            .ok
+    );
+    let (reply, bytes) = server.rpc(
+        "project",
+        Operation::ApplyUpload {
+            transfer,
+            operation: Box::new(Operation::PublishPartial { dry_run: false }),
+        },
+        &[],
+    );
+    assert!(reply.ok, "{reply:?}");
+    assert_eq!(reply.tip, Some(format!("{:x}", Sha256::digest(&payload))));
+    let receipt: wasm_git::protocol::PartialReceipt = binary::decode(&bytes).unwrap();
+    assert!(receipt.rejections[0].is_none());
+    assert!(receipt.rejections[1]
+        .as_ref()
+        .unwrap()
+        .contains("update hook rejected"));
+    assert!(receipt.rejections[2].is_some());
+    assert_eq!(repo.resolve("accepted").unwrap(), next);
+    assert!(repo.resolve("blocked").is_err() && repo.resolve("stale").is_err());
+    let events = fs::read_to_string(repo.root.join("hooks.log")).unwrap();
+    assert_eq!(
+        events
+            .lines()
+            .filter(|s| s.starts_with("pre-receive "))
+            .count(),
+        1
+    );
+    assert_eq!(
+        events.lines().filter(|s| s.starts_with("update ")).count(),
+        2
+    );
+    assert!(events.ends_with("post-update refs/heads/accepted\n"));
+    let notified: Vec<RefUpdate> =
+        binary::decode(&fs::read(repo.root.join("post-receive.bin")).unwrap()).unwrap();
+    assert_eq!(notified.len(), 1);
+    assert_eq!(notified[0].name, "accepted");
+    let audit: serde_json::Value = serde_json::from_str(&success(
+        Command::new(env!("CARGO_BIN_EXE_wasm-git-server"))
+            .args(["audit-log", t.0.join("receive-audit.bin").to_str().unwrap()])
+            .output()
+            .unwrap(),
+    ))
+    .unwrap();
+    assert_eq!(audit[1]["outcome"], "partial");
+    assert_eq!(
+        audit[1]["rejections"][1],
+        receipt.rejections[1].as_deref().unwrap()
+    );
+    fs::write(repo.root.join("reject-all"), b"1").unwrap();
+    let before = repo.reflog().unwrap();
+    let rejected = server
+        .rpc(
+            "project",
+            Operation::PublishPartial { dry_run: false },
+            &payload,
+        )
+        .0;
+    assert!(!rejected.ok && !rejected.publication_unknown);
+    assert_eq!(repo.reflog().unwrap(), before);
+    repo.fsck().unwrap();
+}
+
+#[test]
+fn partial_receive_keeps_authorization_and_prefix_failures_per_reference() {
+    let t = Temp::new();
+    let repo = Repository::init(t.0.join("project")).unwrap();
+    let tip = repo.commit(WASM, "root").unwrap();
+    repo.create_branch("allowed-parent", &tip).unwrap();
+    let config = t.0.join("policy.json");
+    fs::write(&config, json!({"version":1,"principals":[{"name":"test","token_sha256":format!("{:x}",Sha256::digest(b"hosting-test")),"grants":[{"repository":"project","read":true,"write":["refs/heads/allowed*"],"force":false,"create":false}]}]}).to_string()).unwrap();
+    let policy = t.0.join("policy.bin");
+    success(
+        Command::new(env!("CARGO_BIN_EXE_wasm-git-server"))
+            .args([
+                "compile-policy",
+                config.to_str().unwrap(),
+                policy.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap(),
+    );
+    let server = Server::start(
+        &t.0,
+        &["--allow-write", "--policy", policy.to_str().unwrap()],
+    );
+    let payload = binary::encode(&wasm_git::protocol::OptionsPublication {
+        publication: BatchPublication {
+            updates: vec![
+                update("allowed-ok", None, Some(&tip)),
+                update("forbidden", None, Some(&tip)),
+                update("allowed-parent", Some(&"f".repeat(64)), None),
+                update("allowed-parent/child", None, Some(&tip)),
+                update("allowed-new", None, Some(&tip)),
+                update("allowed-new/child", None, Some(&tip)),
+            ],
+            bundle: Vec::new(),
+        },
+        options: Vec::new(),
+    })
+    .unwrap();
+    let (response, bytes) = server.rpc(
+        "project",
+        Operation::PublishPartial { dry_run: false },
+        &payload,
+    );
+    assert!(response.ok, "{response:?}");
+    let result: wasm_git::protocol::PartialReceipt = binary::decode(&bytes).unwrap();
+    assert!(result.rejections[0].is_none());
+    assert!(result.rejections[1]
+        .as_ref()
+        .unwrap()
+        .contains("authorization denied"));
+    assert!(result.rejections[2..].iter().all(Option::is_some));
+    assert_eq!(repo.resolve("allowed-ok").unwrap(), tip);
+    assert_eq!(repo.resolve("allowed-parent").unwrap(), tip);
+    for rejected in [
+        "forbidden",
+        "allowed-parent/child",
+        "allowed-new",
+        "allowed-new/child",
+    ] {
+        assert!(repo.resolve(rejected).is_err());
+    }
+    repo.fsck().unwrap();
+}
+
+#[test]
+fn abbreviated_refspecs_deletions_and_force_keep_exact_server_leases() {
+    let t = Temp::new();
+    let repo = Repository::init(t.0.join("project")).unwrap();
+    let base = repo.commit(WASM, "base").unwrap();
+    let client = Repository::clone_local(&repo.root, t.0.join("client")).unwrap();
+    let next = client.commit(&custom(64, 9), "local").unwrap();
+    repo.commit(&custom(64, 4), "remote").unwrap();
+    client.create_branch("topic", &next).unwrap();
+    let server = Server::start(&t.0, &["--allow-write", "--allow-force"]);
+    let root = client.root.to_str().unwrap();
+    success(server.cli(&["remote", root, "add", "origin", &server.url("project")]));
+    assert!(!server
+        .cli(&["push", root, "origin", "main"])
+        .status
+        .success());
+    success(server.cli(&["push", root, "origin", "+main", "topic"]));
+    assert_eq!(repo.resolve("main").unwrap(), next);
+    assert_eq!(repo.resolve("topic").unwrap(), next);
+    let plan: serde_json::Value = serde_json::from_str(&success(
+        server.cli(&["push", root, "origin", ":topic", "-n"]),
+    ))
+    .unwrap();
+    assert_eq!(plan["status"], "dry_run");
+    assert_eq!(repo.resolve("topic").unwrap(), next);
+    let deleted: serde_json::Value =
+        serde_json::from_str(&success(server.cli(&["push", root, "origin", ":topic"]))).unwrap();
+    assert_eq!(deleted["status"], "deleted");
+    assert!(repo.resolve("topic").is_err());
+    let rewind = format!("{base}:main");
+    success(server.cli(&["push", root, "origin", &rewind, "-f"]));
+    assert_eq!(repo.resolve("main").unwrap(), base);
+    let protected = Server::start(&t.0, &["--allow-write"]);
+    success(protected.cli(&[
+        "remote",
+        root,
+        "add",
+        "protected",
+        &protected.url("project"),
+    ]));
+    assert!(!protected
+        .cli(&["push", root, "protected", "+main"])
+        .status
+        .success());
+    repo.fsck().unwrap();
 }

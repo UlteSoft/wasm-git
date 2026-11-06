@@ -18,7 +18,7 @@ static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
-        let path = PathBuf::from("/tmp").join(format!(
+        let path = std::env::temp_dir().join(format!(
             "uwgit-remotes-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
@@ -143,7 +143,10 @@ impl Bridge {
                                     u32::from_be_bytes(packet[8..12].try_into().unwrap()) as usize;
                                 let metadata: Value =
                                     native::request_value(&packet[20..20 + length]);
-                                if metadata["operation"]["kind"] == "update_ref" {
+                                if matches!(
+                                    metadata["operation"]["kind"].as_str(),
+                                    Some("update_ref" | "publish_partial")
+                                ) {
                                     response.push(0x5a);
                                 }
                             }
@@ -152,7 +155,10 @@ impl Bridge {
                                     u32::from_be_bytes(packet[8..12].try_into().unwrap()) as usize;
                                 let request: Value =
                                     native::request_value(&packet[20..20 + request_length]);
-                                if request["operation"]["kind"] == "update_ref" {
+                                if matches!(
+                                    request["operation"]["kind"].as_str(),
+                                    Some("update_ref" | "publish_partial")
+                                ) {
                                     let length =
                                         u32::from_be_bytes(response[8..12].try_into().unwrap())
                                             as usize;
@@ -475,7 +481,7 @@ fn tag_push_reports_partial_results_and_remote_deletion_uses_exact_leases() {
 }
 
 #[test]
-fn unknown_tag_acknowledgement_preserves_uncertainty_and_stops_later_publication() {
+fn corrupt_batch_acknowledgement_reports_every_sent_tag_as_unknown() {
     let temp = Temp::new();
     let upstream = temp.path("upstream");
     let local = temp.path("local");
@@ -486,7 +492,7 @@ fn unknown_tag_acknowledgement_preserves_uncertainty_and_stops_later_publication
     let bridge = Bridge::new(&temp.0, None, Alter::None);
     run(&["clone", &bridge.url("upstream"), &local]);
     run(&["tag", &local, "a_first"]);
-    run(&["tag", &local, "z_not_attempted"]);
+    run(&["tag", &local, "z_same_batch"]);
     let faulty = Bridge::new(&temp.0, None, Alter::UpdateTrailing);
     run(&["remote", &local, "add", "faulty", &faulty.url("upstream")]);
     let output = command(&["push", &local, "faulty", "--tags"])
@@ -504,16 +510,19 @@ fn unknown_tag_acknowledgement_preserves_uncertainty_and_stops_later_publication
     assert_eq!(updates.len(), 2);
     assert_eq!(updates[0]["name"], "a_first");
     assert_eq!(updates[0]["status"], "unknown");
-    assert_eq!(updates[1]["name"], "z_not_attempted");
-    assert_eq!(updates[1]["status"], "not_attempted");
-    // The acknowledgement was corrupt after a real publication. Calling this
-    // rejection would mislead a retrying user about an already visible tag.
+    assert_eq!(updates[1]["name"], "z_same_batch");
+    assert_eq!(updates[1]["status"], "unknown");
+    // Both refs were sent in one receive. A corrupt acknowledgement cannot
+    // classify either ref as rejected or not attempted after real publication.
     assert_eq!(tip(&upstream, "refs/tags/a_first"), tip(&local, "HEAD"));
-    assert!(failure(&["show", &upstream, "refs/tags/z_not_attempted"]).contains("unknown revision"));
+    assert_eq!(
+        tip(&upstream, "refs/tags/z_same_batch"),
+        tip(&local, "HEAD")
+    );
 }
 
 #[test]
-fn typed_publication_uncertainty_and_invalid_success_both_stop_tag_push() {
+fn typed_publication_uncertainty_and_invalid_success_keep_batch_outcomes_unknown() {
     for alteration in [Alter::PublicationUnknown, Alter::InvalidSuccessUnknown] {
         let temp = Temp::new();
         let upstream = temp.path("upstream");
@@ -525,7 +534,7 @@ fn typed_publication_uncertainty_and_invalid_success_both_stop_tag_push() {
         let bridge = Bridge::new(&temp.0, None, alteration);
         run(&["clone", &bridge.url("upstream"), &local]);
         run(&["tag", &local, "a_first"]);
-        run(&["tag", &local, "z_not_attempted"]);
+        run(&["tag", &local, "z_same_batch"]);
         let output = command(&["push", &local, "--tags"]).output().unwrap();
         assert_eq!(
             output.status.code(),
@@ -542,10 +551,11 @@ fn typed_publication_uncertainty_and_invalid_success_both_stop_tag_push() {
             .as_str()
             .unwrap()
             .starts_with("remote publication outcome is unknown:"));
-        assert_eq!(updates[1]["status"], "not_attempted");
+        assert_eq!(updates[1]["status"], "unknown");
         assert_eq!(tip(&upstream, "refs/tags/a_first"), tip(&local, "HEAD"));
-        assert!(
-            failure(&["show", &upstream, "refs/tags/z_not_attempted"]).contains("unknown revision")
+        assert_eq!(
+            tip(&upstream, "refs/tags/z_same_batch"),
+            tip(&local, "HEAD")
         );
     }
 }
@@ -723,11 +733,17 @@ fn ssh_clone_accepts_server_repository_names_without_widening_remote_config_name
     let shim = temp.path("repository-name-ssh");
     std::fs::write(&shim, b"#!/bin/sh\nset -eu\nexec \"$UWGIT_NAME_TEST_BINARY\" server --stdio --root \"$UWGIT_NAME_TEST_ROOT\"\n").unwrap();
     std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o700)).unwrap();
-    for (index, name) in ["project.git".to_owned(), "r".repeat(65), "s".repeat(128)]
-        .iter()
-        .enumerate()
+    for (index, name) in [
+        "project.git".to_owned(),
+        "r".repeat(65),
+        "s".repeat(128),
+        "team/nested/project.git".into(),
+    ]
+    .iter()
+    .enumerate()
     {
         let project = temp.path(name);
+        std::fs::create_dir_all(std::path::Path::new(&project).parent().unwrap()).unwrap();
         let module = temp.path("named-input.wasm");
         wasm(&module, (index + 1) as u8);
         let expected = std::fs::read(&module).unwrap();
@@ -741,7 +757,8 @@ fn ssh_clone_accepts_server_repository_names_without_widening_remote_config_name
         ]);
         let initial = tip(&project, "HEAD");
         let local = temp.path(&format!("named-clone-{index}"));
-        let url = format!("ssh://test@localhost{}/{name}", temp.0.display());
+        let separator = if name.contains('/') { "//" } else { "/" };
+        let url = format!("ssh://test@localhost{}{separator}{name}", temp.0.display());
         success(
             command(&["clone", &url, &local])
                 .env("UWGIT_SSH_PROGRAM", &shim)

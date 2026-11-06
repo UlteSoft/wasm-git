@@ -2,7 +2,7 @@
 """Fixed SDK include-closure cases; run only in the SSH Linux test cgroup.
 
 No compiler, guest, network, git command, fuzzer, random input or external ROS
-checkout is used. Every fixture and archive is created in an isolated /tmp tree.
+checkout is used. Every fixture and archive is created in an isolated TMPDIR tree.
 """
 
 import importlib.util
@@ -22,7 +22,7 @@ SPEC.loader.exec_module(INPUTS)
 
 class SDKInputs(unittest.TestCase):
     def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory(prefix="uwgit-sdk-inputs-", dir="/tmp")
+        self.temporary = tempfile.TemporaryDirectory(prefix="uwgit-sdk-inputs-")
         self.root = Path(self.temporary.name)
         (self.root / "examples").mkdir()
         (self.root / "examples/module.wasm").write_bytes(b"\0asm\x01\0\0\0")

@@ -27,17 +27,14 @@ fn run(args: &[&str]) -> Vec<u8> {
 }
 #[test]
 fn objects_index_state_and_patch_use_raw_binary_and_restore_exact_originals() {
-    let t = Temp(PathBuf::from(format!(
-        "/tmp/uwgit-native-storage-{}",
-        std::process::id()
-    )));
+    let t = Temp(std::env::temp_dir().join(format!("uwgit-native-storage-{}", std::process::id())));
     fs::create_dir(&t.0).unwrap();
     let repo = t.0.join("repo");
     let r = repo.to_str().unwrap();
     run(&["init", r]);
     assert_eq!(
         fs::read(repo.join(".uwgit/format")).unwrap(),
-        b"UWGRPO\0\x02"
+        b"UWGRPO\0\x03"
     );
     let mut old =
         wat::parse_str("(module (func (export \"f\") (result i32) i32.const 1))").unwrap();

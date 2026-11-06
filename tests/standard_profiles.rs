@@ -4,7 +4,7 @@
 //! and instruction offsets are obtained independently from its binary reader.
 
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use wasm_git::audit::{self, AuditModule, Region, Span};
@@ -1171,7 +1171,7 @@ static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 struct Directory(PathBuf);
 impl Directory {
     fn new() -> Self {
-        let path = Path::new("/tmp").join(format!(
+        let path = std::env::temp_dir().join(format!(
             "uwgit-standard-profiles-{}-{}",
             std::process::id(),
             NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed)

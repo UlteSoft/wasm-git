@@ -17,7 +17,7 @@ struct Temp {
 }
 impl Temp {
     fn new() -> Self {
-        let base = Path::new("/tmp").join(format!(
+        let base = std::env::temp_dir().join(format!(
             "uwgit-ff-only-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)

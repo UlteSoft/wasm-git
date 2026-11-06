@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Inventory the read-only external example inputs; never compile or edit them."""
 import argparse
+import tempfile
 import hashlib
 import json
 import os
@@ -229,8 +230,8 @@ def git_metadata(root: Path) -> dict:
 
 def archive_inputs(root: Path, expected: dict, destination: Path) -> None:
     """Archive exactly the verified manifest files, with their actual names."""
-    if not destination.resolve().is_relative_to(Path("/tmp").resolve()):
-        raise ValueError("reference archive must be written under /tmp")
+    if not destination.resolve().is_relative_to(Path(tempfile.gettempdir()).resolve()):
+        raise ValueError("reference archive must be written under TMPDIR")
     if expected.get("format") != 1 or inventory(root) != expected.get("files"):
         raise ValueError("external example input inventory/content changed before archive")
     with tarfile.open(destination, "x", dereference=True) as archive:

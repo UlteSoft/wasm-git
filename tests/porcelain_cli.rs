@@ -18,7 +18,7 @@ struct Temp(PathBuf);
 
 impl Temp {
     fn new(label: &str) -> Self {
-        let path = Path::new("/tmp").join(format!(
+        let path = std::env::temp_dir().join(format!(
             "uwgit-porcelain-{label}-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)

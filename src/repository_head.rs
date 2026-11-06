@@ -63,7 +63,7 @@ pub(super) fn decode_head_reflog(bytes: Option<&[u8]>) -> RepositoryResult<Vec<R
         if entry.reference != "HEAD"
             || entry.sequence == 0
             || entry.operation.is_empty()
-            || previous.is_some_and(|old| old.checked_add(1) != Some(entry.sequence))
+            || previous.is_some_and(|old| old >= entry.sequence)
         {
             return Err("invalid HEAD reflog entry".into());
         }
@@ -112,6 +112,7 @@ impl Repository {
             entries.remove(0);
         }
         entries.push(ReflogEntry {
+            unix_seconds: reflog_timestamp()?,
             sequence,
             reference: "HEAD".into(),
             old,

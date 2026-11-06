@@ -23,8 +23,8 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
-        let p = PathBuf::from(format!(
-            "/tmp/uwgit-sections-{}-{}",
+        let p = std::env::temp_dir().join(format!(
+            "uwgit-sections-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));

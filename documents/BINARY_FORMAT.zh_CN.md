@@ -6,7 +6,7 @@
 ## 1. 范围与版本策略
 
 本参考描述当前 checkout 写入的格式，不承诺未发行布局永久稳定。
-仓库标记为八字节 `UWGRPO\0\x02`。旧 JSON 仓库、文本控制文件与已废弃发行前 pack 不迁移，
+仓库标记为八字节 `UWGRPO\0\x03`。旧 JSON 仓库、文本控制文件与已废弃发行前 pack 不迁移，
 而是明确拒绝。读取器必须核对版本、完整记录、语义约束和引用图，仅识别 magic 不够。
 
 可读对象 ID 和十六进制编辑证据属于展示。
@@ -167,6 +167,14 @@ Index 外头为 `UWGITIDX\x06`，后跟当前位置记录。
 Config、index 图像、stash、pending/rebase、reflog、worktree、事务 journal、部分历史、
 pool、trust、upload 状态均为二进制。部分冷恢复字段中的 UTF-8 仍是 schema 值，不是 JSON。
 
+仓库标记 `UWGRPO\0\x03` 对应带时间戳的 reflog 和事务前像。拒绝 version 2 仓库，
+不迁移尚未发行的旧格式；不可变对象 ID 与 pack 编码不变。
+Reflog 条目字段依次为 `unix_seconds: u64`、`sequence: u64`、`reference: String`、
+`old: Option<String>`、`new: Option<String>`、`operation: String`。
+序号必须为正且严格递增，过期后允许空隙，追加从最后保留的序号继续。
+引用事务及 HEAD 图像在持久决定前冻结时间戳，恢复时不替换为恢复时刻。
+本地 HEAD 日志最多 4096 项；共享引用日志通过显式过期清理。
+
 HEAD/ref 采用 `UWGREF\0\x01` 加 tag：1 为原始 32 字节 oid；0 为长度前缀分支名，仅允许
 symbolic HEAD。Writer 锁为 `UWGLCK\0\x01` 加大端 PID，PID 不授权自动删除锁。
 Worktree commondir 用位置记录。私钥为 `UWGKEY01` 加 32 字节种子，公钥为 `UWGPUB01`
@@ -180,9 +188,16 @@ Envelope 版本与 metadata 内逻辑请求 version 是不同概念。
 
 外层 operation 按声明顺序编号：Advertise=0、Fetch=1、FetchSlice=2、UploadSlice=3、
 ApplyUpload=4、Fork=5、Push=6、UpdateRef=7、RefsPage=8、CancelUpload=9、
-PublishBatch=10、ObjectSlice=11。
-上传内层使用独立非递归枚举 Push=0、UpdateRef=1、PublishBatch=2，不可嵌套上传。
+PublishBatch=10、ObjectSlice=11、PublishOptions=12、CheckBatch=13、PublishPartial=14。
+PublishPartial 有一个布尔字段 dry_run。上传内层使用独立非递归枚举 Push=0、UpdateRef=1、
+PublishBatch=2、PublishOptions=3、CheckBatch=4、PublishPartial=5，不可嵌套上传。
 确切位置字段见[协议类型](../src/protocol.rs)，不得猜测必要 Option 字段可以省略。
+
+PublishOptions、CheckBatch 和 PublishPartial 的 payload 为位置编码的
+`OptionsPublication { publication: BatchPublication, options: Vec<String> }`。
+BatchPublication 依次保存有序 updates 与 bundle 字节。批次成功响应的 tip 是精确 payload 的
+SHA-256。部分发布另返回 `PartialReceipt { rejections: Vec<Option<String>> }`，与请求逐项
+对应：None 表示接受，Some 表示拒绝原因。数量不符或回执损坏不能确认发布结果。
 
 协商压缩流为 `UWGNET01`、总解压长度 u64be，随后重复 u32be frame 长度及 Zstandard frame。
 除最后一块外，各块解压恰好 1 MiB。
@@ -197,6 +212,9 @@ copy/insert 指令。
 
 授权策略和 hook updates 使用位置 codec。Receive audit 每条前有 u32be 长度，单条最大
 4 MiB；渲染有累计限制并拒绝不完整尾。
+当前 audit schema 为 version 3，字段依次为 version、transaction、Unix 毫秒、actor、
+repository、updates、outcome、push options、rejections。
+部分批次的最终记录逐项保存可选拒绝原因，其他阶段用空向量；拒绝旧 audit schema。
 JSON 策略输入和审计输出都是外部接口；mergetool 导出的 manifest.json 同样只是审阅产物。
 
 独立读取器需验证 framing、整数溢出、剩余长度、schema/version、顺序、路径、压缩限制、

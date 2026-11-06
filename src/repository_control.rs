@@ -64,6 +64,6 @@ mod tests {
                 assert!(decode_reference(&bytes, true).is_err());
             }
         }
-        assert_eq!(FORMAT, b"UWGRPO\0\x02");
+        assert_eq!(FORMAT, b"UWGRPO\0\x03");
     }
 }

@@ -31,7 +31,7 @@ fn takes_value(command: &str, option: &str) -> bool {
                 | "--points-at"
         ),
         "tag" => option == "-d",
-        "push" => option == "--force-with-lease",
+        "push" => matches!(option, "--force-with-lease" | "-o" | "--push-option"),
         "for-each-ref" => matches!(
             option,
             "--format" | "--sort" | "--count" | "--exclude" | "--points-at"

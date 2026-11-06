@@ -92,14 +92,14 @@ impl Case {
         let reports = required("UWGIT_UWVM_WORKFLOW_REPORT_DIR");
         assert!(
             root.is_absolute()
-                && root.starts_with("/tmp")
+                && root.starts_with(std::env::temp_dir())
                 && !root
                     .components()
                     .any(|part| part == std::path::Component::ParentDir)
         );
         assert!(
             reports.is_absolute()
-                && reports.starts_with("/tmp")
+                && reports.starts_with(std::env::temp_dir())
                 && !reports
                     .components()
                     .any(|part| part == std::path::Component::ParentDir)

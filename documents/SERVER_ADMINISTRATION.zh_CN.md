@@ -4,9 +4,10 @@
 
 ## 1. 部署模型
 
-`wasm-git-server` 为指定根目录下已有的 uwgit 仓库提供服务，每个仓库是直接子目录。
-名称为 1–128 个 ASCII 字符，以字母或数字开头，其余仅允许字母、数字、`-`、`_`、`.`。
-仓库名不是任意文件系统路径。服务端不执行上传的 Wasm。
+`wasm-git-server` 为指定根目录下已有的 uwgit 仓库提供服务，支持 `team/project`、
+`team/users/fork` 等命名空间。每段为 1–128 个 ASCII 字符，以字母或数字开头，
+其余仅允许字母、数字、`-`、`_`、`.`；总长最多 512 字节、16 段。
+拒绝空段、路径穿越、符号链接和嵌套在另一个仓库内部的仓库。服务端不执行上传的 Wasm。
 
 两端共用对象、审计、图验证、事务和传输实现，构建服务端无需复制源码：
 
@@ -124,6 +125,12 @@ URL 父路径成为服务根，末段为仓库名。客户端通过无伪终端 
 使用 `--read-only` 禁止写入，或使用可信 forced-command 包装器固定 root、二进制策略及
 `--principal NAME`。
 
+层级仓库使用双斜杠明确分隔绝对服务根与仓库路径：
+`ssh://alice@host.example/srv/uwgit//team/project`。
+HTTP 直接使用 `https://wasm.example/team/project`。
+策略中的 `team/*` 匹配该仓库命名空间；principal 和配置 remote 的名称仍为单段。
+镜像推送、`--force`、`+SOURCE:DESTINATION` 同样需要服务端 force 授权，并保留精确旧值 lease。
+
 `UWGIT_REMOTE_PROGRAM` 指定一个远端程序路径，`UWGIT_SSH_PROGRAM` 指定一个本地 SSH
 程序或包装器，均不是任意 shell 命令字符串。SSH 非交互认证并遵守正常主机密钥检查；
 HTTP Bearer 凭据不转发给 SSH 子进程。Forced-command 包装器必须验证或替换客户端请求
@@ -135,22 +142,42 @@ HTTP Bearer 凭据不转发给 SSH 子进程。Forced-command 包装器必须验
 作者信任及可选 pre-receive。引用批次使用共享持久事务机制，客户端用 `push --atomic`
 请求整批全部成功或全部拒绝。
 
+普通多引用推送一次传送协商对象包，服务端验证一次、执行一次 pre-receive，
+再为符合条件的引用运行 update hook。Lease、权限、force 策略与 update hook 的拒绝
+逐项返回；被接受的引用共用一个持久发布决定。Pre-receive 整体失败、对象图损坏或系统错误
+会停止整个请求。两个新建名称发生前缀冲突时两者均拒绝；`--atomic` 下任意一项失败，
+整批均在安装对象前拒绝。
+
+`push --dry-run` 验证权限、lease、对象图闭包和作者信任，不安装对象，不改变引用/upstream，
+不运行 hooks，也不追加接收审计。因此预演通过并不代表 hook 已批准。
+大型预演可能建立有界临时上传记录，但不发布对象。回执损坏或丢失时，整批已发送项均为结果未知，
+重试前必须核对实际引用。
+
 ```sh
 wasm-git-server --root /srv/uwgit --policy policy.bin --allow-write \
   --pre-receive /usr/local/libexec/uwgit-pre-receive \
-  --post-receive /usr/local/libexec/uwgit-post-receive
+  --update /usr/local/libexec/uwgit-update \
+  --post-receive /usr/local/libexec/uwgit-post-receive \
+  --post-update /usr/local/libexec/uwgit-post-update
 wasm-git-server audit-log /srv/uwgit/receive-audit.bin
 ```
 
 Hook 是管理员安装的程序，不执行仓库上传脚本。工作目录为仓库，提供 `UWGIT_ACTOR`、
-`UWGIT_REPOSITORY`、`UWGIT_QUARANTINE_BUNDLE`、`UWGIT_UPDATES_FILE`。
+`UWGIT_REPOSITORY`、`UWGIT_QUARANTINE_BUNDLE`、`UWGIT_UPDATES_FILE`、
+`UWGIT_RECEIVE_TRANSACTION` 和 `UWGIT_HOOK`。
+客户端可重复 `-o VALUE` / `--push-option VALUE`，通过 `UWGIT_PUSH_OPTION_COUNT` 和
+`UWGIT_PUSH_OPTION_0`、`_1` 等传给 hook。值按 UTF-8 原样传递，最多 256 项、合计 64 KiB，
+禁止 NUL/LF；继承的同名前缀环境变量会清除。选项进入二进制请求回执和审计。
 标准输入与 updates 文件均为二进制更新记录，不能按 Git 文本 hook 协议解析。
-Pre-receive 获得隔离 bundle；post-receive 在发布后收到通知，其 bundle 为空。
-直接 hook 进程有 15 秒期限；若可创建后代进程，部署需补充进程隔离。
+Pre-receive 与 update 共用一个私有隔离区，总期限 15 秒。
+Update 的三个参数为完整引用名、旧 ID、新 ID；不存在用 64 个零表示。
+Post-receive 与 post-update 共享另一组 15 秒期限，bundle 为空，更新列表仅含已接受项；
+post-update 的参数为这些完整引用名。若 hook 可创建后代进程，部署需补充进程隔离。
 
 Pre-receive 失败阻止发布；post-receive 失败不会撤销已经接受的更新，另行报告。
-二进制审计记录 principal、仓库、事务、更新及 prepared/accepted/rejected/unknown/
-post-receive-failed 等结果。发布后的完成审计本身也可能写失败，因此需保留 stderr，并查询
+二进制审计记录 principal、仓库、事务、更新、逐项拒绝原因及 prepared/accepted/partial/
+rejected/unknown/post-hook-failed 等结果。Post-receive 失败后仍尝试 post-update。
+发布后的完成审计本身也可能写失败，因此需保留 stderr，并查询
 实际引用核对结果。仅显式渲染审计时输出 JSON。
 
 ## 7. 作者签名策略

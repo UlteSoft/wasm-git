@@ -147,13 +147,13 @@ wasm-git maintenance DIR run --task verify
 
 clean 必须给出 dry-run 或 force。默认遵循 `.gitignore` 与 `.uwgitignore`；`-x` 包括忽略文件，`-X` 仅选择忽略文件，`-e` 额外排除。默认不进入不含受控文件的 untracked 子目录；`-d` 或明确路径可选择它们。受控条目、`.uwgit`/`.git` 元数据、嵌套仓库、符号链接和特殊文件保留。删除前核对整个计划，并在每次删除前重查原字节摘要；中途失败报告已完成的路径。
 
-gc 默认压缩完整对象集，`-n` 只预览；只有 `--prune=now` 且未给 `-n` 时才删除。它保留分支、标签、fetched 分支/标签、reflog、stash base 及注释目标的闭包；存在辅助恢复状态或 linked worktree 注册时采取保守整库保留。先删除不可达子提交，再到父提交、tree 和 blob，每个中断前缀仍有完整剩余对象图。已增加带索引的压缩 pack、有限深度 delta 与共享 fork；采用按历史路径分组的块级 copy/insert delta 和 Zstandard，默认使用全部可用线程；规划、压缩及清理在单次 writer lease 内完成。尚无 reflog 过期或时间型自动 prune。格式、逐字节恢复和失败规则见[压缩存储](packed-storage.md)。
+gc 默认压缩完整对象集，`-n` 只预览；只有 `--prune=now` 且未给 `-n` 时才删除。它保留分支、标签、fetched 分支/标签、reflog、stash base 及注释目标的闭包；存在辅助恢复状态或 linked worktree 注册时采取保守整库保留。先删除不可达子提交，再到父提交、tree 和 blob，每个中断前缀仍有完整剩余对象图。已增加带索引的压缩 pack、有限深度 delta 与共享 fork；采用按历史路径分组的块级 copy/insert delta 和 Zstandard，默认使用全部可用线程；规划、压缩及清理在单次 writer lease 内完成。已增加带时间戳 reflog 的显式过期和 maintenance reflog-expire；时间型对象自动 prune 尚未实现。格式、逐字节恢复和失败规则见[压缩存储](packed-storage.md)。
 
 maintenance 支持 verify 和 gc，未实现的任务明确拒绝。所有维护输出、编译产物及分轮测试结果留在任务目录，不进入源码版本控制。
 
 ## 覆盖范围
 
-上述各入口是明确的原生 Wasm 语义子集。全部 Git 选项和全部 plumbing 尚未完成；detached HEAD、orphan、reflog 序号和共享 pathspec 已补充，见 [HEAD 与路径选择](head-and-pathspec.md)。已增加[索引标志与意向条目](index-flags.md)和[多目标 replay 队列](replay-queue.md)。仍需交互式/保留 merge 拓扑的 rebase、更多 pathspec、任意符号别名及创建/删除、任意命名空间、浅层/完整稀疏操作、签名、pack 与其他底层命令。准确状态持续记录在[命令能力矩阵](git-command-coverage.md)。
+上述各入口是明确的原生 Wasm 语义子集。全部 Git 选项和全部 plumbing 尚未完成；detached HEAD、orphan、reflog 序号和共享 pathspec 已补充，见 [HEAD 与路径选择](head-and-pathspec.md)。已增加[索引标志与意向条目](index-flags.md)和[多目标 replay 队列](replay-queue.md)。仍需交互式/保留 merge 拓扑的 rebase、更多 pathspec、任意符号别名及创建/删除、任意命名空间、完整稀疏操作与其他底层命令；浅历史、作者签名和压缩 pack 已支持。准确状态持续记录在[命令能力矩阵](git-command-coverage.md)。
 
 ## 合并策略
 

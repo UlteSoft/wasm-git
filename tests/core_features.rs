@@ -3,7 +3,7 @@
 //! cannot turn a malformed test input into apparent feature coverage.
 
 use serde_json::Value;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use wasmparser::{Validator, WasmFeatures};
@@ -14,7 +14,7 @@ struct FixtureDirectory(PathBuf);
 
 impl FixtureDirectory {
     fn new(label: &str) -> Self {
-        let directory = Path::new("/tmp").join(format!(
+        let directory = std::env::temp_dir().join(format!(
             "uwgit-core-{label}-{}-{}",
             std::process::id(),
             NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed)

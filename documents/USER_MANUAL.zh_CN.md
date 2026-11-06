@@ -256,6 +256,13 @@ Trace/blame 在预算内报告字节来源候选与 frontier；重复字节不�
 其他查询包括 `rev-list`、`show-ref`、`for-each-ref`、`shortlog`、`range-diff`、`describe`、
 `archive` 和不切换工作区的 `bisect`。它们基于 uwgit 实际对象模型，选项子集请查看帮助。
 
+引用事件包含 UTC Unix 时间戳。`reflog DIR` 保留共享事件视图；
+`reflog DIR show [REF]` 按新到旧显示指定日志，默认 HEAD。`list` 列出有记录的名字，
+`exists REF` 通过退出码 0/1 判断。
+`rev-parse DIR 'HEAD@{2026-11-01T00:00:00Z}'` 返回不晚于指定时刻的最近事件；
+纯数字仍表示序号。日期使用 UTC，也接受 `@UNIX_SECONDS`、`now`、`yesterday` 和
+`7.days.ago` 等数字相对时间。已过期或缺失的证据会明确报错，不猜测。
+
 ## 12. 克隆、拉取、推送与离线交换
 
 ```sh
@@ -277,7 +284,22 @@ HTTP 凭据通过 `UWGIT_REMOTE_TOKEN` 提供，不保存到 remote 配置。
 非 loopback 使用 HTTPS；明文远端需要明确允许。SSH 使用远端服务程序与系统账户策略，
 详见部署手册。
 
-非快进 push 同时需要服务端许可和客户端精确 `--force-with-lease OLD_ID`。
+非快进 push 需要服务端许可，以及显式 `--force-with-lease OLD_ID`、`--force`/`-f`、
+`+SOURCE:DESTINATION` 或 `--mirror`。所有形式仍以远端广告中的精确旧值执行 CAS；
+`--force-with-lease` 还核对调用者给出的旧 ID。
+`push DIR origin main` 推送同名分支，`:topic` 删除引用。
+`--all` 推送全部本地分支，`--tags` 推送本地标签，`--mirror` 同步原生分支/标签集合，
+包括删除和强制替换；仍禁止删除远端 HEAD。`--all -u` 仅在确认后保存 upstream。
+
+多个 refspec 不带 `--atomic` 时一次提交批次并逐项返回结果；`--atomic` 要求任意一项
+失败均阻止整批发布。`--dry-run` 预演服务端验证，不安装对象、不改引用、不运行 hooks，
+因此实际推送仍可能被 hook 拒绝。重复 `-o VALUE` 可传递有界、原样的 push options：
+
+```sh
+wasm-git push ./peer origin main:main topic:review --atomic -o review=ready
+wasm-git push ./peer origin --mirror --dry-run
+```
+
 `--atomic` 请求多引用原子推送，任一项拒绝则不发布整批。
 网络失败结果不明时，应先查询远端引用，再判断是否失败或更换 lease 重试。
 
@@ -331,6 +353,29 @@ wasm-git gc ./history --prune=now
 Dry-run 只生成计划。普通 GC/repack 压缩并保留对象；显式 prune 只移除保留根闭包外对象。
 真正 prune 后，若无其他副本或备份便无法还原。共享基础 pack 和跨 pack delta 不改变对象 ID。
 本地 fork 要求新目标和同文件系统硬链接能力；失败后应先检查目标再决定复用。
+
+Reflog 会保留已离开分支的历史，需先显式清理，再 prune 对象：
+
+```sh
+wasm-git reflog ./history expire --all --expire=90.days.ago --expire-unreachable=30.days.ago -n
+wasm-git reflog ./history expire --all --expire=90.days.ago --expire-unreachable=30.days.ago
+wasm-git gc ./history --prune=now
+```
+
+过期要求严格早于截止点；`all` 忽略年龄，`never` 禁用该条件。
+不可达过期按所选分支/标签 tip 判断，HEAD 则采用当前本地/tracking tips 与 detached
+工作树 HEAD 的集合；old/new 两端均须可达。`--all` 包含已注册工作树的 HEAD 日志，
+`--single-worktree` 限制只处理本工作树的私有 HEAD 日志。
+首次改写前验证所有选中日志；任一已注册工作树存在待恢复的历史操作时禁止修改。
+逐日志原子替换，I/O 失败可能留下明确报告的部分过期，引用和工作文件保持不变。
+已注册工作树必须仍可访问以完成验证。
+
+`--rewrite` 仅重接所选日志的保留链；
+`reflog DIR delete 'main@{1}' --rewrite [-n]` 删除单项但不移动分支。
+`write REF OLD_ID NEW_ID MESSAGE` 追加经过验证的手工记录，要求完整引用名和原生 commit ID，
+不存在用 64 个零表示。
+`maintenance DIR run --task=reflog-expire` 使用 90/30 天策略；默认 maintenance 依次执行
+verify、过期、GC。单独 `gc` 不自动清理 reflog。
 
 ```sh
 wasm-git pool attach ./history https://node-a.example/pool https://node-b.example/pool

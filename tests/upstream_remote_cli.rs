@@ -25,7 +25,7 @@ fn path(value: &Path) -> &str {
 struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
-        let root = Path::new("/tmp").join(format!(
+        let root = std::env::temp_dir().join(format!(
             "uwgit-upstream-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)

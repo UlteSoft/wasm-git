@@ -102,7 +102,7 @@ Tree 对象为 kind 3，tree commit 为 format 2，包含这些对象的 bundle 
 本地 clone、bundle/网络 clone、unbundle、fetch 安装和服务端 receive 共用此规则，
 并保留完整快照中合法的不可达对象与历史。对象安装中断可留下未引用但闭包完整的对象，
 引用在所需对象完整安装前不发布；重试仍可验证已有存储，不需要先删除合法 dangling 对象。
-这不表示多个引用与 reflog 具有跨文件断电事务，最终发布或同步失败仍按实际完成范围报告。
+引用批次通过持久 journal 在再次获取 writer 锁时向前恢复引用和 reflog；最终发布或同步失败仍明确报告不确定结果。
 
 ## 一致性与失败结果
 
@@ -117,11 +117,11 @@ push 绑定 advertised 旧提交或“引用不存在”；服务端在仓库锁
 标签替换需要显式租约及服务端 force 许可，删除也要核对旧引用。
 服务端拒绝删除当前 HEAD 分支。
 
-`push DIR origin --tags` 为逐标签更新，每项单独校验和发布。返回值逐项报告成功、未变化或失败，
-任何失败均非零退出，可能已经发布前面的标签；不声称批量原子性。
+`push DIR origin --tags` 现在通过一次请求发送引用批次和对象包，逐项报告成功、未变化或拒绝；
+任意拒绝均非零退出，被接受的集合通过持久事务发布。`--atomic` 则要求整批全部接受。
 响应丢失时客户端不能据此断言服务端未发布，应重新 fetch/advertise 检查。
 RPC 的 `publication_unknown` 单独标记进入引用发布阶段后的不确定失败；
-客户端不会将这种错误当作已拒绝，批量标签操作会停止后续更新。
+客户端不会将这种错误当作已拒绝；一次请求中全部已发送的引用均保留未知结果，不自动重试。
 磁盘写入失败可能留下合法的未引用对象，引用不会在输入校验或租约检查完成前更新。
 ref 已发布后同步或 reflog 写入失败会明确报告已发布状态。
 
@@ -135,8 +135,8 @@ ref 已发布后同步或 reflog 写入失败会明确报告已发布状态。
 HTTP 仅接受 `POST /v1/uwgit`，关闭每次连接，要求唯一的 `Content-Length`，拒绝
 `Transfer-Encoding`、重复 header、超限 header 及不完整输入。HTTP 请求格式依据
 [RFC 9112](https://www.rfc-editor.org/rfc/rfc9112.html) 的 framing 规则。
-请求中的 repository 指定服务根下的一个受限简单名称，URL 路径不用于拼接任意文件名。
-客户端与服务端共用仓库名称检查，可用 `project.git` 等带点名称，最多 128 个 ASCII 字节；
+请求中的 repository 指定服务根下受限的仓库路径，可用 `team/project.git`。
+每段最多 128 个 ASCII 字节，总长最多 512 字节、16 段；拒绝空段、穿越、符号链接和仓库内部嵌套；
 remote 配置名仍使用独立的 64 字节限制。
 
 HTTP body 与 SSH stdio 使用同一帧：
@@ -151,9 +151,9 @@ HTTP body 与 SSH stdio 使用同一帧：
 
 完整帧最多 64 MiB，帧之后的尾随内容拒绝。
 metadata version 为 1，操作含 advertise、fetch、push、update_ref、fork、refs_page、publish_batch，
-以及 fetch_slice/upload_slice/apply_upload/cancel_upload。
+以及 fetch_slice/upload_slice/apply_upload/cancel_upload、publish_options/check_batch/publish_partial。
 push 的 expected、update_ref 的 expected 和 new 均有显式的二进制 Option 标志；None 分别表示预期引用不存在或明确删除。
-字段截断、非法 opcode/Option 标志和尾随数据会拒绝整个请求；apply_upload 的内层仅接受非递归的 push/update_ref/publish_batch。
+字段截断、非法 opcode/Option 标志和尾随数据会拒绝整个请求；apply_upload 内层使用非递归的发布/预演枚举，确切编号见[二进制格式](../documents/BINARY_FORMAT.zh_CN.md)。
 push/update_ref 只发布明确指定的一条引用，bundle 中其他分支及标签不会被隐式更新。
 HTTP header 最多 16 KiB，连接有总时限，最多同时运行 16 个连接 worker。
 `--max-connections N` 供有限集成测试使用，生产服务默认持续监听。
@@ -297,3 +297,5 @@ loose 基础历史先压成共享 pack，fork 后各自增加私有 pack；GC �
 
 参见 [完整操作说明](server-storage.md)：本地/HTTP/SSH 选择性 clone/fetch、按需对象分片、
 签名信任策略、跨 pack 基底校验、多节点复制、独立 fork pin 与故障回退。
+
+当前层级仓库、四阶段 hooks、push options、部分/原子批次及预演合同见[中英文运维手册](../documents/SERVER_ADMINISTRATION.zh_CN.md)。

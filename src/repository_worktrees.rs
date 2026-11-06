@@ -340,6 +340,7 @@ impl Repository {
             fs::create_dir(metadata.join("tmp")).map_err(|error| error.to_string())?;
             write_new_file(&metadata.join("HEAD"), &encode_reference(branch, false)?)?;
             let head_log = vec![ReflogEntry {
+                unix_seconds: reflog_timestamp()?,
                 sequence: 1,
                 reference: "HEAD".into(),
                 old: None,
@@ -668,4 +669,22 @@ pub(super) fn reference_registry_after(
         return Err("worktree registry exceeds 4 MiB".into());
     }
     Ok(Some(bytes))
+}
+
+pub(super) fn reflog_origins(repo: &Repository) -> RepositoryResult<Vec<Repository>> {
+    let image = registry_image(&repo.common_metadata)?;
+    let records = decode_registry(image.as_deref())?;
+    let mut origins = vec![reference_head_origin(
+        &repo.common_metadata,
+        None,
+        image.as_deref(),
+    )?];
+    for id in records.entries.keys() {
+        origins.push(reference_head_origin(
+            &repo.common_metadata,
+            Some(id),
+            image.as_deref(),
+        )?);
+    }
+    Ok(origins)
 }

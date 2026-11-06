@@ -123,6 +123,7 @@ struct ReferenceChange {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReferencePlan {
+    unix_seconds: u64,
     version: u32,
     message: String,
     before: ReferenceState,
@@ -357,11 +358,12 @@ impl ReferencePlan {
                     upstreams.remove(name);
                 }
             }
-            let sequence = u64::try_from(reflog.len())
-                .ok()
-                .and_then(|n| n.checked_add(1))
+            let sequence = reflog
+                .last()
+                .map_or(Some(1), |entry| entry.sequence.checked_add(1))
                 .ok_or("reflog sequence overflow")?;
             reflog.push(ReflogEntry {
+                unix_seconds: self.unix_seconds,
                 sequence,
                 reference: change.reference.clone(),
                 old: change.old.clone(),
@@ -374,9 +376,9 @@ impl ReferencePlan {
         if let Some(head) = &self.head {
             head.validate_images(&self.before, &after, &self.message)?;
             if head.changed() {
-                let sequence = u64::try_from(reflog.len())
-                    .ok()
-                    .and_then(|n| n.checked_add(1))
+                let sequence = reflog
+                    .last()
+                    .map_or(Some(1), |entry| entry.sequence.checked_add(1))
                     .ok_or("reflog sequence overflow")?;
                 reflog.push(head.event(&self.before, &after, &self.message, sequence));
                 changed = true;
@@ -497,6 +499,7 @@ impl Repository {
         };
         rejections.sort_by(|left, right| left.reference.cmp(&right.reference));
         let plan = ReferencePlan {
+            unix_seconds: reflog_timestamp()?,
             version: if head.is_some() { 2 } else { 1 },
             message: message.into(),
             before: ReferenceState {
@@ -836,6 +839,34 @@ impl Repository {
         updates: &[crate::protocol::RefUpdate],
         before_receive: impl FnOnce(&[u8]) -> RepositoryResult<()>,
     ) -> Result<(), ReceiveError> {
+        self.receive_batch_mode(bytes, updates, true, false, |bundle, _| {
+            before_receive(bundle)?;
+            Ok(vec![None; updates.len()])
+        })
+        .map(|_| ())
+    }
+
+    /// Decode the graph once and keep individual semantic rejections separate
+    /// from corruption or I/O failure. All accepted refs share one durable
+    /// decision; the result remains in the original request order.
+    pub fn receive_batch_selective(
+        &self,
+        bytes: &[u8],
+        updates: &[crate::protocol::RefUpdate],
+        dry_run: bool,
+        check: impl FnOnce(&[u8], &[Option<String>]) -> RepositoryResult<Vec<Option<String>>>,
+    ) -> Result<Vec<Option<String>>, ReceiveError> {
+        self.receive_batch_mode(bytes, updates, false, dry_run, check)
+    }
+
+    fn receive_batch_mode(
+        &self,
+        bytes: &[u8],
+        updates: &[crate::protocol::RefUpdate],
+        atomic: bool,
+        dry_run: bool,
+        before_receive: impl FnOnce(&[u8], &[Option<String>]) -> RepositoryResult<Vec<Option<String>>>,
+    ) -> Result<Vec<Option<String>>, ReceiveError> {
         let mut publishing = false;
         let result = (|| {
             if updates.is_empty() || updates.len() > MAX_REFERENCE_EDITS {
@@ -844,6 +875,7 @@ impl Repository {
             let _index = self.lock_named("index.lock")?;
             let lock = self.lock()?;
             let current = self.snapshot()?;
+            linked_worktrees::has_entries(&self.common_metadata)?;
             let incoming = if bytes.is_empty() {
                 None
             } else {
@@ -861,7 +893,8 @@ impl Repository {
                 check_collisions(&current, &incoming)?;
                 Some(incoming)
             };
-            let mut changes = Vec::new();
+            let mut resolved = Vec::new();
+            let mut reasons = Vec::new();
             let mut names = BTreeSet::new();
             for update in updates {
                 let (namespace, refs) = match update.namespace {
@@ -873,49 +906,107 @@ impl Repository {
                 if !names.insert(reference.clone()) {
                     return Err("duplicate receive reference".into());
                 }
+                for id in update.expected.iter().chain(&update.new) {
+                    require_id(id)?;
+                }
                 let old = refs.get(&update.name);
-                check_expected(old, update.expected.as_deref())?;
+                let mut rejection = check_expected(old, update.expected.as_deref()).err();
                 if namespace == "heads" {
                     if self.branch_unavailable_reason(&update.name)?.is_some() {
-                        return Err("cannot receive into a linked worktree branch".into());
+                        rejection = Some("cannot receive into a linked worktree branch".into());
                     }
                     if update.name == current.manifest.head
                         && (update.new.is_none()
                             || optional_file(&self.metadata.join("index"))?.is_some())
                     {
-                        return Err("cannot delete HEAD or receive into the checked-out branch of a tracked worktree".into());
+                        rejection = Some("cannot delete HEAD or receive into the checked-out branch of a tracked worktree".into());
                     }
                 }
                 if let Some(new) = &update.new {
                     require_id(new)?;
                     let objects = incoming.as_ref().map_or(&current.objects, |s| &s.objects);
                     if !matches!(objects.get(new), Some(Object::Commit(_))) {
-                        return Err(format!("incoming bundle lacks requested commit {new}"));
-                    }
-                    if let Some(old) = old {
+                        rejection = Some(format!("incoming bundle lacks requested commit {new}"));
+                    } else if let Some(old) = old {
                         if !update.force
                             && old != new
                             && (namespace == "tags" || !is_ancestor(old, new, objects)?)
                         {
-                            return Err(format!(
+                            rejection = Some(format!(
                                 "refusing non-fast-forward or tag replacement: {reference}"
                             ));
                         }
                     }
                 } else if old.is_none() {
-                    return Err(format!("cannot delete missing reference {reference}"));
+                    rejection = Some(format!("cannot delete missing reference {reference}"));
                 }
-                changes.push(ReferenceChange {
-                    reference,
-                    old: old.cloned(),
-                    new: update.new.clone(),
+                if atomic {
+                    if let Some(error) = rejection {
+                        return Err(error);
+                    }
+                } else {
+                    reasons.push(rejection);
+                }
+                resolved.push(ResolvedEdit {
+                    change: ReferenceChange {
+                        reference,
+                        old: old.cloned(),
+                        new: update.new.clone(),
+                    },
+                    expected: Some(update.expected.clone()),
+                    requested_new: update.new.clone(),
                 });
             }
+            if atomic {
+                reasons.resize(updates.len(), None);
+            }
+            let conflicts = |reasons: &mut Vec<Option<String>>| -> RepositoryResult<()> {
+                let rejected: Vec<_> = reasons
+                    .iter()
+                    .map(|r| r.as_ref().map(|_| RejectionReason::NameConflict))
+                    .collect();
+                for index in conflicting_creations(&current, &resolved, &rejected)? {
+                    reasons[index] = Some("refname conflict".into());
+                }
+                Ok(())
+            };
+            conflicts(&mut reasons)?;
+            if atomic {
+                if let Some(error) = reasons.iter().flatten().next() {
+                    return Err(error.clone());
+                }
+            }
+            let quarantine = incoming
+                .as_ref()
+                .map(encode_bundle)
+                .transpose()?
+                .unwrap_or_default();
+            let hook_rejections = before_receive(&quarantine, &reasons)?;
+            if hook_rejections.len() != updates.len() {
+                return Err("receive validator returned an invalid result count".into());
+            }
+            for (reason, hook) in reasons.iter_mut().zip(hook_rejections) {
+                if reason.is_none() {
+                    *reason = hook;
+                }
+            }
+            conflicts(&mut reasons)?;
+            if atomic {
+                if let Some(error) = reasons.iter().flatten().next() {
+                    return Err(error.clone());
+                }
+            }
             let plan = ReferencePlan {
+                unix_seconds: reflog_timestamp()?,
                 version: 3,
-                message: "receive-atomic".into(),
+                message: if atomic { "receive-atomic" } else { "receive" }.into(),
                 head: None,
-                changes,
+                changes: resolved
+                    .into_iter()
+                    .zip(&reasons)
+                    .filter(|(_, r)| r.is_none())
+                    .map(|(edit, _)| edit.change)
+                    .collect(),
                 before: ReferenceState {
                     refs: current.manifest.refs.clone(),
                     tags: current.manifest.tags.clone(),
@@ -925,12 +1016,9 @@ impl Repository {
             };
             plan.after()?;
             plan.bytes()?;
-            let quarantine = incoming
-                .as_ref()
-                .map(encode_bundle)
-                .transpose()?
-                .unwrap_or_default();
-            before_receive(&quarantine)?;
+            if dry_run || plan.changes.is_empty() {
+                return Ok(reasons);
+            }
             if let Some(incoming) = &incoming {
                 self.install_snapshot_objects(incoming)?;
             }
@@ -943,9 +1031,25 @@ impl Repository {
                 rejections: Vec::new(),
             }
             .commit()?;
-            Ok(())
+            Ok(reasons)
         })();
         receive_result(result, publishing)
+    }
+
+    /// Validate the exact receive graph and leases, then stop before installing
+    /// objects or writing the reference journal. Validation hooks supplied by
+    /// the caller must be read-only; notification hooks are not run here.
+    pub fn check_receive_batch(
+        &self,
+        bytes: &[u8],
+        updates: &[crate::protocol::RefUpdate],
+        check: impl FnOnce(&[u8]) -> RepositoryResult<()>,
+    ) -> Result<(), ReceiveError> {
+        self.receive_batch_mode(bytes, updates, true, true, |quarantine, _| {
+            check(quarantine)?;
+            Ok(vec![None; updates.len()])
+        })
+        .map(|_| ())
     }
 }
 

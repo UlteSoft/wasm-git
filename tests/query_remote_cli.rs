@@ -20,7 +20,7 @@ static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
-        let path = Path::new("/tmp").join(format!(
+        let path = std::env::temp_dir().join(format!(
             "uwgit-query-remote-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)

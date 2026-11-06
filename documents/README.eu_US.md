@@ -10,6 +10,9 @@ project-specific `.eu_US.md` and `.zh_CN.md` suffix convention.
 
 ## Reading guide
 
+- [Git workflow parity](GIT_PARITY.eu_US.md) — implemented contracts, remaining
+  local/server gaps, and verification boundaries. [中文](GIT_PARITY.zh_CN.md)
+
 - [Technical white paper](WHITEPAPER.eu_US.md) — problem statement, evidence model,
   matching and alignment, custom/debug metadata, storage, distribution, performance,
   threat model, and verification boundaries. [中文](WHITEPAPER.zh_CN.md)

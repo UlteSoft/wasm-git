@@ -5,9 +5,11 @@
 ## 1. Deployment model
 
 `wasm-git-server` serves existing uwgit repositories beneath a configured root.
-Each repository is an immediate child directory. Repository names are 1–128 ASCII
-characters, start with an alphanumeric character, and otherwise allow letters,
-digits, `-`, `_`, and `.`. Repository names are not arbitrary filesystem paths.
+Repositories can use namespaces such as `team/project` or `team/users/fork`.
+Each component is 1–128 ASCII characters, starts with an alphanumeric character,
+and otherwise allows letters, digits, `-`, `_`, and `.`. A repository path is
+limited to 512 bytes and 16 components. Empty components, traversal, symlinks,
+and repositories nested inside another repository are refused.
 The service never executes uploaded Wasm.
 
 The server and client share object, audit, graph, transaction, and transport code.
@@ -125,7 +127,10 @@ Repository and reference rules allow an exact match or a single trailing `*`
 prefix pattern, not a general glob language. Writes are scoped to
 `refs/heads/` and `refs/tags/`; reads are repository-level. Grant `create` only for
 intended server-side fork destinations. Force permission also requires the
-server's `--allow-force` and the client's exact lease. HTTP write enablement is
+server's `--allow-force`. Every update retains an exact lease, including mirror,
+`--force`, and `+SOURCE:DESTINATION` updates. `team/*` scopes an entire repository
+namespace; principals and configured remote names remain single components.
+HTTP write enablement is
 still explicit. A compiled policy and `--token-file` are mutually exclusive.
 
 Treat policy replacement as a controlled configuration rollout. Restart instances
@@ -146,6 +151,11 @@ the system account's filesystem authority. Use `--read-only` to prohibit writes,
 or a trusted forced-command wrapper with a fixed root, compiled policy, and
 `--principal NAME` to constrain a transport identity.
 
+For a namespaced repository, use an explicit double-slash boundary between the
+absolute service root and repository path:
+`ssh://alice@host.example/srv/uwgit//team/project`. HTTP needs no such boundary:
+`https://wasm.example/team/project`.
+
 `UWGIT_REMOTE_PROGRAM` specifies one remote executable path;
 `UWGIT_SSH_PROGRAM` specifies one local SSH executable or wrapper. They are not
 arbitrary shell command strings. SSH uses noninteractive authentication and normal
@@ -161,26 +171,52 @@ policy, author trust requirements, and optional pre-receive approval. Reference
 batches use the shared durable transaction mechanism. `push --atomic` exposes the
 all-or-nothing batch contract to the client.
 
+Ordinary multi-reference pushes send one negotiated object bundle. The service
+validates it once, runs pre-receive once, and checks each eligible reference's
+update hook. Lease, permission, force-policy, and update-hook rejections are
+reported per reference; accepted changes share one durable publication decision.
+A global pre-receive failure, invalid object graph, or system error stops the
+request. Competing newly created prefix names are both rejected. With `--atomic`,
+any reference rejection rejects the entire batch before object installation.
+
+`push --dry-run` validates permissions, leases, graph closure, and author trust
+without installing objects, updating refs/upstreams, running hooks, or appending
+receive audit. Hook approval is therefore not promised by a successful preview.
+Large previews may create bounded temporary upload records; they do not publish
+objects. A corrupt or lost receipt makes every sent update's result unknown.
+Always reconcile refs before retrying.
+
 ```sh
 wasm-git-server --root /srv/uwgit --policy policy.bin --allow-write \
   --pre-receive /usr/local/libexec/uwgit-pre-receive \
-  --post-receive /usr/local/libexec/uwgit-post-receive
+  --update /usr/local/libexec/uwgit-update \
+  --post-receive /usr/local/libexec/uwgit-post-receive \
+  --post-update /usr/local/libexec/uwgit-post-update
 wasm-git-server audit-log /srv/uwgit/receive-audit.bin
 ```
 
 Hooks are administrator-owned executables, not repository-uploaded scripts.
 They run with the repository as their working directory and receive
 `UWGIT_ACTOR`, `UWGIT_REPOSITORY`, `UWGIT_QUARANTINE_BUNDLE`, and
-`UWGIT_UPDATES_FILE`. Standard input contains the same binary update record
+`UWGIT_UPDATES_FILE`, `UWGIT_RECEIVE_TRANSACTION`, and `UWGIT_HOOK`.
+Repeated client `-o VALUE` / `--push-option VALUE` arguments become
+`UWGIT_PUSH_OPTION_COUNT` and `UWGIT_PUSH_OPTION_0`, `_1`, etc. Options are literal
+UTF-8 values: at most 256 and 64 KiB combined, without NUL or LF. Inherited option
+variables are cleared. Options are included in the binary request receipt and audit.
+Standard input contains the same binary update record
 identified by the updates file. Do not parse it as Git's text hook protocol.
-Pre-receive receives a quarantined binary bundle; post-receive is a notification
-with an empty bundle after publication. The direct hook process has a 15-second
-deadline. Deploy your own process isolation if hooks can spawn descendants.
+Pre-receive and update share one private quarantine and a 15-second total budget.
+The update hook receives three arguments: full ref name, old ID, new ID; absence
+uses 64 zeroes. Post-receive and post-update share a separate 15-second budget
+and an empty bundle after publication. Post hooks receive only accepted updates;
+post-update also receives their full ref names as arguments. Deploy your own
+process isolation if hooks can spawn descendants.
 
 A failing pre-receive hook prevents publication. A post-receive failure cannot
 undo an accepted update and is reported separately. The binary audit records
 principal, repository, transaction, updates, and outcomes, including prepared,
-accepted, rejected, unknown, and post-receive failures. A completion-audit write
+accepted, partial, rejected, unknown, per-reference reasons, and post-hook failures.
+Post-update is still attempted when post-receive fails. A completion-audit write
 can itself fail after publication; retain service stderr and query actual refs
 when reconciling outcomes. Audit output is JSON only when explicitly rendered.
 

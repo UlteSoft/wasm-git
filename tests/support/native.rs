@@ -127,6 +127,9 @@ pub fn request_value(bytes: &[u8]) -> Value {
     let op = match request.operation {
         protocol::Operation::Advertise {} => serde_json::json!({"kind":"advertise"}),
         protocol::Operation::Fetch {} => serde_json::json!({"kind":"fetch"}),
+        protocol::Operation::PublishPartial { dry_run } => {
+            serde_json::json!({"kind":"publish_partial","dry_run":dry_run})
+        }
         protocol::Operation::UpdateRef {
             namespace,
             name,

@@ -172,7 +172,7 @@ mod tests {
 
     impl TempDirectory {
         fn new() -> Self {
-            let path = Path::new("/tmp").join(unique_name());
+            let path = std::env::temp_dir().join(unique_name());
             fs::create_dir(&path).unwrap();
             Self(path)
         }

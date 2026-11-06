@@ -178,7 +178,7 @@ NaN 按原始位模式比较；多内存 memarg、bulk init 索引、EH catch �
 ## 原始对象与文件树
 
 仓库对象布局为 `.uwgit/{format,HEAD,refs,objects,tmp}`，另有可选的 tags、reflog、index、stash、config、remotes。
-format 文件为 `UWGRPO\0\x02`。对象、bundle、补丁和状态均采用[二进制格式](binary-format.md)；不兼容旧 JSON 仓库。
+format 文件为 `UWGRPO\0\x03`。对象、bundle、补丁和状态均采用[二进制格式](binary-format.md)；不兼容旧 JSON 仓库。
 HEAD 以带 tag 的二进制记录保存分支名或 detached 提交摘要；`refs/<name>` 保存原始 32 字节摘要及版本头。
 引用名支持层级，不能包含目录穿越路径。
 

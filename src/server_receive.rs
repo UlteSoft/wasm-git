@@ -15,6 +15,8 @@ struct AuditRecord {
     repository: String,
     updates: Vec<RefUpdate>,
     outcome: String,
+    push_options: Vec<String>,
+    rejections: Vec<Option<String>>,
 }
 fn audit(
     settings: &Settings,
@@ -22,9 +24,22 @@ fn audit(
     updates: &[RefUpdate],
     transaction: &str,
     outcome: &str,
+    options: &[String],
+) -> Result<(), String> {
+    audit_with_rejections(settings, repo, updates, transaction, outcome, options, &[])
+}
+
+fn audit_with_rejections(
+    settings: &Settings,
+    repo: &str,
+    updates: &[RefUpdate],
+    transaction: &str,
+    outcome: &str,
+    options: &[String],
+    rejections: &[Option<String>],
 ) -> Result<(), String> {
     let record = AuditRecord {
-        version: 1,
+        version: 3,
         transaction: transaction.into(),
         unix_millis: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -34,6 +49,8 @@ fn audit(
         repository: repo.into(),
         updates: updates.to_vec(),
         outcome: outcome.into(),
+        push_options: options.to_vec(),
+        rejections: rejections.to_vec(),
     };
     let bytes = crate::binary::encode(&record)?;
     if bytes.len() > 4 * 1024 * 1024 {
@@ -90,7 +107,7 @@ pub(super) fn read_audit(path: &Path) -> Result<String, String> {
         let mut bytes = vec![0; length];
         file.read_exact(&mut bytes).map_err(|e| e.to_string())?;
         let record: AuditRecord = crate::binary::decode(&bytes)?;
-        if record.version != 1 {
+        if record.version != 3 {
             return Err("unsupported audit record".into());
         }
         rows.push(record);
@@ -104,53 +121,104 @@ impl Drop for Quarantine {
         let _ = fs::remove_dir_all(&self.0);
     }
 }
+struct HookInput {
+    _quarantine: Quarantine,
+    bundle: PathBuf,
+    updates: PathBuf,
+}
+impl HookInput {
+    fn new(repo: &Repository, updates: &[RefUpdate], bundle: &[u8]) -> Result<Self, String> {
+        let directory = repo.root.join(".uwgit/tmp").join(format!(
+            "receive-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder.create(&directory).map_err(|e| e.to_string())?;
+        let quarantine = Quarantine(directory);
+        let bundle_path = quarantine.0.join("bundle.bin");
+        let updates_path = quarantine.0.join("updates.bin");
+        fs::write(&bundle_path, bundle).map_err(|e| e.to_string())?;
+        fs::write(&updates_path, crate::binary::encode(updates)?).map_err(|e| e.to_string())?;
+        Ok(Self {
+            _quarantine: quarantine,
+            bundle: bundle_path,
+            updates: updates_path,
+        })
+    }
+}
+struct HookContext<'a> {
+    settings: &'a Settings,
+    repo: &'a Repository,
+    input: &'a HookInput,
+    options: &'a [String],
+    transaction: &'a str,
+    deadline: Instant,
+}
+fn reference(update: &RefUpdate) -> String {
+    format!(
+        "refs/{}/{}",
+        if matches!(update.namespace, RefNamespace::Branch) {
+            "heads"
+        } else {
+            "tags"
+        },
+        update.name
+    )
+}
 fn hook(
     path: &Path,
-    settings: &Settings,
-    repo: &Repository,
-    updates: &[RefUpdate],
-    bundle: &[u8],
+    context: &HookContext<'_>,
+    phase: &str,
+    args: &[String],
 ) -> Result<(), String> {
-    let directory = repo.root.join(".uwgit/tmp").join(format!(
-        "receive-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    fs::create_dir(&directory).map_err(|e| e.to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
-            .map_err(|e| e.to_string())?;
+    if Instant::now() >= context.deadline {
+        return Err(format!("{phase} hook exceeded the receive hook deadline"));
     }
-    let quarantine = Quarantine(directory);
-    let bundle_path = quarantine.0.join("bundle.bin");
-    fs::write(&bundle_path, bundle).map_err(|e| e.to_string())?;
-    let updates_path = quarantine.0.join("updates.bin");
-    fs::write(&updates_path, crate::binary::encode(updates)?).map_err(|e| e.to_string())?;
-    let mut child = Command::new(path)
-        .current_dir(&repo.root)
-        .env("UWGIT_ACTOR", &settings.actor)
-        .env("UWGIT_REPOSITORY", &repo.root)
-        .env("UWGIT_QUARANTINE_BUNDLE", &bundle_path)
-        .env("UWGIT_UPDATES_FILE", &updates_path)
+    let mut command = Command::new(path);
+    for (key, _) in std::env::vars_os() {
+        if key
+            .to_str()
+            .is_some_and(|k| k.starts_with("UWGIT_PUSH_OPTION_"))
+        {
+            command.env_remove(key);
+        }
+    }
+    for (index, value) in context.options.iter().enumerate() {
+        command.env(format!("UWGIT_PUSH_OPTION_{index}"), value);
+    }
+    let mut child = command
+        .args(args)
+        .current_dir(&context.repo.root)
+        .env("UWGIT_ACTOR", &context.settings.actor)
+        .env("UWGIT_REPOSITORY", &context.repo.root)
+        .env("UWGIT_QUARANTINE_BUNDLE", &context.input.bundle)
+        .env("UWGIT_UPDATES_FILE", &context.input.updates)
+        .env("UWGIT_PUSH_OPTION_COUNT", context.options.len().to_string())
+        .env("UWGIT_RECEIVE_TRANSACTION", context.transaction)
+        .env("UWGIT_HOOK", phase)
         .stdin(Stdio::from(
-            fs::File::open(&updates_path).map_err(|e| e.to_string())?,
+            fs::File::open(&context.input.updates).map_err(|e| e.to_string())?,
         ))
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
         .spawn()
-        .map_err(|e| format!("start receive hook: {e}"))?;
-    let deadline = Instant::now() + TIMEOUT;
+        .map_err(|e| format!("start {phase} hook: {e}"))?;
+    let deadline = context.deadline;
     loop {
         match child.try_wait().map_err(|e| e.to_string())? {
             Some(status) if status.success() => return Ok(()),
-            Some(status) => return Err(format!("receive hook rejected the update ({status})")),
+            Some(status) => return Err(format!("{phase} hook rejected the update ({status})")),
             None if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
             None => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err("receive hook exceeded 15 second deadline".into());
+                return Err(format!("{phase} hook exceeded 15 second deadline"));
             }
         }
     }
@@ -162,6 +230,7 @@ pub(super) fn publish(
     repo: &Repository,
     bytes: &[u8],
     updates: &[RefUpdate],
+    options: &[String],
 ) -> Result<(), ReceiveError> {
     let transaction = format!(
         "{}-{}-{}",
@@ -172,16 +241,44 @@ pub(super) fn publish(
             .unwrap_or_default()
             .as_nanos()
     );
-    audit(settings, name, updates, &transaction, "prepared").map_err(|message| ReceiveError {
-        message,
-        publication_unknown: false,
+    audit(settings, name, updates, &transaction, "prepared", options).map_err(|message| {
+        ReceiveError {
+            message,
+            publication_unknown: false,
+        }
     })?;
     let result = repo.receive_batch_checked(bytes, updates, |bundle| {
         if let Some(path) = &settings.signed_authors {
             repo.verify_receive_authors(bundle, updates, path)?;
         }
-        if let Some(path) = &settings.pre_receive {
-            hook(path, settings, repo, updates, bundle)?;
+        if settings.pre_receive.is_some() || settings.update_hook.is_some() {
+            let input = HookInput::new(repo, updates, bundle)?;
+            let context = HookContext {
+                settings,
+                repo,
+                input: &input,
+                options,
+                transaction: &transaction,
+                deadline: Instant::now() + TIMEOUT,
+            };
+            if let Some(path) = &settings.pre_receive {
+                hook(path, &context, "pre-receive", &[])?;
+            }
+            if let Some(path) = &settings.update_hook {
+                let zero = "0".repeat(64);
+                for update in updates {
+                    hook(
+                        path,
+                        &context,
+                        "update",
+                        &[
+                            reference(update),
+                            update.expected.as_ref().unwrap_or(&zero).clone(),
+                            update.new.as_ref().unwrap_or(&zero).clone(),
+                        ],
+                    )?;
+                }
+            }
         }
         Ok(())
     });
@@ -190,17 +287,186 @@ pub(super) fn publish(
         Err(e) if e.publication_unknown => "unknown",
         Err(_) => "rejected",
     };
-    if let Err(error) = audit(settings, name, updates, &transaction, outcome) {
+    if let Err(error) = audit(settings, name, updates, &transaction, outcome, options) {
         eprintln!("receive {transaction} {outcome}; audit completion failed: {error}");
     }
     if result.is_ok() {
-        if let Some(path) = &settings.post_receive {
-            // Notification cannot turn an already published transaction into a
-            // rejection. Its failure is visible in stderr and a durable event.
-            if let Err(error) = hook(path, settings, repo, updates, &[]) {
-                eprintln!("published receive {transaction}; post-receive hook failed: {error}");
-                let _ = audit(settings, name, updates, &transaction, "post-receive-failed");
+        notify_received(settings, name, repo, updates, options, &transaction);
+    }
+    result
+}
+
+fn notify_received(
+    settings: &Settings,
+    name: &str,
+    repo: &Repository,
+    updates: &[RefUpdate],
+    options: &[String],
+    transaction: &str,
+) {
+    if !updates.is_empty() && (settings.post_receive.is_some() || settings.post_update.is_some()) {
+        // Notification failures cannot revoke an acknowledged publication.
+        let input = HookInput::new(repo, updates, &[]);
+        let deadline = Instant::now() + TIMEOUT;
+        for (phase, path) in [
+            ("post-receive", &settings.post_receive),
+            ("post-update", &settings.post_update),
+        ] {
+            if let Some(path) = path {
+                let outcome = match &input {
+                    Ok(input) => {
+                        let context = HookContext {
+                            settings,
+                            repo,
+                            input,
+                            options,
+                            transaction,
+                            deadline,
+                        };
+                        let args = if phase == "post-update" {
+                            updates.iter().map(reference).collect()
+                        } else {
+                            Vec::new()
+                        };
+                        hook(path, &context, phase, &args)
+                    }
+                    Err(error) => Err(error.clone()),
+                };
+                if let Err(error) = outcome {
+                    eprintln!("published receive {transaction}; {phase} hook failed: {error}");
+                    let _ = audit(
+                        settings,
+                        name,
+                        updates,
+                        transaction,
+                        &format!("{phase}-failed"),
+                        options,
+                    );
+                }
             }
+        }
+    }
+}
+
+pub(super) fn publish_selective(
+    settings: &Settings,
+    name: &str,
+    repo: &Repository,
+    batch: &protocol::BatchPublication,
+    options: &[String],
+    dry_run: bool,
+) -> Result<Vec<Option<String>>, ReceiveError> {
+    let transaction = format!(
+        "receive-{}-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+    let updates = &batch.updates;
+    if !dry_run {
+        audit(settings, name, updates, &transaction, "prepared", options).map_err(|message| {
+            ReceiveError {
+                message,
+                publication_unknown: false,
+            }
+        })?;
+    }
+    let result =
+        repo.receive_batch_selective(&batch.bundle, updates, dry_run, |bundle, reasons| {
+            let mut rejections = reasons.to_vec();
+            for (update, rejection) in updates.iter().zip(&mut rejections) {
+                if rejection.is_none() {
+                    *rejection = authorize(
+                        settings,
+                        name,
+                        &Operation::UpdateRef {
+                            namespace: update.namespace.clone(),
+                            name: update.name.clone(),
+                            expected: update.expected.clone(),
+                            new: update.new.clone(),
+                            force: update.force,
+                        },
+                        &[],
+                    )
+                    .err();
+                }
+            }
+            if let Some(path) = &settings.signed_authors {
+                let candidates: Vec<_> = updates
+                    .iter()
+                    .zip(&rejections)
+                    .filter(|(_, r)| r.is_none())
+                    .map(|(u, _)| u.clone())
+                    .collect();
+                if !candidates.is_empty() {
+                    repo.verify_receive_authors(bundle, &candidates, path)?;
+                }
+            }
+            if !dry_run && (settings.pre_receive.is_some() || settings.update_hook.is_some()) {
+                let input = HookInput::new(repo, updates, bundle)?;
+                let context = HookContext {
+                    settings,
+                    repo,
+                    input: &input,
+                    options,
+                    transaction: &transaction,
+                    deadline: Instant::now() + TIMEOUT,
+                };
+                if let Some(path) = &settings.pre_receive {
+                    hook(path, &context, "pre-receive", &[])?;
+                }
+                if let Some(path) = &settings.update_hook {
+                    let zero = "0".repeat(64);
+                    for (update, rejection) in updates.iter().zip(&mut rejections) {
+                        if rejection.is_none() {
+                            *rejection = hook(
+                                path,
+                                &context,
+                                "update",
+                                &[
+                                    reference(update),
+                                    update.expected.as_ref().unwrap_or(&zero).clone(),
+                                    update.new.as_ref().unwrap_or(&zero).clone(),
+                                ],
+                            )
+                            .err();
+                        }
+                    }
+                }
+            }
+            Ok(rejections)
+        });
+    if !dry_run {
+        let outcome = match &result {
+            Ok(reasons) if reasons.iter().all(Option::is_none) => "accepted",
+            Ok(reasons) if reasons.iter().all(Option::is_some) => "rejected",
+            Ok(_) => "partial",
+            Err(e) if e.publication_unknown => "unknown",
+            Err(_) => "rejected",
+        };
+        let reasons = result.as_ref().map_or(&[][..], |r| r.as_slice());
+        if let Err(error) = audit_with_rejections(
+            settings,
+            name,
+            updates,
+            &transaction,
+            outcome,
+            options,
+            reasons,
+        ) {
+            eprintln!("receive {transaction} {outcome}; audit completion failed: {error}");
+        }
+        if let Ok(reasons) = &result {
+            let accepted: Vec<_> = updates
+                .iter()
+                .zip(reasons)
+                .filter(|(_, r)| r.is_none())
+                .map(|(u, _)| u.clone())
+                .collect();
+            notify_received(settings, name, repo, &accepted, options, &transaction);
         }
     }
     result
@@ -231,7 +497,9 @@ pub(super) fn fork(
             &[],
             &transaction,
             &format!("fork-prepared:{destination}"),
+            &[],
         )?;
+        let parent = repository_parent(settings, destination, true)?;
         if target.try_exists().map_err(|e| e.to_string())? {
             return Err("fork destination already exists".into());
         }
@@ -249,7 +517,7 @@ pub(super) fn fork(
             return Err(error.to_string());
         }
         published = true;
-        fs::File::open(&settings.root)
+        fs::File::open(&parent)
             .and_then(|f| f.sync_all())
             .map_err(|e| e.to_string())?;
         Ok(())
@@ -267,6 +535,7 @@ pub(super) fn fork(
         &[],
         &transaction,
         &format!("{outcome}:{destination}"),
+        &[],
     ) {
         eprintln!("fork audit: {error}");
     }

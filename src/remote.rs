@@ -21,7 +21,7 @@ const MAX_TRANSFER: usize = protocol::MAX_PACKET_BYTES;
 const MAX_CONFIG: u64 = 1024 * 1024;
 const MAX_TRACKING: u64 = 64 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(35);
-const USAGE: &str = "selective clone/fetch: --depth N, --deepen N, --unshallow, --branch NAME, --filter all|blob:none|blob:limit=N|path:PATH; clone-status DIR; hydrate DIR; promisor DIR SOURCE...; remote <DIR> [add <NAME> <URL>|remove <NAME>|rename <OLD> <NEW>|-v|show <NAME>]; fetch <DIR> [REMOTE]; push <DIR> [REMOTE] [SOURCE:DESTINATION] [-u|--set-upstream] [--force-with-lease <OLD_ID|absent>]; push <DIR> [REMOTE] --tags [--atomic]; push <DIR> REMOTE SOURCE:DESTINATION [SOURCE:DESTINATION ...] --atomic; push <DIR> [REMOTE] --delete <BRANCH|refs/tags/TAG> [--force-with-lease <OLD_ID>]; pull <DIR> [REMOTE] [BRANCH] [--ff-only] [-m <MESSAGE>] (message required unless --ff-only); clone <URL> <NEW_DIR>; HTTP URLs are http(s)://HOST/REPOSITORY; SSH URLs are ssh://USER@HOST/ABSOLUTE/ROOT/REPOSITORY; --allow-insecure-http explicitly permits non-loopback cleartext HTTP";
+const USAGE: &str = "selective clone/fetch: --depth N, --deepen N, --unshallow, --branch NAME, --filter all|blob:none|blob:limit=N|path:PATH; clone-status DIR; hydrate DIR; promisor DIR SOURCE...; remote <DIR> [add <NAME> <URL>|remove <NAME>|rename <OLD> <NEW>|-v|show <NAME>]; fetch <DIR> [REMOTE]; push <DIR> [REMOTE] [SOURCE:DESTINATION] [-u|--set-upstream] [--force-with-lease <OLD_ID|absent>]; push <DIR> [REMOTE] --tags|--all|--mirror [--atomic]; push supports --dry-run, --force/-f, +SOURCE:DESTINATION, and -o/--push-option VALUE; push <DIR> REMOTE SOURCE:DESTINATION [SOURCE:DESTINATION ...] [--atomic]; push <DIR> [REMOTE] --delete <BRANCH|refs/tags/TAG> [--force-with-lease <OLD_ID>]; pull <DIR> [REMOTE] [BRANCH] [--ff-only] [-m <MESSAGE>] (message required unless --ff-only); clone <URL> <NEW_DIR>; HTTP URLs are http(s)://HOST/REPOSITORY; SSH URLs are ssh://USER@HOST/ABSOLUTE/ROOT/REPOSITORY; --allow-insecure-http explicitly permits non-loopback cleartext HTTP";
 const LS_REMOTE_USAGE: &str = "ls-remote URL [PATTERN...] [--heads|--branches] [--tags] [--symref] [--refs] [--exit-code] [--json] [--allow-insecure-http]; ls-remote DIR [REMOTE [PATTERN...]] [OPTIONS]. DIR alone reads the existing origin configuration. Patterns match full refs or slash-delimited tails with * and ?; [] and backslash escapes are unsupported. -- ends options. Only HTTP(S) and SSH advertisements are queried; no objects are downloaded or verified, and no local repository metadata is written. --refs suppresses HEAD and its symbolic target. --exit-code returns 2 when no matching object-ID reference is advertised, including an unborn HEAD even if --symref prints its target.";
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -205,7 +205,8 @@ fn parse_url(value: &str) -> RepositoryResult<Endpoint> {
         "ssh" => {
             let (host, port, _) = authority(authority_text, true)?;
             let (root, repository) = path
-                .rsplit_once('/')
+                .split_once("//")
+                .or_else(|| path.rsplit_once('/'))
                 .ok_or("SSH URL needs an absolute server root and repository")?;
             protocol::repository_name(repository)?;
             if root
@@ -675,7 +676,7 @@ fn secret_header() -> RepositoryResult<Option<SecretHeader>> {
     if token.is_empty() || token.len() > 4096 || token.bytes().any(|b| !(33..=126).contains(&b)) {
         return Err("remote token must be 1..4096 printable ASCII bytes without whitespace".into());
     }
-    let path = PathBuf::from("/tmp").join(unique("uwgit-http-header"));
+    let path = std::env::temp_dir().join(unique("uwgit-http-header"));
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -818,7 +819,12 @@ fn exchange(
     if payload.len() > MAX_TRANSFER / 2
         && matches!(
             &operation,
-            Operation::Push { .. } | Operation::UpdateRef { .. } | Operation::PublishBatch {}
+            Operation::Push { .. }
+                | Operation::UpdateRef { .. }
+                | Operation::PublishBatch {}
+                | Operation::PublishOptions {}
+                | Operation::CheckBatch {}
+                | Operation::PublishPartial { .. }
         )
     {
         if payload.len() as u64 > protocol::MAX_BUNDLE_BYTES {
@@ -853,9 +859,10 @@ fn exchange(
         Operation::Push { .. }
             | Operation::UpdateRef { .. }
             | Operation::PublishBatch {}
-            | Operation::ApplyUpload { .. }
+            | Operation::PublishOptions {}
+            | Operation::PublishPartial { dry_run: false }
             | Operation::Fork { .. }
-    );
+    ) || matches!(&operation, Operation::ApplyUpload { operation, .. } if !matches!(**operation, Operation::CheckBatch {} | Operation::PublishPartial { dry_run: true }));
     let uncertain = |error: String| {
         if publishes {
             format!("remote publication outcome is unknown: {error}; inspect the remote before retrying")
@@ -1249,6 +1256,13 @@ fn lease(value: &str) -> RepositoryResult<Option<String>> {
     Ok(Some(value.to_owned()))
 }
 
+#[derive(Clone, Copy)]
+struct PushMode {
+    atomic: bool,
+    dry_run: bool,
+    allow_http: bool,
+}
+
 struct RefChange<'a> {
     namespace: RefNamespace,
     reference: &'a str,
@@ -1262,7 +1276,8 @@ fn update_ref(
     remote: &Remote,
     change: RefChange<'_>,
     have: &[String],
-    allow_http: bool,
+    options: &[String],
+    mode: PushMode,
 ) -> RepositoryResult<()> {
     let RefChange {
         namespace,
@@ -1276,6 +1291,23 @@ fn update_ref(
     } else {
         Vec::new()
     };
+    if !options.is_empty() || mode.dry_run {
+        return send_publication(
+            remote,
+            protocol::BatchPublication {
+                updates: vec![protocol::RefUpdate {
+                    namespace,
+                    name: reference.into(),
+                    expected,
+                    new: new.map(str::to_owned),
+                    force,
+                }],
+                bundle,
+            },
+            options,
+            mode,
+        );
+    }
     let operation = if matches!(namespace, RefNamespace::Branch) && new.is_some() {
         // The original branch operation remains wire-compatible.
         Operation::Push {
@@ -1292,7 +1324,7 @@ fn update_ref(
             force,
         }
     };
-    let (response, payload) = exchange(remote, operation, &bundle, allow_http)?;
+    let (response, payload) = exchange(remote, operation, &bundle, mode.allow_http)?;
     if !payload.is_empty() || response.tip.as_deref() != new {
         return Err("remote acknowledgement does not match the requested exact ref update; publication outcome is unknown, inspect the remote before retrying".into());
     }
@@ -1304,7 +1336,8 @@ fn publish_atomic(
     remote: &Remote,
     updates: Vec<protocol::RefUpdate>,
     state: &RepositoryState,
-    allow_http: bool,
+    options: &[String],
+    mode: PushMode,
 ) -> RepositoryResult<()> {
     if updates.is_empty() {
         return Ok(());
@@ -1326,27 +1359,234 @@ fn publish_atomic(
     } else {
         repo.network_bundle(&wants, &have)?.1
     };
-    let payload = crate::binary::encode(&protocol::BatchPublication { updates, bundle })?;
+    send_publication(
+        remote,
+        protocol::BatchPublication { updates, bundle },
+        options,
+        mode,
+    )
+}
+
+fn send_publication(
+    remote: &Remote,
+    publication: protocol::BatchPublication,
+    options: &[String],
+    mode: PushMode,
+) -> RepositoryResult<()> {
+    protocol::validate_push_options(options)?;
+    let (operation, payload) = if mode.dry_run {
+        (
+            Operation::CheckBatch {},
+            crate::binary::encode(&protocol::OptionsPublication {
+                publication,
+                options: options.to_vec(),
+            })?,
+        )
+    } else if options.is_empty() {
+        (
+            Operation::PublishBatch {},
+            crate::binary::encode(&publication)?,
+        )
+    } else {
+        (
+            Operation::PublishOptions {},
+            crate::binary::encode(&protocol::OptionsPublication {
+                publication,
+                options: options.to_vec(),
+            })?,
+        )
+    };
     let expected = format!("{:x}", sha2::Sha256::digest(&payload));
-    let (response, bytes) = exchange(remote, Operation::PublishBatch {}, &payload, allow_http)?;
+    let (response, bytes) = exchange(remote, operation, &payload, mode.allow_http)?;
     if !bytes.is_empty() || response.tip.as_deref() != Some(&expected) {
+        if mode.dry_run {
+            return Err(
+                "dry-run validation receipt does not match the requested transaction".into(),
+            );
+        }
         return Err("atomic publication outcome is unknown: receipt does not match the requested transaction".into());
     }
     Ok(())
 }
 
+fn publish_selection(
+    repo: &Repository,
+    remote: &Remote,
+    updates: Vec<protocol::RefUpdate>,
+    state: &RepositoryState,
+    options: &[String],
+    mode: PushMode,
+) -> RepositoryResult<(serde_json::Value, Vec<protocol::RefUpdate>)> {
+    let mut names = BTreeSet::new();
+    for update in &updates {
+        let namespace = if matches!(update.namespace, RefNamespace::Branch) {
+            "heads"
+        } else {
+            "tags"
+        };
+        if !names.insert(format!("refs/{namespace}/{}", update.name)) {
+            return Err("duplicate push destination".into());
+        }
+    }
+    if mode.atomic {
+        let changed: Vec<_> = updates
+            .iter()
+            .filter(|u| u.expected != u.new)
+            .cloned()
+            .collect();
+        publish_atomic(repo, remote, changed.clone(), state, options, mode)?;
+        return Ok((
+            serde_json::json!({"remote":remote.name,"status":if mode.dry_run {"dry_run"} else {"pushed"},"atomic":true,"updates":changed}),
+            updates,
+        ));
+    }
+    let changed: Vec<_> = updates
+        .iter()
+        .filter(|u| u.expected != u.new)
+        .cloned()
+        .collect();
+    let mut result = Vec::new();
+    if !changed.is_empty() {
+        let wants: Vec<_> = changed
+            .iter()
+            .filter_map(|u| u.new.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let have: Vec<_> = state
+            .branches
+            .values()
+            .chain(state.tags.values())
+            .cloned()
+            .collect();
+        let bundle = if wants.is_empty() {
+            Vec::new()
+        } else {
+            repo.network_bundle(&wants, &have)?.1
+        };
+        let payload = crate::binary::encode(&protocol::OptionsPublication {
+            publication: protocol::BatchPublication {
+                updates: changed.clone(),
+                bundle,
+            },
+            options: options.to_vec(),
+        })?;
+        let expected = format!("{:x}", sha2::Sha256::digest(&payload));
+        let receipt = exchange(remote, Operation::PublishPartial { dry_run: mode.dry_run }, &payload, mode.allow_http).and_then(|(response, bytes)| {
+            let receipt = crate::binary::decode::<protocol::PartialReceipt>(&bytes);
+            if response.tip.as_deref() != Some(&expected) || !receipt.as_ref().is_ok_and(|r| r.rejections.len() == changed.len()) {
+                return Err(if mode.dry_run { "invalid dry-run validation receipt" } else { "remote publication outcome is unknown: invalid per-reference receipt; inspect the remote before retrying" }.into());
+            }
+            receipt
+        });
+        match receipt {
+            Ok(receipt) => result = receipt.rejections,
+            Err(error) => {
+                if mode.dry_run {
+                    return Err(error);
+                }
+                let status = if error.starts_with("remote rejected request:") {
+                    "rejected"
+                } else {
+                    "unknown"
+                };
+                let rows: Vec<_> = updates.iter().map(|u| serde_json::json!({
+                    "namespace":if matches!(u.namespace, RefNamespace::Branch){"branch"}else{"tag"},
+                    "name":u.name,"tip":u.new,"status":if u.expected == u.new {"up_to_date"}else{status},"error":error,
+                })).collect();
+                return Ok((
+                    serde_json::json!({"remote":remote.name,"status":status,"atomic":false,"updates":rows}),
+                    Vec::new(),
+                ));
+            }
+        }
+    }
+    let mut reasons = result.into_iter();
+    let mut rows = Vec::new();
+    let mut confirmed = Vec::new();
+    let mut failures = 0;
+    for update in updates {
+        let unchanged = update.expected == update.new;
+        let reason = if unchanged {
+            None
+        } else {
+            reasons.next().ok_or("missing per-reference result")?
+        };
+        let status = if reason.is_some() {
+            "rejected"
+        } else if unchanged {
+            "up_to_date"
+        } else if mode.dry_run {
+            "dry_run"
+        } else if update.new.is_some() {
+            "pushed"
+        } else {
+            "deleted"
+        };
+        let namespace = if matches!(update.namespace, RefNamespace::Branch) {
+            "branch"
+        } else {
+            "tag"
+        };
+        rows.push(serde_json::json!({"namespace":namespace,"name":update.name,"tip":update.new,"status":status,"error":reason}));
+        if reason.is_some() {
+            failures += 1;
+        } else {
+            confirmed.push(update);
+        }
+    }
+    let status = if failures == 0 {
+        if mode.dry_run {
+            "dry_run"
+        } else {
+            "pushed"
+        }
+    } else if failures == rows.len() {
+        "rejected"
+    } else {
+        "partial"
+    };
+    Ok((
+        serde_json::json!({"remote":remote.name,"status":status,"atomic":false,"updates":rows}),
+        confirmed,
+    ))
+}
+
 fn push_command(root: &str, args: &[&str], allow_http: bool) -> RepositoryResult<String> {
     let mut positional = Vec::new();
     let mut tags = false;
+    let mut all = false;
+    let mut mirror = false;
     let mut atomic = false;
+    let mut dry_run = false;
+    let mut force = false;
     let mut delete = false;
     let mut set_upstream = false;
     let mut explicit_lease = None;
+    let mut push_options = Vec::new();
     let mut index = 0;
     while index < args.len() {
         match args[index] {
+            "-o" | "--push-option" => {
+                index += 1;
+                push_options.push(
+                    args.get(index)
+                        .ok_or("missing push option value")?
+                        .to_string(),
+                );
+            }
+            option if option.starts_with("--push-option=") => {
+                push_options.push(option[14..].into())
+            }
+            option if option.starts_with("-o") && option.len() > 2 => {
+                push_options.push(option[2..].into())
+            }
             "--tags" if !tags => tags = true,
+            "--all" if !all => all = true,
+            "--mirror" if !mirror => mirror = true,
             "--atomic" if !atomic => atomic = true,
+            "--dry-run" | "-n" if !dry_run => dry_run = true,
+            "--force" | "-f" if !force => force = true,
             "--delete" if !delete => delete = true,
             "-u" | "--set-upstream" if !set_upstream => set_upstream = true,
             "--force-with-lease" if explicit_lease.is_none() => {
@@ -1360,10 +1600,17 @@ fn push_command(root: &str, args: &[&str], allow_http: bool) -> RepositoryResult
         }
         index += 1;
     }
-    if (positional.len() > 2 && (!atomic || set_upstream || explicit_lease.is_some()))
-        || (tags && (delete || explicit_lease.is_some() || positional.len() > 1))
+    protocol::validate_push_options(&push_options)?;
+    let mode = PushMode {
+        atomic,
+        dry_run,
+        allow_http,
+    };
+    if (positional.len() > 2 && (set_upstream || explicit_lease.is_some()))
+        || ([tags, all, mirror].into_iter().filter(|v| *v).count() > 1)
+        || ((tags || all || mirror) && (delete || explicit_lease.is_some() || positional.len() > 1))
         || (delete && positional.is_empty())
-        || (set_upstream && (tags || delete))
+        || (set_upstream && (tags || mirror || delete))
     {
         return Err(USAGE.into());
     }
@@ -1385,17 +1632,33 @@ fn push_command(root: &str, args: &[&str], allow_http: bool) -> RepositoryResult
         (local, upstreams, remote)
     };
     let mut binding_source = None;
-    let planned = if tags {
+    let planned = if tags || all || mirror || positional.len() > 2 {
         None
     } else if delete {
         let (namespace, reference) = reference(specification.ok_or(USAGE)?)?;
         Some((namespace, reference.to_owned(), None))
     } else if let Some(specification) = specification {
-        let (source, destination) = specification
-            .split_once(':')
-            .ok_or("push refspec must be SOURCE:DESTINATION")?;
+        let specification = if let Some(specification) = specification.strip_prefix('+') {
+            force = true;
+            specification
+        } else {
+            specification
+        };
+        let (source, destination) = specification.split_once(':').unwrap_or((
+            specification,
+            if specification == "HEAD" {
+                &local.head
+            } else {
+                specification
+            },
+        ));
         let (namespace, reference) = reference(destination)?;
-        let tip = if set_upstream {
+        let tip = if source.is_empty() {
+            if set_upstream {
+                return Err("cannot set upstream for a deletion".into());
+            }
+            None
+        } else if set_upstream {
             if !matches!(namespace, RefNamespace::Branch) {
                 return Err("push --set-upstream requires a branch destination".into());
             }
@@ -1415,11 +1678,11 @@ fn push_command(root: &str, args: &[&str], allow_http: bool) -> RepositoryResult
                 tip.clone(),
                 upstreams.get(branch).cloned(),
             ));
-            tip
+            Some(tip)
         } else {
-            repo.resolve(source)?
+            Some(repo.resolve(source)?)
         };
-        Some((namespace, reference.to_owned(), Some(tip)))
+        Some((namespace, reference.to_owned(), tip))
     } else {
         if local.detached() {
             return Err("detached HEAD push requires an explicit SOURCE:DESTINATION".into());
@@ -1451,110 +1714,103 @@ fn push_command(root: &str, args: &[&str], allow_http: bool) -> RepositoryResult
         .state
         .ok_or("advertisement lacks repository state")?;
     validate_state(&state)?;
-    if atomic && (tags || positional.len() > 2) {
+    if tags || all || mirror || positional.len() > 2 {
         let mut updates = Vec::new();
-        if tags {
-            for (name, new) in &local.tags {
-                let old = state.tags.get(name).cloned();
-                if old.as_ref() != Some(new) {
+        if tags || all || mirror {
+            for (namespace, local_refs, remote_refs, selected) in [
+                (
+                    RefNamespace::Branch,
+                    &local.branches,
+                    &state.branches,
+                    all || mirror,
+                ),
+                (RefNamespace::Tag, &local.tags, &state.tags, tags || mirror),
+            ] {
+                if !selected {
+                    continue;
+                }
+                for (name, new) in local_refs {
                     updates.push(protocol::RefUpdate {
-                        namespace: RefNamespace::Tag,
+                        namespace: namespace.clone(),
                         name: name.clone(),
-                        expected: old,
+                        expected: remote_refs.get(name).cloned(),
                         new: Some(new.clone()),
-                        force: false,
+                        force: mirror || force,
                     });
+                }
+                if mirror {
+                    for (name, old) in remote_refs {
+                        if !local_refs.contains_key(name) {
+                            updates.push(protocol::RefUpdate {
+                                namespace: namespace.clone(),
+                                name: name.clone(),
+                                expected: Some(old.clone()),
+                                new: None,
+                                force: false,
+                            });
+                        }
+                    }
                 }
             }
         } else {
             for spec in &positional[1..] {
+                let (spec, forced) = spec.strip_prefix('+').map_or((*spec, force), |s| (s, true));
                 let (namespace, name, new) = if delete {
                     let (ns, name) = reference(spec)?;
                     (ns, name, None)
                 } else {
                     let (source, dest) = spec
                         .split_once(':')
-                        .ok_or("atomic refspec requires SOURCE:DESTINATION")?;
+                        .unwrap_or((spec, if spec == "HEAD" { &local.head } else { spec }));
                     let (ns, name) = reference(dest)?;
-                    (ns, name, Some(repo.resolve(source)?))
+                    (
+                        ns,
+                        name,
+                        if source.is_empty() {
+                            None
+                        } else {
+                            Some(repo.resolve(source)?)
+                        },
+                    )
                 };
-                let old = remote_tip(&state, &namespace, name);
                 updates.push(protocol::RefUpdate {
+                    expected: remote_tip(&state, &namespace, name),
                     namespace,
                     name: name.into(),
-                    expected: old,
+                    force: forced && new.is_some(),
                     new,
-                    force: false,
                 });
             }
         }
-        publish_atomic(&repo, &remote, updates.clone(), &state, allow_http)?;
-        return pretty(
-            &serde_json::json!({"remote":remote.name,"status":"pushed","atomic":true,"updates":updates}),
-        );
-    }
-    if tags {
-        let mut updates = Vec::new();
-        let mut failures = 0usize;
-        let mut uncertain = false;
-        for (tag, id) in &local.tags {
-            if uncertain {
-                failures += 1;
-                updates.push(serde_json::json!({"namespace":"tag","name":tag,"tip":id,"status":"not_attempted","error":"an earlier publication outcome is unknown; inspect the remote before retrying"}));
-                continue;
+        let (mut report, confirmed) =
+            publish_selection(&repo, &remote, updates, &state, &push_options, mode)?;
+        if set_upstream && !dry_run {
+            let _lock = config_lock(&repo)?;
+            if load(&repo, &remote.name)? != remote {
+                return Err("remote refs were acknowledged; remote configuration changed before saving upstreams".into());
             }
-            let old = state.tags.get(tag).cloned();
-            if old.as_deref() == Some(id.as_str()) {
-                updates.push(serde_json::json!({"namespace":"tag","name":tag,"tip":id,"status":"up_to_date"}));
-                continue;
-            }
-            match update_ref(
-                &repo,
-                &remote,
-                RefChange {
-                    namespace: RefNamespace::Tag,
-                    reference: tag,
-                    expected: old,
-                    new: Some(id),
-                    force: false,
-                },
-                &state
-                    .branches
-                    .values()
-                    .chain(state.tags.values())
-                    .cloned()
-                    .collect::<Vec<_>>(),
-                allow_http,
-            ) {
-                Ok(()) => updates.push(
-                    serde_json::json!({"namespace":"tag","name":tag,"tip":id,"status":"pushed"}),
-                ),
-                Err(error) => {
-                    failures += 1;
-                    let status = if error.starts_with("remote rejected request:") {
-                        "rejected"
-                    } else {
-                        uncertain = true;
-                        "unknown"
-                    };
-                    updates.push(serde_json::json!({"namespace":"tag","name":tag,"tip":id,"status":status,"error":error}));
+            for update in confirmed {
+                if let Some(tip) = &update.new {
+                    repo.set_upstream_checked(
+                        &update.name,
+                        &remote.name,
+                        &update.name,
+                        tip,
+                        upstreams.get(&update.name),
+                    )
+                    .map_err(|error| {
+                        format!(
+                            "remote refs were acknowledged; local upstream update failed: {error}"
+                        )
+                    })?;
                 }
             }
+            report["upstream_configured"] = true.into();
         }
-        let status = if uncertain {
-            "unknown"
-        } else if failures == 0 {
-            "pushed"
-        } else if failures == updates.len() {
-            "rejected"
-        } else {
-            "partial"
-        };
-        return pretty(
-            &serde_json::json!({"remote":remote.name,"status":status,"atomic":false,"updates":updates}),
-        );
+        return pretty(&report);
     }
     let (namespace, reference, source) = planned.ok_or("missing push update")?;
+    let delete = source.is_none();
     let actual = remote_tip(&state, &namespace, &reference);
     let expected = explicit_lease.clone().unwrap_or_else(|| actual.clone());
     if actual != expected {
@@ -1576,10 +1832,11 @@ fn push_command(root: &str, args: &[&str], allow_http: bool) -> RepositoryResult
                 name: reference.clone(),
                 expected: expected.clone(),
                 new: source.clone(),
-                force: explicit_lease.is_some() && !delete,
+                force: (force || explicit_lease.is_some()) && !delete,
             }],
             &state,
-            allow_http,
+            &push_options,
+            mode,
         )?;
     } else {
         update_ref(
@@ -1590,7 +1847,7 @@ fn push_command(root: &str, args: &[&str], allow_http: bool) -> RepositoryResult
                 reference: &reference,
                 expected,
                 new: source.as_deref(),
-                force: explicit_lease.is_some() && !delete,
+                force: (force || explicit_lease.is_some()) && !delete,
             },
             &state
                 .branches
@@ -1598,10 +1855,11 @@ fn push_command(root: &str, args: &[&str], allow_http: bool) -> RepositoryResult
                 .chain(state.tags.values())
                 .cloned()
                 .collect::<Vec<_>>(),
-            allow_http,
+            &push_options,
+            mode,
         )?;
     }
-    if let Some((branch, tip, previous)) = binding_source {
+    if let Some((branch, tip, previous)) = binding_source.filter(|_| !dry_run) {
         let save = (|| {
             let _lock = config_lock(&repo)?;
             if load(&repo, &remote.name)? != remote {
@@ -1613,7 +1871,7 @@ fn push_command(root: &str, args: &[&str], allow_http: bool) -> RepositoryResult
         save.map_err(|error| format!("remote ref was published and exactly acknowledged; local upstream update failed: {error}; inspect the local upstream before retrying"))?;
     }
     pretty(
-        &serde_json::json!({"remote":remote.name,"namespace":namespace_text,"name":reference,"tip":source,"status":if delete {"deleted"} else {"pushed"},"upstream_configured":set_upstream}),
+        &serde_json::json!({"remote":remote.name,"namespace":namespace_text,"name":reference,"tip":source,"status":if dry_run {"dry_run"} else if delete {"deleted"} else {"pushed"},"upstream_configured":set_upstream && !dry_run}),
     )
 }
 
@@ -1961,6 +2219,8 @@ mod tests {
         for url in [
             "http://127.0.0.1:1234/repo",
             "https://example.org/repo",
+            "http://host/a/b",
+            "ssh://user@host/srv/repos//team/project",
             "http://[::1]:1234/repo",
             "ssh://user@host:2222/tmp/repos/repo",
             "ssh://user@[::1]:2222/tmp/repos/repo",
@@ -1970,7 +2230,8 @@ mod tests {
         for url in [
             "http://user:password@host/repo",
             "http://host/repo?token=x",
-            "http://host/a/b",
+            "http://host/a//b",
+            "http://host/a/../b",
             "ssh://-oProxyCommand=evil/tmp/repo",
             "ssh://host/tmp/../repo",
             "ssh://host//repo",

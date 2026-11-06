@@ -8,6 +8,9 @@
 
 ## 阅读顺序
 
+- [Git 工作流对照](GIT_PARITY.zh_CN.md)：已实现合同、本地/服务端缺口及验证边界。
+  [English](GIT_PARITY.eu_US.md)
+
 - [技术白皮书](WHITEPAPER.zh_CN.md)：问题、证据模型、匹配与对齐、custom/debug、存储、
   分发、性能、威胁模型与验证边界。[English](WHITEPAPER.eu_US.md)
 - [使用手册](USER_MANUAL.zh_CN.md)：审计、section、源码映射、补丁、树、分支、冲突、重放、

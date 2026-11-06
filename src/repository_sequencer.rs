@@ -1323,7 +1323,7 @@ mod tests {
         .unwrap()
     }
     fn fixture(conflict: bool) -> Fixture {
-        let path = PathBuf::from("/tmp").join(unique_name("uwgit-replay-recovery"));
+        let path = std::env::temp_dir().join(unique_name("uwgit-replay-recovery"));
         fs::create_dir(&path).unwrap();
         let repo = Repository::init(&path).unwrap();
         let base = commit(&repo, &files(1, 1, 1), "base");

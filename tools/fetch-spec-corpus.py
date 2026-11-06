@@ -16,8 +16,8 @@ import urllib.request
 
 def fetch(destination: Path) -> dict:
     destination = destination.absolute()
-    if not destination.is_relative_to(Path("/tmp")) or ".." in destination.parts:
-        raise ValueError("corpus destination must be under /tmp")
+    if not destination.is_relative_to(Path(tempfile.gettempdir())) or ".." in destination.parts:
+        raise ValueError("corpus destination must be under TMPDIR")
     destination.mkdir(parents=True, exist_ok=True)
     pins = json.loads(Path(__file__).with_name("spec-corpora.json").read_text())
     results = []

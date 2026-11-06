@@ -119,12 +119,20 @@ pub(super) fn special_revision(
             .map_err(|_| "invalid previous-checkout number")?;
         return snapshot_revision(snapshot, &previous_branch(snapshot, number)?).map(Some);
     }
-    if ordinal.is_empty() || !ordinal.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err("this history has no wall-clock timestamps; reflog selectors require a nonnegative ordinal".into());
-    }
-    let number = ordinal
-        .parse::<usize>()
-        .map_err(|_| "reflog ordinal exceeds host size")?;
+    let (number, date) = if !ordinal.is_empty() && ordinal.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        (
+            ordinal
+                .parse::<usize>()
+                .map_err(|_| "reflog ordinal exceeds host size")?,
+            None,
+        )
+    } else {
+        match ReflogCutoff::parse(ordinal)? {
+            ReflogCutoff::Before(seconds) => (0, Some(seconds)),
+            _ => return Err("reflog revision requires an ordinal or a point in time".into()),
+        }
+    };
     let reference = if reference == "HEAD" {
         "HEAD".into()
     } else if reference.is_empty() {
@@ -150,10 +158,10 @@ pub(super) fn special_revision(
     snapshot_revision(snapshot, &reference)?;
     let mut remaining = number;
     if reference == "HEAD" && snapshot.head_reflog.is_empty() {
-        return if number == 0 {
+        return if number == 0 && date.is_none() {
             snapshot_revision(snapshot, "HEAD").map(Some)
         } else {
-            Err("historical HEAD log was not recorded by this older repository".into())
+            Err("historical HEAD log is unavailable".into())
         };
     }
     let entries = if reference == "HEAD" && !snapshot.head_reflog.is_empty() {
@@ -166,6 +174,16 @@ pub(super) fn special_revision(
         .rev()
         .filter(|entry| entry.reference == reference)
     {
+        if let Some(date) = date {
+            if entry.unix_seconds <= date {
+                return entry
+                    .new
+                    .clone()
+                    .map(Some)
+                    .ok_or_else(|| "reference had no commit at the selected time".into());
+            }
+            continue;
+        }
         if let Some(id) = &entry.new {
             if remaining == 0 {
                 return Ok(Some(id.clone()));
@@ -177,6 +195,6 @@ pub(super) fn special_revision(
         }
     }
     Err(format!(
-        "reflog ordinal {number} is unavailable for {reference}"
+        "reflog selector {ordinal:?} is unavailable for {reference}"
     ))
 }

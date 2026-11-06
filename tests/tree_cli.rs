@@ -16,8 +16,8 @@ static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
-        let p = PathBuf::from(format!(
-            "/tmp/uwgit-tree-{}-{}",
+        let p = std::env::temp_dir().join(format!(
+            "uwgit-tree-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));

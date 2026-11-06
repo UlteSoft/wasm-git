@@ -4,6 +4,7 @@ use super::*;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ReferenceHead {
+    unix_seconds: u64,
     pub worktree: Option<String>,
     pub before: String,
     pub after: String,
@@ -19,6 +20,7 @@ impl ReferenceHead {
     ) -> RepositoryResult<Self> {
         let (worktree, worktrees) = repo.reference_head_registry()?;
         Ok(Self {
+            unix_seconds: reflog_timestamp()?,
             worktree,
             before: snapshot.manifest.head.clone(),
             after,
@@ -72,6 +74,7 @@ impl ReferenceHead {
         sequence: u64,
     ) -> ReflogEntry {
         ReflogEntry {
+            unix_seconds: self.unix_seconds,
             sequence,
             reference: "HEAD".into(),
             old: head_tip(&self.before, &before.refs).cloned(),

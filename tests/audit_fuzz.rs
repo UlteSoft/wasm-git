@@ -8,7 +8,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, PathBuf};
 use wasm_git::audit::{self, AuditModule, Region, Span};
 use wasm_git::patch::{self, BytePatch};
 use wasm_git::standard::Standard;
@@ -316,15 +316,15 @@ impl Evidence {
         let dir = std::env::var_os("UWGIT_AUDIT_FUZZ_REPORT_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
-                Path::new("/tmp").join(format!("uwgit-audit-fuzz-{}", std::process::id()))
+                std::env::temp_dir().join(format!("uwgit-audit-fuzz-{}", std::process::id()))
             });
         assert!(
             dir.is_absolute()
-                && dir.starts_with("/tmp")
+                && dir.starts_with(std::env::temp_dir())
                 && !dir
                     .components()
                     .any(|part| matches!(part, Component::ParentDir)),
-            "fuzz evidence must remain under /tmp"
+            "fuzz evidence must remain under TMPDIR"
         );
         fs::create_dir_all(&dir).unwrap();
         let file = File::options()

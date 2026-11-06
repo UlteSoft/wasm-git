@@ -18,7 +18,7 @@ struct History {
 
 impl History {
     fn new(label: &str) -> Self {
-        let directory = Path::new("/tmp").join(format!(
+        let directory = std::env::temp_dir().join(format!(
             "uwgit-trace-{label}-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)

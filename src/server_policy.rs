@@ -41,7 +41,7 @@ impl Policy {
         let mut names = std::collections::BTreeSet::new();
         let mut tokens = std::collections::BTreeSet::new();
         for principal in &self.principals {
-            protocol::repository_name(&principal.name)?;
+            protocol::repository_component(&principal.name)?;
             if !names.insert(&principal.name) {
                 return Err("duplicate policy principal".into());
             }
@@ -56,7 +56,9 @@ impl Policy {
                     .repository
                     .strip_suffix('*')
                     .unwrap_or(&grant.repository);
-                protocol::repository_name(prefix)?;
+                if grant.repository != "*" {
+                    protocol::repository_name(prefix.strip_suffix('/').unwrap_or(prefix))?;
+                }
                 for reference in &grant.write {
                     let prefix = reference.strip_suffix('*').unwrap_or(reference);
                     if !(prefix.starts_with("refs/heads/") || prefix.starts_with("refs/tags/"))

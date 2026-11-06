@@ -59,11 +59,15 @@ mod ref_queries;
 pub use ref_queries::ReferenceFilter;
 #[path = "repository_head.rs"]
 mod head_storage;
+#[path = "repository_reflog.rs"]
+mod reflog_storage;
 #[path = "repository_revisions.rs"]
 mod revision_syntax;
 pub(crate) use head_storage::is_detached_identity;
 pub(crate) use head_storage::validate_head_identity;
 use head_storage::{check_pending_head, head_tip};
+use reflog_storage::reflog_timestamp;
+pub use reflog_storage::{ReflogCutoff, ReflogExpire};
 #[path = "repository_sequencer.rs"]
 mod sequencer_storage;
 pub use sequencer_storage::{
@@ -387,7 +391,7 @@ pub fn read_file_history(
 mod control;
 use control::{decode_reference, encode_reference};
 
-const FORMAT: &[u8] = b"UWGRPO\0\x02";
+const FORMAT: &[u8] = b"UWGRPO\0\x03";
 const OBJECT_MAGIC: &[u8; 8] = b"UWGO\0\0\0\x02";
 const BUNDLE_MAGIC: &[u8; 8] = b"UWGB\0\0\0\x02";
 const WASM_HEADER: &[u8; 8] = b"\0asm\x01\0\0\0";
@@ -703,6 +707,8 @@ pub struct RepositoryState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReflogEntry {
+    #[serde(default)]
+    pub unix_seconds: u64,
     pub sequence: u64,
     pub reference: String,
     pub old: Option<String>,
@@ -3895,11 +3901,12 @@ impl Repository {
     ) -> RepositoryResult<()> {
         let result = (|| {
             let mut entries = self.read_reflog()?;
-            let sequence = u64::try_from(entries.len())
-                .ok()
-                .and_then(|n| n.checked_add(1))
+            let sequence = entries
+                .last()
+                .map_or(Some(1), |entry| entry.sequence.checked_add(1))
                 .ok_or("reflog sequence overflow")?;
             entries.push(ReflogEntry {
+                unix_seconds: reflog_timestamp()?,
                 sequence,
                 reference: reference.into(),
                 old,
@@ -4865,14 +4872,12 @@ fn decode_reflog(bytes: &[u8]) -> RepositoryResult<Vec<ReflogEntry>> {
     if crate::binary::encode(&entries)? != bytes {
         return Err("noncanonical binary reflog".into());
     }
-    for (position, entry) in entries.iter().enumerate() {
-        let sequence = u64::try_from(position)
-            .ok()
-            .and_then(|n| n.checked_add(1))
-            .ok_or("reflog sequence overflow")?;
-        if entry.sequence != sequence || entry.operation.is_empty() {
+    let mut previous = 0;
+    for entry in &entries {
+        if entry.sequence <= previous || entry.operation.is_empty() {
             return Err("invalid reflog sequence or operation".into());
         }
+        previous = entry.sequence;
         if entry.reference != "HEAD" {
             let name = entry
                 .reference
@@ -6800,8 +6805,8 @@ mod tests {
 
     impl TempDirectory {
         fn new() -> Self {
-            // All test artifacts are explicitly confined to /tmp on every host.
-            let path = PathBuf::from("/tmp").join(unique_name("uwgit-repository-test"));
+            // The test runner confines TMPDIR to project-local .tmp/.
+            let path = std::env::temp_dir().join(unique_name("uwgit-repository-test"));
             fs::create_dir(&path).unwrap();
             Self(path)
         }

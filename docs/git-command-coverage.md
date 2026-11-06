@@ -23,7 +23,7 @@
 | checkout | 部分支持：`DIR BRANCH`、`DIR -b NAME [REV]`；`DIR -- PATH...` 从 index 恢复工作路径；`DIR REV -- PATH...` 按 overlay 恢复 index+worktree；旧 REV NEW_FILE [--file PATH] 独占导出。 | 已支持 detached HEAD、orphan、明确 tag/commit 的 detach、路径 `-m/--merge` 重建和 ours/theirs；仍无分支 `-m`、force 或隐式路径猜测；分支模式继承 switch 的干净工作区要求和无 index 时只切引用的行为。恢复已有路径必须用明确的 `--`。 | [checkout.rs](../src/checkout.rs)、[porcelain.rs](../src/porcelain.rs)；[Git checkout](https://git-scm.com/docs/git-checkout)。 |
 | upstream 与默认 pull/push | 部分支持显式分支关联、按关联选择默认 pull 的 remote/branch、push 的默认 remote 和 simple 同名检查；`push -u` 单分支成功确认后保存关联；`rev-parse` 支持 `[NAME]@{u}`/`[NAME]@{upstream}`。无关联时保留 origin/当前同名分支的旧回退。 | 从 tracking 创建 branch/switch 不自动建立关联；没有 push.default/pushRemote 等配置模式。新 push 目标的 fetched tracking 仍需 fetch 后可查询；`-u` 不绕过 simple 异名保护。 | [remote.rs](../src/remote.rs)；[Git branch](https://git-scm.com/docs/git-branch)、[Git push](https://git-scm.com/docs/git-push)。 |
 | clone / bundle | 已支持本地和 HTTP/SSH 完整 clone、独立共享 fork、离线 bundle/unbundle，保留分支、标签、HEAD 和已验证对象；网络 clone 配置 origin 并为已提交的初始 HEAD 建立 upstream。 | 本地 upstream 配置不传输；clone 不自动建立 index 或工作文件，需显式 restore；原生浅历史、部分内容、单分支选择、补深与补全已支持，见 [存储扩展](server-storage.md)；Git sparse/submodule 模型不是本仓库的文件模型。 | [repository.rs](../src/repository.rs)、[remote.rs](../src/remote.rs)；[Git clone](https://git-scm.com/docs/git-clone)。 |
-| 历史与 reflog | 部分支持 DAG log、show、标签、rev-parse、reflog，以及 Wasm 字节区间 trace。修订支持 ID/前缀、分支/标签/tracking、`~N/^N`；独立的 rev-parse upstream 别名查询实际 fetched tip。 | 已支持 upstream 后续祖先运算、`HEAD@{n}`、`@{-N}` 与 commit peel；仍无日期 reflog、ORIG_HEAD 和常见日志筛选/graph 接口；trace 是物理字节证据，不是 Git blame。 | [repository.rs](../src/repository.rs)；[Git reflog](https://git-scm.com/docs/git-reflog)。 |
+| 历史与 reflog | 部分支持 DAG log、show、标签、rev-parse、reflog，以及 Wasm 字节区间 trace。修订支持 ID/前缀、分支/标签/tracking、`~N/^N`；独立的 rev-parse upstream 别名查询实际 fetched tip。 | 已支持 upstream 后续祖先运算、`HEAD@{n}`、`@{-N}` 与 commit peel；现已增加日期 reflog，仍无 ORIG_HEAD 和常见日志筛选/graph 接口；trace 是物理字节证据，不是 Git blame。 | [repository.rs](../src/repository.rs)；[Git reflog](https://git-scm.com/docs/git-reflog)。 |
 | stash | 部分支持 push/list/apply/pop/drop 与单现存工作文件导出；分别保存、恢复 index 和 tracked 工作字节，含删除及非 Wasm 脏字节。 | 不收集 untracked；apply/pop 要求当前 index/worktree 干净；无 include-untracked、stash branch/show 等接口。 | [porcelain.rs](../src/porcelain.rs)；[Git stash](https://git-scm.com/docs/git-stash)。 |
 | 已提交树与引用查询 | 部分支持：ls-tree 的实际平面树/JSON/路径/NUL，show-ref 的 HEAD/namespace/verify/quiet/hash，for-each-ref 的 prefix/glob/format/sort/count。 | 不合成目录对象或 mode；旧 unnamed 提交仅 JSON 保留真实 blob。已支持同快照图筛选、points-at、exclude、ignore-case、omit-empty 和 refname/upstream 的 short/strip modifier；仍无全部 atom、version sort、stdin 或分页。格式与 glob 仍有明确子集。 | [query_commands.rs](../src/query_commands.rs)、[查询契约与验证](queries.md)；[Git ls-tree](https://git-scm.com/docs/git-ls-tree)、[Git show-ref](https://git-scm.com/docs/git-show-ref)、[Git for-each-ref](https://git-scm.com/docs/git-for-each-ref)。 |
 | 对象统计与远端广告 | 部分支持：count-objects JSON/verbose/human-readable，ls-remote 的 HTTP(S)/SSH、配置 remote、namespace/glob/symref/exit-code/JSON。 | 统计逻辑 payload/envelope 字节，非 Git 压缩 pack 或分配块。广告只查询引用，不下载或验证其对象；明确标注验证范围。无本地路径 ls-remote。 | [repository.rs](../src/repository.rs)、[remote.rs](../src/remote.rs)；[Git count-objects](https://git-scm.com/docs/git-count-objects)、[Git ls-remote](https://git-scm.com/docs/git-ls-remote)。 |
@@ -38,7 +38,7 @@
 | 历史摘要与系列比较 | shortlog 按实际改变路径/subject 分组；range-diff 比较两个系列的原字节路径转换，并给出 Wasm 审计。 | 不虚构作者；range-diff 不猜修改补丁的等价配对，重复转换保留歧义，merge 需明确 first-parent。 | [历史查询契约](native-commands.md)、[repository_history_tools.rs](../src/repository_history_tools.rs)。 |
 | 可传输注释 | notes list/show/add/append/copy/remove 与命名空间；注释存为专用原生分支中的真实 Wasm 模块，可经既有传输共享。 | 无交互编辑、注释 merge/rewrite；unbundle 现有单目标引用规则仍适用。 | [注释契约](native-commands.md)、[repository_notes.rs](../src/repository_notes.rs)。 |
 | 外部合并工具 | mergetool 导出冻结三方模块，调用明确程序；校验输入、index、pending、HEAD 后暂存选定结果；识别队列进度，no-commit 的 ours_kind 为真实 tree。 | 仍需审阅完整 index 并显式 continue。新录制工作区操作已自动填充 stage 0 和冲突原侧；旧 journal/纯对象模式仍需自行准备完整结果。 | [工具契约](native-commands.md)、[多目标 replay](replay-queue.md)、[worktree_tools.rs](../src/worktree_tools.rs)。 |
-| 清理与维护 | clean dry-run/force、目录、忽略规则、排除与显式路径；gc 计划/显式 prune、--pack 与 repack 压缩；maintenance verify/gc。 | 无交互 clean、嵌套仓库/符号链接删除、reflog 过期或自动时间 prune；辅助恢复状态使 GC 保守保留。 | [维护契约](native-commands.md)、[maintenance_commands.rs](../src/maintenance_commands.rs)。 |
+| 清理与维护 | clean dry-run/force、目录、忽略规则、排除与显式路径；gc 计划/显式 prune、--pack 与 repack 压缩；maintenance verify/reflog-expire/gc。 | 无交互 clean、嵌套仓库/符号链接删除、自动时间 prune（reflog 过期已支持）；辅助恢复状态使 GC 保守保留。 | [维护契约](native-commands.md)、[maintenance_commands.rs](../src/maintenance_commands.rs)。 |
 
 ## 当前可用的四类操作
 
@@ -141,3 +141,9 @@ HTTP/SSH 共用的原生服务现已补入按 principal/仓库/ref 授权、只�
 隔离区 pre-receive/post-receive、二进制身份审计、引用分页、have 闭包与二进制块增量传输，
 以及 fork 后 GC 的持续共享。部署方法、逐项限制和回归用例见 [server.md](server.md)。
 这些是 uwgit 等价工作流，不能视为 Git 对象/线协议兼容或完整托管平台。
+
+## 2026-11-06 批量接收与保留策略复查
+
+已增加同次请求的逐引用接收、update/post-update、push options、all/mirror/dry-run、
+层级仓库与共享 fork、带时间戳 reflog 及过期后 GC。原子批次失败与不确定回执保留明确语义。
+当前完整对照和真实待完成项见[中英工作流对照](../documents/GIT_PARITY.zh_CN.md)。

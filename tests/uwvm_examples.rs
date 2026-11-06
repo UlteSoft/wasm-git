@@ -1,6 +1,6 @@
 //! Opt-in verification of the external, read-only uwvm2-ros examples corpus.
 //! This exercises original Core Wasm bytes and producer output, never runtime
-//! behavior or ROS delivery. Every generated artifact must be below /tmp.
+//! behavior or ROS delivery. Every generated artifact must be below TMPDIR.
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -657,13 +657,16 @@ fn external_path(name: &str, temporary: bool) -> PathBuf {
         "{name} must not contain parent traversal"
     );
     if temporary {
-        assert!(path.starts_with("/tmp"), "{name} must stay below /tmp");
+        assert!(
+            path.starts_with(std::env::temp_dir()),
+            "{name} must stay below TMPDIR"
+        );
     }
     path
 }
 
 #[test]
-#[ignore = "requires an explicitly supplied read-only uwvm2-ros examples corpus and /tmp output paths"]
+#[ignore = "requires an explicitly supplied read-only uwvm2-ros examples corpus and TMPDIR output paths"]
 fn uwvm_examples_external_corpus() {
     let mode = match std::env::var("UWGIT_CORPUS_MODE") {
         Ok(value) => CorpusMode::parse(Some(&value)),
@@ -724,7 +727,7 @@ fn uwvm_examples_external_corpus() {
     report.summary.failures = report.failures.len();
     report.complete = report.failures.is_empty();
     std::fs::create_dir_all(report_path.parent().unwrap())
-        .expect("create report parent below /tmp");
+        .expect("create report parent below TMPDIR");
     let encoded = serde_json::to_vec_pretty(&report).unwrap();
     std::fs::write(&report_path, encoded)
         .expect("write full corpus evidence before asserting outcomes");

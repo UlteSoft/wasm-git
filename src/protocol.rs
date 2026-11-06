@@ -20,6 +20,16 @@ pub struct Request {
 }
 
 pub fn repository_name(name: &str) -> Result<(), String> {
+    if name.len() > 512 || name.split('/').count() > 16 {
+        return Err("repository paths are limited to 512 bytes and 16 components".into());
+    }
+    for component in name.split('/') {
+        repository_component(component)?;
+    }
+    Ok(())
+}
+
+pub fn repository_component(name: &str) -> Result<(), String> {
     if name.is_empty()
         || name.len() > 128
         || !name.as_bytes()[0].is_ascii_alphanumeric()
@@ -88,6 +98,11 @@ pub enum Operation {
         id: String,
         offset: u64,
     },
+    PublishOptions {},
+    CheckBatch {},
+    PublishPartial {
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,6 +118,46 @@ pub struct RefUpdate {
 pub struct BatchPublication {
     pub updates: Vec<RefUpdate>,
     pub bundle: Vec<u8>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct OptionsPublication {
+    pub publication: BatchPublication,
+    pub options: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PartialReceipt {
+    /// None acknowledges this update; Some explains its rejection. Order is
+    /// identical to the request, whose digest is in Response::tip.
+    pub rejections: Vec<Option<String>>,
+}
+
+pub fn validate_push_options(options: &[String]) -> Result<(), String> {
+    if options.len() > 256
+        || options.iter().any(|s| s.contains(['\0', '\n']))
+        || options.iter().map(String::len).sum::<usize>() > 65_536
+    {
+        return Err("push options require at most 256 values and 64 KiB, without NUL or LF".into());
+    }
+    Ok(())
+}
+
+pub fn publication_payload(
+    operation: &Operation,
+    payload: &[u8],
+) -> Result<(BatchPublication, Vec<String>), String> {
+    match operation {
+        Operation::PublishBatch {} => Ok((crate::binary::decode(payload)?, Vec::new())),
+        Operation::PublishOptions {}
+        | Operation::CheckBatch {}
+        | Operation::PublishPartial { .. } => {
+            let decoded: OptionsPublication = crate::binary::decode(payload)?;
+            validate_push_options(&decoded.options)?;
+            Ok((decoded.publication, decoded.options))
+        }
+        _ => Err("expected a batch publication".into()),
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -131,6 +186,11 @@ mod publication {
             force: bool,
         },
         PublishBatch {},
+        PublishOptions {},
+        CheckBatch {},
+        PublishPartial {
+            dry_run: bool,
+        },
     }
     #[derive(Deserialize)]
     enum Owned {
@@ -147,10 +207,20 @@ mod publication {
             force: bool,
         },
         PublishBatch {},
+        PublishOptions {},
+        CheckBatch {},
+        PublishPartial {
+            dry_run: bool,
+        },
     }
     pub fn serialize<S: serde::Serializer>(value: &Operation, s: S) -> Result<S::Ok, S::Error> {
         match value {
             Operation::PublishBatch {} => Borrowed::PublishBatch {}.serialize(s),
+            Operation::PublishOptions {} => Borrowed::PublishOptions {}.serialize(s),
+            Operation::CheckBatch {} => Borrowed::CheckBatch {}.serialize(s),
+            Operation::PublishPartial { dry_run } => {
+                Borrowed::PublishPartial { dry_run: *dry_run }.serialize(s)
+            }
             Operation::Push {
                 branch,
                 expected,
@@ -183,6 +253,9 @@ mod publication {
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Box<Operation>, D::Error> {
         Ok(Box::new(match Owned::deserialize(d)? {
             Owned::PublishBatch {} => Operation::PublishBatch {},
+            Owned::PublishOptions {} => Operation::PublishOptions {},
+            Owned::CheckBatch {} => Operation::CheckBatch {},
+            Owned::PublishPartial { dry_run } => Operation::PublishPartial { dry_run },
             Owned::Push {
                 branch,
                 expected,

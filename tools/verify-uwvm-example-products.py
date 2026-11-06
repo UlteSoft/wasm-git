@@ -7,6 +7,7 @@ test lane. Every subprocess has complete logs and an explicit timeout.
 """
 
 import argparse
+import tempfile
 from collections import Counter
 import hashlib
 import importlib.util
@@ -61,8 +62,8 @@ def file_record(path):
 
 def require_tmp(path):
     resolved = path.resolve()
-    if not resolved.is_relative_to(Path("/tmp").resolve()):
-        raise ValueError(f"all harness output must be under /tmp: {path}")
+    if not resolved.is_relative_to(Path(tempfile.gettempdir()).resolve()):
+        raise ValueError(f"all harness output must be under TMPDIR: {path}")
     return resolved
 
 

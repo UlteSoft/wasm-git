@@ -10,7 +10,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "server --root DIR [--listen 127.0.0.1:9419] [--token-file FILE | --policy FILE] [--allow-write | --read-only] [--allow-force] [--signed-authors BINARY_TRUST_FILE] [--pre-receive PROGRAM] [--post-receive PROGRAM] [--max-connections N]; server --stdio --root DIR [--policy FILE --principal NAME] [--read-only] [--allow-force]; server compile-policy INPUT_JSON NEW_BINARY_FILE; server audit-log BINARY_LOG";
+const USAGE: &str = "server --root DIR [--listen 127.0.0.1:9419] [--token-file FILE | --policy FILE] [--allow-write | --read-only] [--allow-force] [--signed-authors BINARY_TRUST_FILE] [--pre-receive PROGRAM] [--update PROGRAM] [--post-receive PROGRAM] [--post-update PROGRAM] [--max-connections N]; server --stdio --root DIR [--policy FILE --principal NAME] [--read-only] [--allow-force]; server compile-policy INPUT_JSON NEW_BINARY_FILE; server audit-log BINARY_LOG";
 const MAX_HEADER: usize = 16 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -28,8 +28,10 @@ struct Settings {
     policy: Option<Arc<policy::Policy>>,
     actor: String,
     pre_receive: Option<PathBuf>,
+    update_hook: Option<PathBuf>,
     signed_authors: Option<PathBuf>,
     post_receive: Option<PathBuf>,
+    post_update: Option<PathBuf>,
 }
 
 /// Refuse symbolic links in every existing path component, including root.
@@ -62,6 +64,43 @@ fn real_path(path: &Path, directory: bool) -> Result<PathBuf, String> {
 
 fn repository_name(name: &str) -> Result<(), String> {
     protocol::repository_name(name)
+}
+
+// Namespace directories may contain repositories, but a repository's working
+// files must never become an alternative server root or a fork destination.
+fn repository_parent(settings: &Settings, name: &str, create: bool) -> Result<PathBuf, String> {
+    repository_name(name)?;
+    let mut parent = settings.root.clone();
+    let components: Vec<_> = name.split('/').collect();
+    for component in &components[..components.len() - 1] {
+        namespace_directory(&parent)?;
+        let next = parent.join(component);
+        if create {
+            match fs::create_dir(&next) {
+                Ok(()) => fs::File::open(&parent)
+                    .and_then(|f| f.sync_all())
+                    .map_err(|e| e.to_string())?,
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => (),
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        parent = real_path(&next, true)?;
+    }
+    namespace_directory(&parent)?;
+    Ok(parent)
+}
+
+fn namespace_directory(path: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(path.join(".uwgit")) {
+        Ok(_) => Err("server namespaces must not be nested inside a repository".into()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn repository_path(settings: &Settings, name: &str) -> Result<PathBuf, String> {
+    let parent = repository_parent(settings, name, false)?;
+    real_path(&parent.join(name.rsplit('/').next().unwrap()), true)
 }
 
 fn authorize(
@@ -103,9 +142,9 @@ fn authorize(
             )),
             *force,
         ),
-        Operation::PublishBatch {} => {
+        Operation::PublishBatch {} | Operation::PublishOptions {} | Operation::CheckBatch {} => {
             check(Some("*"), false)?;
-            let batch: protocol::BatchPublication = crate::binary::decode(payload)?;
+            let (batch, _) = protocol::publication_payload(operation, payload)?;
             if batch.updates.is_empty() || batch.updates.len() > 4096 {
                 return Err("receive requires 1..=4096 updates".into());
             }
@@ -125,11 +164,27 @@ fn authorize(
             }
             Ok(())
         }
+        Operation::PublishPartial { .. } => {
+            check(Some("*"), false)?;
+            let (batch, _) = protocol::publication_payload(operation, payload)?;
+            if batch.updates.is_empty() || batch.updates.len() > 4096 {
+                return Err("receive requires 1..=4096 updates".into());
+            }
+            // Individual grants and force rules produce per-ref rejections
+            // under the same repository lock as lease validation.
+            Ok(())
+        }
         Operation::ApplyUpload { operation, .. } => {
             check(Some("*"), false)?;
             // Batch operands arrive in the verified upload. Reauthorize that
             // exact payload before applying it in process_locked.
-            if matches!(**operation, Operation::PublishBatch {}) {
+            if matches!(
+                **operation,
+                Operation::PublishBatch {}
+                    | Operation::PublishOptions {}
+                    | Operation::CheckBatch {}
+                    | Operation::PublishPartial { .. }
+            ) {
                 Ok(())
             } else {
                 authorize(settings, repository, operation, &[])
@@ -157,7 +212,7 @@ fn process(
 ) -> Result<(Response, Vec<u8>), String> {
     repository_name(&request.repository)?;
     authorize(settings, &request.repository, &request.operation, payload)?;
-    let root = real_path(&settings.root.join(&request.repository), true)?;
+    let root = repository_path(settings, &request.repository)?;
     let repository = Repository::open(root)?;
     // OS-owned locks survive neither a crash nor an SSH process exit. Queue
     // competing service operations instead of leaking local fail-fast locks to
@@ -175,7 +230,7 @@ fn process_locked(
         return Err("unsupported RPC version".into());
     }
     repository_name(&request.repository)?;
-    let root = real_path(&settings.root.join(&request.repository), true)?;
+    let root = repository_path(settings, &request.repository)?;
     let repository = Repository::open(root)?;
     let mut response = Response {
         version: 1,
@@ -298,6 +353,9 @@ fn process_locked(
                     Operation::Push { .. }
                         | Operation::UpdateRef { .. }
                         | Operation::PublishBatch {}
+                        | Operation::PublishOptions {}
+                        | Operation::CheckBatch {}
+                        | Operation::PublishPartial { .. }
                 )
             {
                 return Err("uploaded payload can only apply one reference mutation".into());
@@ -385,6 +443,7 @@ fn process_locked(
                 &repository,
                 &completed,
                 &updates,
+                &[],
             ) {
                 Ok(()) => response.tip = Some(tip),
                 Err(error) => return Ok((receive_error_response(error), Vec::new())),
@@ -420,21 +479,55 @@ fn process_locked(
                 &repository,
                 payload,
                 &updates,
+                &[],
             ) {
                 Ok(()) => response.tip = new,
                 Err(error) => return Ok((receive_error_response(error), Vec::new())),
             }
             Vec::new()
         }
-        Operation::PublishBatch {} => {
-            let batch: protocol::BatchPublication = crate::binary::decode(payload)?;
-            match receive::publish(
+        operation @ Operation::PublishPartial { dry_run } => {
+            let (batch, options) = protocol::publication_payload(&operation, payload)?;
+            match receive::publish_selective(
                 settings,
                 &request.repository,
                 &repository,
-                &batch.bundle,
-                &batch.updates,
+                &batch,
+                &options,
+                dry_run,
             ) {
+                Ok(rejections) => {
+                    response.tip = Some(format!(
+                        "{:x}",
+                        <sha2::Sha256 as sha2::Digest>::digest(payload)
+                    ));
+                    crate::binary::encode(&protocol::PartialReceipt { rejections })?
+                }
+                Err(error) => return Ok((receive_error_response(error), Vec::new())),
+            }
+        }
+        operation @ (Operation::PublishBatch {}
+        | Operation::PublishOptions {}
+        | Operation::CheckBatch {}) => {
+            let (batch, options) = protocol::publication_payload(&operation, payload)?;
+            let result = if matches!(operation, Operation::CheckBatch {}) {
+                repository.check_receive_batch(&batch.bundle, &batch.updates, |bundle| {
+                    if let Some(path) = &settings.signed_authors {
+                        repository.verify_receive_authors(bundle, &batch.updates, path)?;
+                    }
+                    Ok(())
+                })
+            } else {
+                receive::publish(
+                    settings,
+                    &request.repository,
+                    &repository,
+                    &batch.bundle,
+                    &batch.updates,
+                    &options,
+                )
+            };
+            match result {
                 Ok(()) => {
                     response.tip = Some(format!(
                         "{:x}",
@@ -801,8 +894,10 @@ pub fn run(args: &[String]) -> Result<String, String> {
     let mut principal = None;
     let mut read_only = false;
     let mut pre_receive = None;
+    let mut update_hook = None;
     let mut signed_authors = None;
     let mut post_receive = None;
+    let mut post_update = None;
     let mut root = None;
     let mut listen = "127.0.0.1:9419".to_owned();
     let mut listen_selected = false;
@@ -819,7 +914,8 @@ pub fn run(args: &[String]) -> Result<String, String> {
             "--allow-write" => write = true,
             "--allow-force" => force = true,
             flag @ ("--root" | "--listen" | "--token-file" | "--max-connections" | "--policy"
-            | "--principal" | "--pre-receive" | "--post-receive" | "--signed-authors") => {
+            | "--principal" | "--pre-receive" | "--post-receive" | "--update"
+            | "--post-update" | "--signed-authors") => {
                 index += 1;
                 let value = args
                     .get(index)
@@ -832,7 +928,9 @@ pub fn run(args: &[String]) -> Result<String, String> {
                         signed_authors = Some(real_path(Path::new(value), false)?)
                     }
                     "--pre-receive" => pre_receive = Some(real_path(Path::new(value), false)?),
+                    "--update" => update_hook = Some(real_path(Path::new(value), false)?),
                     "--post-receive" => post_receive = Some(real_path(Path::new(value), false)?),
+                    "--post-update" => post_update = Some(real_path(Path::new(value), false)?),
                     "--listen" => {
                         listen = value.clone();
                         listen_selected = true;
@@ -895,8 +993,10 @@ pub fn run(args: &[String]) -> Result<String, String> {
         policy,
         actor: principal.unwrap_or_else(|| if stdio { "ssh".into() } else { "token".into() }),
         pre_receive,
+        update_hook,
         signed_authors,
         post_receive,
+        post_update,
     });
     if stdio {
         let mut input = std::io::stdin().lock();
@@ -1070,15 +1170,17 @@ mod tests {
             .unwrap();
         let (server, _) = listener.accept().unwrap();
         let settings = Settings {
-            root: PathBuf::from("/tmp"),
+            root: std::env::temp_dir(),
             token: Some(b"required-token".to_vec()),
             write: false,
             force: false,
             policy: None,
             actor: "test".into(),
             pre_receive: None,
+            update_hook: None,
             signed_authors: None,
             post_receive: None,
+            post_update: None,
         };
         let worker = std::thread::spawn(move || {
             connection(server, &settings, Instant::now() + Duration::from_secs(10))
@@ -1121,10 +1223,16 @@ mod tests {
 
     #[test]
     fn repository_names_and_tokens_are_exact() {
-        for name in ["", "..", ".hidden", "../x", "x/y", "%2e", "a\\b"] {
+        for name in [
+            "", "..", ".hidden", "../x", "x//y", "x/../y", "/x", "x/", "%2e", "a\\b",
+        ] {
             assert!(repository_name(name).is_err());
         }
         assert!(repository_name("wasm-project.1").is_ok());
+        assert!(repository_name("team/wasm-project.1").is_ok());
+        assert!(repository_name(&["a"; 17].join("/")).is_err());
+        let component = "x".repeat(128);
+        assert!(repository_name(&[component.as_str(); 4].join("/")).is_err());
         assert!(equal_secret(b"secret", b"secret"));
         assert!(!equal_secret(b"secre", b"secret"));
         assert!(!equal_secret(b"secretX", b"secret"));
@@ -1138,7 +1246,7 @@ mod tests {
                 let _ = fs::remove_file(&self.0);
             }
         }
-        let path = PathBuf::from("/tmp").join(format!(
+        let path = std::env::temp_dir().join(format!(
             "uwgit-token-boundary-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()

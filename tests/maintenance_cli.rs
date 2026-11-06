@@ -256,3 +256,240 @@ fn gc_pins_auxiliary_recovery_state_and_maintenance_rejects_unimplemented_tasks(
     .success());
     assert_eq!(snapshot(root), before);
 }
+
+#[test]
+fn reflog_expiry_previews_exactly_then_releases_abandoned_history_for_gc() {
+    let temp = Temp::new();
+    let root = &temp.0;
+    let first = seed(root, 1);
+    let abandoned = seed(root, 2);
+    ok(&["reset", path(root), "--hard", &first]);
+    let before = snapshot(root);
+    let plan = json(&[
+        "reflog",
+        path(root),
+        "expire",
+        "--all",
+        "--expire=never",
+        "--expire-unreachable=all",
+        "--rewrite",
+        "-n",
+    ]);
+    assert!(plan["expired"].as_u64().unwrap() > 0);
+    assert_eq!(snapshot(root), before);
+    assert!(json(&["gc", path(root), "-n"])["candidates"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let actual = json(&[
+        "reflog",
+        path(root),
+        "expire",
+        "--all",
+        "--expire=never",
+        "--expire-unreachable=all",
+        "--rewrite",
+    ]);
+    assert_eq!(actual["removed"], plan["removed"]);
+    assert_eq!(ok(&["rev-parse", path(root), "HEAD"]), first);
+    assert_eq!(fs::read(root.join("module.wasm")).unwrap(), wasm(1));
+    let gc = json(&["gc", path(root), "--prune=now"]);
+    assert!(gc["removed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|id| id == &abandoned));
+    seed(root, 3);
+    ok(&["fsck", path(root)]);
+    assert!(
+        json(&["reflog", path(root), "show"])[0]["unix_seconds"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+}
+
+#[test]
+fn reflog_deletion_keeps_unselected_chains_and_appends_after_sequence_gaps() {
+    let temp = Temp::new();
+    let root = &temp.0;
+    let first = seed(root, 1);
+    ok(&["tag", path(root), "saved"]);
+    let second = seed(root, 2);
+    let third = seed(root, 3);
+    let tag = json(&["reflog", path(root), "show", "saved"]);
+    let before = snapshot(root);
+    json(&[
+        "reflog",
+        path(root),
+        "delete",
+        "main@{1}",
+        "--rewrite",
+        "-n",
+    ]);
+    assert_eq!(snapshot(root), before);
+    let deleted = json(&["reflog", path(root), "delete", "main@{1}", "--rewrite"]);
+    assert_eq!(deleted["removed"]["new"], second);
+    let entries = json(&["reflog", path(root), "show", "main"]);
+    assert_eq!(entries[0]["new"], third);
+    assert_eq!(entries[0]["old"], first);
+    assert_eq!(json(&["reflog", path(root), "show", "saved"]), tag);
+    seed(root, 4);
+    let entries = json(&["reflog", path(root), "show", "main"]);
+    assert!(entries[0]["sequence"].as_u64().unwrap() > entries[1]["sequence"].as_u64().unwrap());
+    assert!(execute(&["reflog", path(root), "exists", "main"])
+        .status
+        .success());
+    assert_eq!(
+        execute(&["reflog", path(root), "exists", "missing"])
+            .status
+            .code(),
+        Some(1)
+    );
+    assert!(json(&["reflog", path(root), "list"])
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|name| name == "HEAD"));
+    ok(&["fsck", path(root)]);
+}
+
+#[test]
+fn timestamp_selectors_and_expiry_use_checked_utc_and_strict_boundaries() {
+    use wasm_git::{binary, repository::ReflogEntry};
+    let temp = Temp::new();
+    let root = &temp.0;
+    let first = seed(root, 1);
+    let second = seed(root, 2);
+    let third = seed(root, 3);
+    for name in ["reflog", "head-reflog.bin"] {
+        let file = root.join(".uwgit").join(name);
+        let mut entries: Vec<ReflogEntry> = binary::decode(&fs::read(&file).unwrap()).unwrap();
+        for entry in &mut entries {
+            entry.unix_seconds = match entry.new.as_deref() {
+                Some(id) if id == first => 1_704_067_200, // 2024-01-01 UTC
+                Some(id) if id == second => 1_704_153_600,
+                _ => 1_704_240_000,
+            };
+        }
+        fs::write(file, binary::encode(&entries).unwrap()).unwrap();
+    }
+    assert_eq!(
+        ok(&["rev-parse", path(root), "HEAD@{2024-01-02T00:00:00Z}"]),
+        second
+    );
+    assert_eq!(ok(&["rev-parse", path(root), "main@{@1704067200}"]), first);
+    assert_eq!(ok(&["rev-parse", path(root), "HEAD@{0}"]), third);
+    let before = snapshot(root);
+    for date in [
+        "2023-02-29",
+        "2024-13-01",
+        "2024-01-01T24:00:00Z",
+        "18446744073709551615.weeks.ago",
+    ] {
+        assert!(
+            !execute(&["reflog", path(root), "expire", "--all", "--expire", date])
+                .status
+                .success()
+        );
+        assert_eq!(snapshot(root), before);
+    }
+    json(&[
+        "reflog",
+        path(root),
+        "expire",
+        "--all",
+        "--expire=2024-01-02",
+        "--expire-unreachable=never",
+    ]);
+    let log = json(&["reflog", path(root), "show", "main"]);
+    assert_eq!(log.as_array().unwrap().len(), 2);
+    assert_eq!(log[1]["new"], second);
+    seed(root, 4);
+    ok(&["fsck", path(root)]);
+}
+
+#[test]
+fn reflog_expiry_validates_every_worktree_before_writes_and_respects_single_worktree() {
+    let temp = Temp::new();
+    let root = &temp.0;
+    seed(root, 1);
+    let linked = root.join("linked");
+    json(&["worktree", path(root), "add", path(&linked), "-b", "topic"]);
+    let log_path = linked.join(".uwgit/head-reflog.bin");
+    let original = fs::read(&log_path).unwrap();
+    fs::write(&log_path, b"corrupt").unwrap();
+    let before = snapshot(root);
+    assert!(
+        !execute(&["reflog", path(root), "expire", "--all", "--expire=all"])
+            .status
+            .success()
+    );
+    assert_eq!(snapshot(root), before);
+    fs::write(&log_path, &original).unwrap();
+    fs::write(linked.join(".uwgit/pending.bin"), b"pending recovery").unwrap();
+    let before = snapshot(root);
+    assert!(
+        !execute(&["reflog", path(root), "expire", "--all", "--expire=all"])
+            .status
+            .success()
+    );
+    assert_eq!(snapshot(root), before);
+    fs::remove_file(linked.join(".uwgit/pending.bin")).unwrap();
+    json(&[
+        "reflog",
+        path(root),
+        "expire",
+        "--all",
+        "--single-worktree",
+        "--expire=all",
+    ]);
+    assert_eq!(fs::read(&log_path).unwrap(), original);
+    json(&["reflog", path(&linked), "expire", "--all", "--expire=all"]);
+    assert_eq!(
+        json(&["reflog", path(&linked), "show"]),
+        serde_json::json!([])
+    );
+    ok(&["fsck", path(root)]);
+    ok(&["fsck", path(&linked)]);
+}
+
+#[test]
+fn reflog_write_validates_native_endpoints_and_never_moves_references() {
+    let temp = Temp::new();
+    let root = &temp.0;
+    let id = seed(root, 1);
+    let before = snapshot(root);
+    assert!(
+        !execute(&["reflog", path(root), "write", "main", &id, &id, "test"])
+            .status
+            .success()
+    );
+    assert!(!execute(&[
+        "reflog",
+        path(root),
+        "write",
+        "refs/heads/main",
+        &id,
+        &"f".repeat(64),
+        "test"
+    ])
+    .status
+    .success());
+    assert_eq!(snapshot(root), before);
+    json(&[
+        "reflog",
+        path(root),
+        "write",
+        "refs/heads/main",
+        &"0".repeat(64),
+        &id,
+        "  recovered\n commit  ",
+    ]);
+    let entries = json(&["reflog", path(root), "show", "main"]);
+    assert_eq!(entries[0]["operation"], "recovered commit");
+    assert_eq!(entries[0]["old"], serde_json::Value::Null);
+    assert_eq!(ok(&["rev-parse", path(root), "HEAD"]), id);
+    json(&["maintenance", path(root), "run", "--task=reflog-expire"]);
+    ok(&["fsck", path(root)]);
+}

@@ -307,6 +307,14 @@ inspection commands include `rev-list`, `show-ref`, `for-each-ref`, `shortlog`,
 `range-diff`, `describe`, `archive`, and non-checkout `bisect`. They use uwgit's
 actual object and history model; consult command help for each option subset.
 
+Reference events include UTC Unix timestamps. `reflog DIR` retains the shared
+event view; `reflog DIR show [REF]` shows a selected log newest first (default
+`HEAD`). `list` lists recorded names and `exists REF` uses exit status 0/1.
+`rev-parse DIR 'HEAD@{2026-11-01T00:00:00Z}'` selects the most recent recorded
+event at or before that time. Numeric selectors remain ordinals. Dates use UTC;
+`@UNIX_SECONDS`, `now`, `yesterday`, and numeric relative ages such as
+`7.days.ago` are also accepted. Expired or absent evidence is reported, not guessed.
+
 ## 12. Clone, fetch, push, and offline exchange
 
 ```sh
@@ -330,9 +338,26 @@ remote configuration. Use HTTPS off loopback; insecure remote HTTP requires
 explicit opt-in. SSH URLs use the installed remote server and system account
 policy. Server administration is documented separately.
 
-A non-fast-forward push requires both server permission and an exact client
-`--force-with-lease OLD_ID`. An atomic multi-reference push is requested with
-`--atomic`; rejection of one update prevents the batch from being published.
+A non-fast-forward push requires server permission and an explicit force request:
+`--force-with-lease OLD_ID`, `--force`/`-f`, `+SOURCE:DESTINATION`, or `--mirror`.
+Every form retains an exact compare-and-swap lease from the advertisement;
+`--force-with-lease` additionally checks the caller's supplied old ID.
+`push DIR origin main` publishes the same named branch; `:topic` deletes a ref.
+`--all` publishes local branches, `--tags` local tags, and `--mirror` synchronizes
+the native branch/tag sets, including deletions and forced replacements. Deleting
+remote HEAD remains prohibited. `--all -u` saves upstreams only after confirmation.
+
+Multiple refspecs without `--atomic` return per-reference results from one batch;
+`--atomic` makes rejection of one update prevent the entire publication.
+`--dry-run` previews server validation without object/ref installation or hooks;
+hook approval can still reject the later real push. Repeat `-o VALUE` to pass
+literal bounded push options to administrator hooks. For example:
+
+```sh
+wasm-git push ./peer origin main:main topic:review --atomic -o review=ready
+wasm-git push ./peer origin --mirror --dry-run
+```
+
 After an ambiguous network failure, query remote refs before assuming the request
 failed or retrying with a changed lease.
 
@@ -396,6 +421,32 @@ pruned object cannot be restored without another retained copy or backup.
 Shared base packs and cross-pack deltas preserve original object IDs. A local
 fork requires a new destination and a compatible same-filesystem hard-link path;
 a failed fork must be inspected before the destination is reused.
+
+Reflogs retain abandoned history until explicitly expired. Preview and then apply
+the same retention policy before pruning objects:
+
+```sh
+wasm-git reflog ./history expire --all --expire=90.days.ago --expire-unreachable=30.days.ago -n
+wasm-git reflog ./history expire --all --expire=90.days.ago --expire-unreachable=30.days.ago
+wasm-git gc ./history --prune=now
+```
+
+Expiry is strictly older than the cutoff. `all` removes entries regardless of
+age; `never` disables that criterion. Unreachable expiry follows the selected
+branch/tag tip; HEAD uses the set of current local/tracking tips and detached
+worktree heads. Both old and new endpoints must be reachable. `--all` includes
+registered worktree HEAD logs; `--single-worktree` limits private HEAD-log processing.
+All selected logs are validated before the first rewrite. Pending history recovery
+in any registered worktree blocks mutation. Files are replaced atomically per log;
+an I/O failure can leave a safe, explicitly reported partial expiry, with refs and
+working bytes unchanged. Linked worktrees must remain available for validation.
+
+`--rewrite` reconnects retained old/new chains for selected logs only.
+`reflog DIR delete 'main@{1}' --rewrite [-n]` removes one entry without moving
+the branch. `write REF OLD_ID NEW_ID MESSAGE` appends a validated manual record;
+use full reference names and full native commit IDs (64 zeroes for absence).
+`maintenance DIR run --task=reflog-expire` applies the 90/30-day policy; default
+maintenance runs verify, expiry, then GC. Ordinary `gc` alone does not expire logs.
 
 ```sh
 wasm-git pool attach ./history https://node-a.example/pool https://node-b.example/pool
