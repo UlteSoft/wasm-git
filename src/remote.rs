@@ -917,7 +917,7 @@ fn exchange(
                 .arg("--url")
                 .arg(endpoint)
                 .env_remove("UWGIT_REMOTE_TOKEN");
-            subprocess(command, encoded, "HTTP").map_err(&uncertain)?
+            subprocess(command, encoded, "HTTP").map_err(uncertain)?
         }
         Endpoint::Ssh {
             host, port, root, ..
@@ -942,12 +942,12 @@ fn exchange(
                     shell_quote(&root)
                 ))
                 .env_remove("UWGIT_REMOTE_TOKEN");
-            subprocess(command, encoded, "SSH").map_err(&uncertain)?
+            subprocess(command, encoded, "SSH").map_err(uncertain)?
         }
     };
     let mut cursor = std::io::Cursor::new(&bytes);
     let (response, payload): (Response, Vec<u8>) =
-        protocol::read_packet(&mut cursor).map_err(&uncertain)?;
+        protocol::read_packet(&mut cursor).map_err(uncertain)?;
     if cursor.position() != bytes.len() as u64 {
         return Err(uncertain(
             "remote response has trailing bytes after its single RPC frame".into(),
