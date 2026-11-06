@@ -4,7 +4,9 @@ use crate::repository::RepositoryState;
 use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize};
 use std::io::{Cursor, Read, Write};
 
-const MAGIC: &[u8; 8] = b"UWGRPC01";
+const MAGIC: &[u8; 8] = b"UWGRPC02";
+pub const TRANSFER_CHUNK: usize = 1024 * 1024;
+pub const MAX_BUNDLE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 pub const MAX_PACKET_BYTES: usize = 64 * 1024 * 1024;
 const MAX_METADATA_BYTES: usize = 65_536;
 const HEADER_BYTES: usize = 20;
@@ -30,7 +32,7 @@ pub fn repository_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RefNamespace {
     Branch,
@@ -38,10 +40,27 @@ pub enum RefNamespace {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+
 pub enum Operation {
     Advertise {},
     Fetch {},
+    FetchSlice {
+        offset: u64,
+        expected: Option<String>,
+    },
+    UploadSlice {
+        transfer: String,
+        total: u64,
+        offset: u64,
+    },
+    ApplyUpload {
+        transfer: String,
+        #[serde(with = "publication")]
+        operation: Box<Operation>,
+    },
+    Fork {
+        destination: String,
+    },
     Push {
         branch: String,
         #[serde(deserialize_with = "present_option")]
@@ -57,6 +76,137 @@ pub enum Operation {
         new: Option<String>,
         force: bool,
     },
+    RefsPage {
+        after: Option<String>,
+        expected: Option<String>,
+    },
+    CancelUpload {
+        transfer: String,
+    },
+    PublishBatch {},
+    ObjectSlice {
+        id: String,
+        offset: u64,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RefUpdate {
+    pub namespace: RefNamespace,
+    pub name: String,
+    pub expected: Option<String>,
+    pub new: Option<String>,
+    pub force: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BatchPublication {
+    pub updates: Vec<RefUpdate>,
+    pub bundle: Vec<u8>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RefPage {
+    pub generation: String,
+    pub state: RepositoryState,
+    pub next: Option<String>,
+}
+
+// An uploaded bundle can end only in a publication. A separate, nonrecursive
+// wire enum prevents untrusted nested ApplyUpload frames exhausting the stack.
+mod publication {
+    use super::*;
+    #[derive(Serialize)]
+    enum Borrowed<'a> {
+        Push {
+            branch: &'a str,
+            expected: &'a Option<String>,
+            force: bool,
+        },
+        UpdateRef {
+            namespace: &'a RefNamespace,
+            name: &'a str,
+            expected: &'a Option<String>,
+            new: &'a Option<String>,
+            force: bool,
+        },
+        PublishBatch {},
+    }
+    #[derive(Deserialize)]
+    enum Owned {
+        Push {
+            branch: String,
+            expected: Option<String>,
+            force: bool,
+        },
+        UpdateRef {
+            namespace: RefNamespace,
+            name: String,
+            expected: Option<String>,
+            new: Option<String>,
+            force: bool,
+        },
+        PublishBatch {},
+    }
+    pub fn serialize<S: serde::Serializer>(value: &Operation, s: S) -> Result<S::Ok, S::Error> {
+        match value {
+            Operation::PublishBatch {} => Borrowed::PublishBatch {}.serialize(s),
+            Operation::Push {
+                branch,
+                expected,
+                force,
+            } => Borrowed::Push {
+                branch,
+                expected,
+                force: *force,
+            }
+            .serialize(s),
+            Operation::UpdateRef {
+                namespace,
+                name,
+                expected,
+                new,
+                force,
+            } => Borrowed::UpdateRef {
+                namespace,
+                name,
+                expected,
+                new,
+                force: *force,
+            }
+            .serialize(s),
+            _ => Err(serde::ser::Error::custom(
+                "uploaded operation must publish a ref",
+            )),
+        }
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Box<Operation>, D::Error> {
+        Ok(Box::new(match Owned::deserialize(d)? {
+            Owned::PublishBatch {} => Operation::PublishBatch {},
+            Owned::Push {
+                branch,
+                expected,
+                force,
+            } => Operation::Push {
+                branch,
+                expected,
+                force,
+            },
+            Owned::UpdateRef {
+                namespace,
+                name,
+                expected,
+                new,
+                force,
+            } => Operation::UpdateRef {
+                namespace,
+                name,
+                expected,
+                new,
+                force,
+            },
+        }))
+    }
 }
 
 // A nullable mutation operand must still be present. Serde's ordinary Option
@@ -100,7 +250,7 @@ pub fn write_packet<W: Write, T: Serialize>(
     metadata: &T,
     payload: &[u8],
 ) -> Result<(), String> {
-    let metadata = serde_json::to_vec(metadata).map_err(|e| e.to_string())?;
+    let metadata = crate::binary::encode(metadata).map_err(|e| e.to_string())?;
     lengths(metadata.len(), payload.len())?;
     writer
         .write_all(MAGIC)
@@ -112,7 +262,9 @@ pub fn write_packet<W: Write, T: Serialize>(
 }
 
 /// Read one frame without waiting for EOF. Stream owners check EOF separately.
-pub fn read_packet<R: Read, T: DeserializeOwned>(reader: &mut R) -> Result<(T, Vec<u8>), String> {
+pub fn read_packet<R: Read, T: DeserializeOwned + Serialize>(
+    reader: &mut R,
+) -> Result<(T, Vec<u8>), String> {
     let mut header = [0; HEADER_BYTES];
     reader
         .read_exact(&mut header)
@@ -124,12 +276,12 @@ pub fn read_packet<R: Read, T: DeserializeOwned>(reader: &mut R) -> Result<(T, V
     let payload = usize::try_from(u64::from_be_bytes(header[12..20].try_into().unwrap()))
         .map_err(|_| "RPC payload length does not fit this platform")?;
     lengths(metadata, payload)?;
-    let mut json = vec![0; metadata];
+    let mut encoded_metadata = vec![0; metadata];
     reader
-        .read_exact(&mut json)
+        .read_exact(&mut encoded_metadata)
         .map_err(|e| format!("read RPC metadata: {e}"))?;
-    let metadata =
-        serde_json::from_slice(&json).map_err(|e| format!("invalid RPC metadata: {e}"))?;
+    let metadata = crate::binary::decode(&encoded_metadata)
+        .map_err(|e| format!("invalid RPC metadata: {e}"))?;
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(payload)
@@ -141,7 +293,9 @@ pub fn read_packet<R: Read, T: DeserializeOwned>(reader: &mut R) -> Result<(T, V
     Ok((metadata, bytes))
 }
 
-pub fn read_complete_packet<T: DeserializeOwned>(bytes: &[u8]) -> Result<(T, Vec<u8>), String> {
+pub fn read_complete_packet<T: DeserializeOwned + Serialize>(
+    bytes: &[u8],
+) -> Result<(T, Vec<u8>), String> {
     let mut reader = Cursor::new(bytes);
     let packet = read_packet(&mut reader)?;
     if reader.position() != bytes.len() as u64 {
@@ -153,44 +307,98 @@ pub fn read_complete_packet<T: DeserializeOwned>(bytes: &[u8]) -> Result<(T, Vec
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn request() -> Request {
+    fn request(operation: Operation) -> Request {
         Request {
             version: 1,
             repository: "project".into(),
-            operation: Operation::Fetch {},
+            operation,
         }
     }
-
-    #[test]
-    fn publication_outcome_flag_is_explicit_and_older_responses_default_to_known() {
-        let legacy =
-            br#"{"version":1,"ok":false,"error":"known rejection","state":null,"tip":null}"#;
-        let response: Response = serde_json::from_slice(legacy).unwrap();
-        assert!(!response.publication_unknown);
-        let unknown = br#"{"version":1,"ok":false,"publication_unknown":true,"error":"inspect ref","state":null,"tip":null}"#;
-        let response: Response = serde_json::from_slice(unknown).unwrap();
-        assert!(response.publication_unknown);
-    }
-
-    #[test]
-    fn packet_roundtrip_and_every_fixed_truncation() {
+    fn packet(operation: Operation) -> Vec<u8> {
         let mut bytes = Vec::new();
-        write_packet(&mut bytes, &request(), b"\0\xffpayload").unwrap();
-        let (got, payload): (Request, _) = read_complete_packet(&bytes).unwrap();
-        assert_eq!(got.repository, "project");
-        assert_eq!(payload, b"\0\xffpayload");
-        for end in [0, 7, 8, 11, 19, 20, bytes.len() - 1] {
-            assert!(read_complete_packet::<Request>(&bytes[..end]).is_err());
+        write_packet(&mut bytes, &request(operation), b"\0\xffpayload").unwrap();
+        bytes
+    }
+    #[test]
+    fn every_opcode_roundtrips_with_explicit_option_operands() {
+        for operation in [
+            Operation::Advertise {},
+            Operation::Fetch {},
+            Operation::FetchSlice {
+                offset: 9,
+                expected: Some("a".repeat(64)),
+            },
+            Operation::UploadSlice {
+                transfer: "b".repeat(64),
+                total: 32,
+                offset: 0,
+            },
+            Operation::ApplyUpload {
+                transfer: "c".repeat(64),
+                operation: Box::new(Operation::Push {
+                    branch: "main".into(),
+                    expected: None,
+                    force: false,
+                }),
+            },
+            Operation::Fork {
+                destination: "fork".into(),
+            },
+            Operation::Push {
+                branch: "main".into(),
+                expected: Some("d".repeat(64)),
+                force: true,
+            },
+            Operation::UpdateRef {
+                namespace: RefNamespace::Tag,
+                name: "v1".into(),
+                expected: None,
+                new: None,
+                force: false,
+            },
+        ] {
+            let original = crate::binary::encode(&operation).unwrap();
+            let bytes = packet(operation);
+            let (got, payload): (Request, _) = read_complete_packet(&bytes).unwrap();
+            assert_eq!(crate::binary::encode(&got.operation).unwrap(), original);
+            assert_eq!(payload, b"\0\xffpayload");
+            assert_eq!(got.repository, "project");
+        }
+        for unknown in [false, true] {
+            let response = Response {
+                version: 1,
+                ok: false,
+                publication_unknown: unknown,
+                error: Some("inspect ref".into()),
+                state: None,
+                tip: None,
+            };
+            let mut bytes = Vec::new();
+            write_packet(&mut bytes, &response, &[]).unwrap();
+            let (got, _): (Response, _) = read_complete_packet(&bytes).unwrap();
+            assert_eq!(got.publication_unknown, unknown);
+        }
+    }
+    #[test]
+    fn every_truncation_and_trailing_bytes_are_rejected() {
+        let mut bytes = packet(Operation::Push {
+            branch: "topic".into(),
+            expected: None,
+            force: false,
+        });
+        for end in 0..bytes.len() {
+            assert!(
+                read_complete_packet::<Request>(&bytes[..end]).is_err(),
+                "{end}"
+            );
         }
         bytes.push(0);
         assert!(read_complete_packet::<Request>(&bytes)
             .unwrap_err()
             .contains("trailing"));
     }
-
     #[test]
-    fn lengths_and_unknown_fields_fail_before_payload_allocation() {
+    fn lengths_opcodes_option_tags_and_nested_uploads_fail_closed() {
         for (metadata, payload) in [
             (0u32, 0u64),
             (65_537, 0),
@@ -202,50 +410,23 @@ mod tests {
             bytes.extend(payload.to_be_bytes());
             assert!(read_complete_packet::<Request>(&bytes).is_err());
         }
-        for kind in ["advertise", "fetch"] {
-            let metadata = serde_json::json!({"version":1,"repository":"x","operation":{"kind":kind,"unknown":true}});
-            let mut bytes = Vec::new();
-            write_packet(&mut bytes, &metadata, &[]).unwrap();
-            assert!(read_complete_packet::<Request>(&bytes).is_err(), "{kind}");
-        }
-    }
-
-    #[test]
-    fn nullable_mutation_operands_must_be_present_but_explicit_null_remains_valid() {
-        for (mut operation, missing) in [
-            (
-                serde_json::json!({"kind":"push","branch":"topic","expected":null,"force":false}),
-                "expected",
-            ),
-            (
-                serde_json::json!({"kind":"update_ref","namespace":"tag","name":"v1","expected":null,"new":null,"force":false}),
-                "expected",
-            ),
-            (
-                serde_json::json!({"kind":"update_ref","namespace":"branch","name":"topic","expected":null,"new":null,"force":false}),
-                "new",
-            ),
-        ] {
-            operation.as_object_mut().unwrap().remove(missing);
-            let metadata =
-                serde_json::json!({"version":1,"repository":"project","operation":operation});
-            let mut frame = Vec::new();
-            write_packet(&mut frame, &metadata, &[]).unwrap();
-            let error = read_complete_packet::<Request>(&frame).unwrap_err();
-            assert!(
-                error.contains("missing field") && error.contains(missing),
-                "{error}"
-            );
-        }
-        for operation in [
-            serde_json::json!({"kind":"push","branch":"topic","expected":null,"force":false}),
-            serde_json::json!({"kind":"update_ref","namespace":"tag","name":"v1","expected":null,"new":null,"force":false}),
-            serde_json::json!({"kind":"update_ref","namespace":"branch","name":"topic","expected":"a".repeat(64),"new":"b".repeat(64),"force":true}),
-        ] {
-            let metadata =
-                serde_json::json!({"version":1,"repository":"project","operation":operation});
-            let request: Request = serde_json::from_value(metadata.clone()).unwrap();
-            assert_eq!(serde_json::to_value(request).unwrap(), metadata);
-        }
+        let mut bytes = packet(Operation::Fetch {});
+        // Native schema: header20, record magic8, version1, string length1,
+        // repository7, opcode1. An unsupported opcode cannot become a command.
+        bytes[37] = 250;
+        assert!(read_complete_packet::<Request>(&bytes).is_err());
+        let mut bytes = packet(Operation::Push {
+            branch: "x".into(),
+            expected: None,
+            force: false,
+        });
+        bytes[40] = 2;
+        assert!(read_complete_packet::<Request>(&bytes).is_err());
+        let invalid = request(Operation::ApplyUpload {
+            transfer: "a".repeat(64),
+            operation: Box::new(Operation::Fetch {}),
+        });
+        assert!(write_packet(&mut Vec::new(), &invalid, &[]).is_err());
+        assert!(read_complete_packet::<Request>(br#"{"version":1}"#).is_err());
     }
 }

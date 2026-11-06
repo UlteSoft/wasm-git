@@ -66,7 +66,7 @@ impl DependencyGraph {
         let mut new_side = Side::new(new);
         let mut forward = BTreeMap::<u32, ProvenTarget>::new();
         let mut reverse = BTreeMap::<u32, ProvenTarget>::new();
-        let mut groups = BTreeMap::<String, ReadyGroup>::new();
+        let mut groups = BTreeMap::<Vec<u8>, ReadyGroup>::new();
 
         loop {
             // Register the complete ready batch before considering any pair.
@@ -176,7 +176,7 @@ impl<'a> Side<'a> {
             })
             .collect();
         let mut imports = Vec::new();
-        let mut import_counts = BTreeMap::<String, usize>::new();
+        let mut import_counts = BTreeMap::<Vec<u8>, usize>::new();
         for import in module
             .imports
             .iter()
@@ -273,8 +273,8 @@ impl<'a> Side<'a> {
         &mut self,
         old_side: bool,
         proven: &BTreeMap<u32, ProvenTarget>,
-        groups: &mut BTreeMap<String, ReadyGroup>,
-        touched: &mut BTreeSet<String>,
+        groups: &mut BTreeMap<Vec<u8>, ReadyGroup>,
+        touched: &mut BTreeSet<Vec<u8>>,
     ) {
         while let Some(index) = self.ready.pop_front() {
             let state = self
@@ -343,15 +343,15 @@ enum OperandKey<'a> {
     RefFunc(u32),
 }
 
-fn import_key(binding: &ImportBindingEvidence) -> String {
-    serde_json::to_string(&FunctionKey::Import(binding)).expect("import binding serializes")
+fn import_key(binding: &ImportBindingEvidence) -> Vec<u8> {
+    crate::binary::encode(&FunctionKey::Import(binding)).expect("import binding serializes")
 }
 
 fn ready_key(
     state: &FunctionState<'_>,
     old_side: bool,
     proven: &BTreeMap<u32, ProvenTarget>,
-) -> Option<String> {
+) -> Option<Vec<u8>> {
     if let Some(binding) = &state.import {
         return Some(import_key(binding));
     }
@@ -373,7 +373,7 @@ fn ready_key(
         });
     }
     Some(
-        serde_json::to_string(&FunctionKey::Defined {
+        crate::binary::encode(&FunctionKey::Defined {
             type_id: &state.function.type_id,
             locals: &state.function.locals,
             operators,

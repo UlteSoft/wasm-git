@@ -1,5 +1,7 @@
 //! Fixed raw committed-file exports. Parent executes only in SSH Linux cgroup.
 //! No randomized inputs, fuzz, guest execution, or extraction into repositories.
+#[path = "support/native.rs"]
+mod native;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -385,7 +387,7 @@ fn malformed_index_pending_and_dirty_or_missing_work_are_not_archive_inputs() {
     let (t, _, _) = populated();
     let (_, clean) = t.export("HEAD", "clean.tar", &[]);
     fs::write(t.path(".uwgit/index"), b"malformed index retained").unwrap();
-    fs::write(t.path(".uwgit/pending.json"), b"malformed journal retained").unwrap();
+    fs::write(t.path(".uwgit/pending.bin"), b"malformed journal retained").unwrap();
     t.write("a.wasm", b"uncommitted invalid work");
     fs::remove_file(t.path("nested/文件.wasm")).unwrap();
     t.write("private.txt", b"untracked private");
@@ -515,11 +517,11 @@ fn named_trees_with_a_legacy_binding_keep_that_fact_but_reject_legacy_renaming()
     ok(&["commit", t.root(), s(&input), "-m", "legacy root"]);
     let chosen = "chosen/stored.wasm";
     t.write(chosen, A);
-    let mut raw = b"UWGITIDX\x01".to_vec();
-    raw.extend_from_slice(&(chosen.len() as u64).to_le_bytes());
-    raw.extend_from_slice(&(A.len() as u64).to_le_bytes());
-    raw.extend_from_slice(chosen.as_bytes());
-    raw.extend_from_slice(A);
+    let raw = native::Index::new(
+        BTreeMap::from([(chosen.into(), A.to_vec())]),
+        Some(chosen.into()),
+    )
+    .bytes();
     fs::write(t.path(".uwgit/index"), raw).unwrap();
     t.commit("promote explicit binding to named tree");
     let (report, bytes) = t.export("HEAD", "named.tar", &[]);

@@ -1,5 +1,7 @@
 //! Fixed linear rebase journals, complete-index resolution, and exact recovery.
 //! No fuzz, generated corpus, or guest execution.
+#[path = "support/native.rs"]
+mod native;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
@@ -50,7 +52,7 @@ impl Temp {
         ok(&["rev-parse", self.root(), "HEAD"]).trim().into()
     }
     fn journal(&self) -> Value {
-        serde_json::from_slice(&fs::read(self.path(".uwgit/pending.json")).unwrap()).unwrap()
+        native::pending_value(&fs::read(self.path(".uwgit/pending.bin")).unwrap())
     }
     fn index(&self) -> Option<Vec<u8>> {
         match fs::read(self.path(".uwgit/index")) {
@@ -307,7 +309,7 @@ fn automatic_stages_allow_consecutive_resolutions_without_restoring_or_filling_i
     assert_eq!(fs::read(t.path("tail.wasm")).unwrap(), HEADER);
     assert_eq!(value(&["status", t.root()])["staged"], false);
     assert_eq!(reflog_len(&t), logs + 1);
-    assert!(!t.path(".uwgit/pending.json").exists());
+    assert!(!t.path(".uwgit/pending.bin").exists());
     ok(&["fsck", t.root()]);
 }
 
@@ -330,7 +332,7 @@ fn an_empty_rebase_queue_fast_forwards_to_the_frozen_onto_without_synthetic_comm
         value(&["count-objects", t.root(), "-v"])["by_kind"]["commit"]["objects"],
         before
     );
-    assert!(!t.path(".uwgit/pending.json").exists());
+    assert!(!t.path(".uwgit/pending.bin").exists());
 }
 
 #[test]
@@ -364,7 +366,7 @@ fn two_resolutions_preserve_dirty_index_and_work_and_publish_only_the_final_tip(
     assert_eq!(fs::read(t.path("tail.wasm")).unwrap(), HEADER);
     assert_eq!(fs::read(t.path("untracked.wasm")).unwrap(), UNKNOWN);
     assert_eq!(reflog_len(&t), logs + 1);
-    assert!(!t.path(".uwgit/pending.json").exists());
+    assert!(!t.path(".uwgit/pending.bin").exists());
     let stored = t.stored("HEAD");
     assert_eq!(stored["a.wasm"], module(9));
     assert_eq!(stored["b.wasm"], module(9));
@@ -480,7 +482,7 @@ fn abort_after_manual_progress_restores_the_original_tracked_domain_and_raw_inde
     let mut expected = original;
     expected.insert(PathBuf::from("created.wasm"), Entry::File(UNKNOWN.into()));
     assert_eq!(worktree(&t), expected);
-    assert!(!t.path(".uwgit/pending.json").exists());
+    assert!(!t.path(".uwgit/pending.bin").exists());
     assert_eq!(
         value(&["status", t.root()])["untracked"],
         json!(["created.wasm"])
@@ -503,7 +505,7 @@ fn blockers_refuse_abort_before_any_write_and_quit_preserves_all_user_bytes() {
     assert_eq!(t.index(), index);
     assert_eq!(worktree(&t), work);
     assert_eq!(t.head(), head);
-    assert!(!t.path(".uwgit/pending.json").exists());
+    assert!(!t.path(".uwgit/pending.bin").exists());
 }
 
 #[test]
@@ -541,7 +543,7 @@ fn clean_recorded_rebase_rejects_untracked_file_and_directory_collisions_before_
             t.write("upstream.wasm", HEADER);
         }
         rejected(&t, &["rebase", t.root(), "main", "--record-conflict"]);
-        assert!(!t.path(".uwgit/pending.json").exists());
+        assert!(!t.path(".uwgit/pending.bin").exists());
     }
 }
 
@@ -571,7 +573,7 @@ fn clean_recorded_rebase_updates_an_existing_clean_workspace_but_keeps_no_index_
             assert!(done.get("index_updated").is_none());
             assert!(done.get("worktree_updated").is_none());
         }
-        assert!(!t.path(".uwgit/pending.json").exists());
+        assert!(!t.path(".uwgit/pending.bin").exists());
         assert_eq!(
             value(&["show", t.root(), "HEAD"])["parents"],
             json!([upstream])
@@ -611,9 +613,13 @@ fn frozen_upstream_and_queue_survive_ref_replacement_and_stale_bindings_only_all
         t.record();
         if same_tip_other_branch {
             ok(&["branch", t.root(), "same-tip", "HEAD"]);
-            fs::write(t.path(".uwgit/HEAD"), b"same-tip\n").unwrap();
+            fs::write(t.path(".uwgit/HEAD"), native::reference("same-tip")).unwrap();
         } else {
-            fs::write(t.path(".uwgit/refs/feature"), format!("{}\n", h.upstream)).unwrap();
+            fs::write(
+                t.path(".uwgit/refs/feature"),
+                native::reference(&h.upstream),
+            )
+            .unwrap();
         }
         assert_eq!(value(&["status", t.root()])["pending"]["stale"], true);
         rejected(&t, &["rebase", t.root(), "--continue", "--resolved-index"]);
@@ -738,11 +744,11 @@ fn legacy_history_requires_an_explicit_anchor_and_abort_restores_old_index_encod
     rejected(&t, &["rebase", t.root(), "main", "--record-conflict"]);
     ok(&["add", t.root(), "old.wasm"]);
     let bytes = module(2);
-    let mut raw = b"UWGITIDX\x01".to_vec();
-    raw.extend_from_slice(&(b"old.wasm".len() as u64).to_le_bytes());
-    raw.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
-    raw.extend_from_slice(b"old.wasm");
-    raw.extend_from_slice(&bytes);
+    let raw = native::Index::new(
+        BTreeMap::from([("old.wasm".into(), bytes.to_vec())]),
+        Some("old.wasm".into()),
+    )
+    .bytes();
     fs::write(t.path(".uwgit/index"), &raw).unwrap();
     let head = t.head();
     let recorded = t.record();

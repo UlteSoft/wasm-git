@@ -217,7 +217,7 @@ status 明确标出未解决路径及现存 stage。commit、write-tree、stash 
 拒绝未解决 index；当前 diff-files/diff-index/diff-worktree 也明确拒绝，尚未实现 combined diff。
 clean 将未解决路径视为受控文件，不能当作 untracked 删除。
 
-首次保存 stages 时 index 至少为 `UWGITIDX` 格式 3；解决路径生成撤回记录时升级为格式 5。正常旧 index 格式 1/2 仍可读取。
+index 统一使用 `UWGITIDX\x06` 二进制签名。内部 format 字段区分 stages、flags 与 resolve-undo 能力；不读取旧磁盘格式。
 老客户端不认识格式 3 时必须拒绝，不能丢弃 stages。不可变 Wasm/tree/commit 对象编码和 ID 不变。
 
 stages 可由 read-tree、update-index 或录制的 merge/pick/revert/rebase 队列建立。
@@ -262,7 +262,7 @@ JSON 的记录含 `resolve_undo: true`、`reason: "U"` 和真实原生 ID；该 
 `--clear-resolve-undo` 只清除全部撤回记录，保留现存 stages、文件图像、标志和工作副本。
 两个控制与内容更新/refresh/标志修改互斥；clear 不接受路径或 stdin。两者都支持 dry-run、遵守 index 锁。
 
-version 1/2/3/4 索引继续可读，原编码没有新增空字段；第一次保存撤回记录时升级为 `UWGITIDX\x05`。
+resolve-undo 与其他索引字段按位置保存，空集合编码为零长度；没有旧版本索引读取分支。
 清除最后一个记录后保留 version 5，后续标志修改不能降级或丢记录。索引元数据与图像通过同一次 canonical 写入发布。
 未知字段、错误 magic/version、非法路径、空记录或非 Wasm 原侧均拒绝。不可变 Wasm/tree/commit 编码和 ID 不变。
 

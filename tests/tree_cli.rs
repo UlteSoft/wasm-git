@@ -1,5 +1,7 @@
 //! Fixed multi-module tree workflows; all fixture data stays under /tmp.
 //! Modules are stored/audited, never executed. No generated or fuzz input.
+#[path = "support/native.rs"]
+mod native;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
@@ -402,7 +404,7 @@ fn final_deletion_and_initial_allow_empty_create_real_empty_trees() {
     let empty = t.commit("remove all files");
     assert!(fs::read(t.path(".uwgit/index"))
         .unwrap()
-        .starts_with(b"UWGITIDX\x02"));
+        .starts_with(b"UWGITIDX\x06"));
     assert_eq!(t.entries("HEAD"), serde_json::json!({}));
     success(&["reset", t.root(), "--hard", "HEAD~1"]);
     assert_eq!(fs::read(t.path("a.wasm")).unwrap(), A);
@@ -514,11 +516,11 @@ fn v1_binary_index_and_explicit_first_add_anchor_promote_without_guessing_names(
     assert_eq!(success(&["ls-files", &clone]).trim(), "");
     let path = "chosen/old.wasm";
     t.write(path, A);
-    let mut bytes = b"UWGITIDX\x01".to_vec();
-    bytes.extend_from_slice(&(path.len() as u64).to_le_bytes());
-    bytes.extend_from_slice(&(A.len() as u64).to_le_bytes());
-    bytes.extend_from_slice(path.as_bytes());
-    bytes.extend_from_slice(A);
+    let bytes = native::Index::new(
+        BTreeMap::from([(path.into(), A.to_vec())]),
+        Some(path.into()),
+    )
+    .bytes();
     fs::write(t.path(".uwgit/index"), bytes).unwrap();
     assert_eq!(json(&["status", t.root()])["staged"], false);
     let promoted = t.commit("explicit v1 filename");
@@ -566,8 +568,7 @@ fn restore_retains_explicit_v1_anchor_and_rejects_other_tree_anchor_before_write
         }
         success(&args);
         let encoded = fs::read(legacy.path(".uwgit/index")).unwrap();
-        let index: Value =
-            serde_json::from_slice(encoded.strip_prefix(b"UWGITIDX\x02").unwrap()).unwrap();
+        let index: Value = native::index_value(&encoded);
         assert_eq!(index["legacy_path"], chosen);
         let status = json(&["status", legacy.root()]);
         assert_eq!(status["legacy_head_unmapped"], false);
@@ -747,19 +748,29 @@ fn status_scans_only_regular_untracked_wasm_and_diff_retains_add_delete_bytes() 
 }
 
 #[test]
-fn corrupt_v2_index_paths_duplicates_and_unknown_fields_are_never_silently_repaired() {
+fn corrupt_binary_index_paths_duplicates_and_trailing_fields_are_never_silently_repaired() {
     let t = Temp::new();
     t.write("a.wasm", A);
     success(&["add", t.root(), "a.wasm"]);
     t.commit("base");
-    for payload in [
-        r#"{"format":2,"files":{"../bad":[0,97,115,109,1,0,0,0]},"legacy_path":null}"#,
-        r#"{"format":2,"files":{},"legacy_path":null,"unknown":true}"#,
-        r#"{"format":2,"files":{"a.wasm":[0,97,115,109,1,0,0,0],"a.wasm":[0,97,115,109,1,0,0,0]},"legacy_path":null}"#,
-    ] {
-        let mut bytes = b"UWGITIDX\x02".to_vec();
-        bytes.extend_from_slice(payload.as_bytes());
-        bytes.push(b'\n');
+    let bad_path = native::Index::new(BTreeMap::from([("../bad".into(), A.to_vec())]), None);
+    let bad_path = bad_path.bytes();
+    let mut trailing = native::Index::new(BTreeMap::new(), None).bytes();
+    trailing.push(0);
+    // A sequence of pairs has the same length/pair representation as a map,
+    // allowing a deliberately duplicated key without normalizing it away.
+    let duplicate = wasm_git::binary::encode(&(
+        2_u32,
+        vec![("a.wasm", A.to_vec()), ("a.wasm", A.to_vec())],
+        None::<String>,
+        BTreeMap::<String, native::Stages>::new(),
+        BTreeMap::<String, native::Flags>::new(),
+        std::collections::BTreeSet::<String>::new(),
+        BTreeMap::<String, native::Stages>::new(),
+    ))
+    .unwrap();
+    let duplicate = [b"UWGITIDX\x06".as_slice(), &duplicate].concat();
+    for bytes in [bad_path, trailing, duplicate] {
         fs::write(t.path(".uwgit/index"), bytes).unwrap();
         let before = snapshot(&t.0);
         failure(&["add", t.root(), "a.wasm"]);

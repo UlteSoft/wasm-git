@@ -417,7 +417,7 @@ fn cli_import_reordering_reports_each_call_site_even_when_target_sets_and_bytes_
         assert!(caller["operators"].as_array().unwrap().is_empty());
         let binding = &caller["call_bindings"][0];
         assert_eq!(binding["relation"], "different_target");
-        assert_eq!(binding["pairing"], "opcode_alignment");
+        assert_eq!(binding["pairing"], "wasm_region_instruction_alignment");
         assert_eq!(binding["target_changed"], true);
         assert_eq!(binding["identity_unproven"], true);
         assert_eq!(binding["old"]["function_index"], 0);

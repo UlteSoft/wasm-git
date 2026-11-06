@@ -1,3 +1,4 @@
+#![cfg(feature = "server")]
 use serde_json::Value;
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -99,7 +100,7 @@ fn squash_stages_the_target_without_moving_head_and_the_following_commit_has_one
     assert_eq!(report["status"], "squashed");
     assert_eq!(ok(&["rev-parse", p(&root), "HEAD"]), base);
     assert_eq!(fs::read(root.join("a.wasm")).unwrap(), wasm(2));
-    assert!(!root.join(".uwgit/pending.json").exists());
+    assert!(!root.join(".uwgit/pending.bin").exists());
     ok(&["commit", p(&root), "-m", "reviewed squash"]);
     let info = json(&["cat-file", p(&root), "HEAD"]);
     assert_eq!(info["parents"], serde_json::json!([base]));

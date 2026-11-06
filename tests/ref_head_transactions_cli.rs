@@ -1,3 +1,5 @@
+#[path = "support/native.rs"]
+mod native;
 use serde_json::Value;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -103,15 +105,7 @@ fn seed(root: &Path) -> (String, String) {
 }
 fn log(root: &Path, name: &str) -> Vec<Value> {
     let bytes = fs::read(root.join(".uwgit").join(name)).unwrap();
-    if name == "reflog" {
-        String::from_utf8(bytes)
-            .unwrap()
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect()
-    } else {
-        serde_json::from_slice(&bytes).unwrap()
-    }
+    native::log_value(&bytes)
 }
 fn image(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     fn walk(root: &Path, path: &Path, result: &mut Vec<(PathBuf, Vec<u8>)>) {
@@ -141,7 +135,7 @@ fn branch_creation_and_symbolic_head_publish_together_with_correct_logs_and_orig
     let index = fs::read(root.join(".uwgit/index")).unwrap();
     fs::write(root.join("a.wasm"), b"dirty original bytes").unwrap();
     let global = log(&root, "reflog");
-    let local = log(&root, "head-reflog.json");
+    let local = log(&root, "head-reflog.bin");
     assert_eq!(success(batch(&root,&format!("start\ncreate refs/heads/reviewed {first}\nsymref-update HEAD refs/heads/reviewed ref refs/heads/main\nprepare\ncommit\n"),false,false)),b"start: ok\nprepare: ok\ncommit: ok\n");
     assert_eq!(
         ok(&["symbolic-ref", p(&root), "HEAD"]),
@@ -158,12 +152,12 @@ fn branch_creation_and_symbolic_head_publish_together_with_correct_logs_and_orig
     assert_eq!(&next[..global.len()], global);
     assert_eq!(next.len(), global.len() + 2);
     assert_eq!(next.last().unwrap()["reference"], "HEAD");
-    let next_local = log(&root, "head-reflog.json");
+    let next_local = log(&root, "head-reflog.bin");
     assert_eq!(next_local.len(), local.len() + 1);
     assert_eq!(next_local.last().unwrap()["old"], second);
     assert_eq!(next_local.last().unwrap()["new"], first);
     assert_eq!(ok(&["rev-parse", p(&root), "HEAD@{1}"]), second);
-    assert!(!root.join(".uwgit/ref-transaction.json").exists());
+    assert!(!root.join(".uwgit/ref-transaction.bin").exists());
     ok(&["fsck", p(&root)]);
 }
 
@@ -173,16 +167,16 @@ fn head_uses_final_destination_tip_while_oid_operands_use_the_original_snapshot(
     let root = temp.path("repo");
     let (first, second) = seed(&root);
     ok(&["branch", p(&root), "topic", &first]);
-    let local = log(&root, "head-reflog.json").len();
+    let local = log(&root, "head-reflog.bin").len();
     success(batch(&root,&format!("create refs/tags/prior HEAD\nupdate refs/heads/topic {second} {first}\nsymref-update HEAD refs/heads/topic ref refs/heads/main\n"),false,false));
     assert_eq!(ok(&["rev-parse", p(&root), "HEAD"]), second);
     assert_eq!(ok(&["rev-parse", p(&root), "prior"]), second);
-    let after = log(&root, "head-reflog.json");
+    let after = log(&root, "head-reflog.bin");
     assert_eq!(after.len(), local + 1);
     assert_eq!(after.last().unwrap()["old"], second);
     assert_eq!(after.last().unwrap()["new"], second);
     ok(&["symbolic-ref", p(&root), "HEAD", "refs/heads/main"]);
-    assert_eq!(log(&root, "head-reflog.json").len(), local + 2);
+    assert_eq!(log(&root, "head-reflog.bin").len(), local + 2);
     let before = image(&root);
     ok(&["symbolic-ref", p(&root), "HEAD", "refs/heads/main"]);
     assert_eq!(image(&root), before);
@@ -208,13 +202,13 @@ fn ref_and_oid_leases_reject_the_whole_batch_or_only_the_head_as_requested() {
         let before = image(&root);
         assert!(!batch(&root, &records, false, false).status.success());
         assert_eq!(image(&root), before);
-        let local = log(&root, "head-reflog.json");
+        let local = log(&root, "head-reflog.bin");
         assert_eq!(
             success(batch(&root, &records, true, false)),
             format!("rejected HEAD refs/heads/topic {reason} incorrect old value provided\n")
                 .into_bytes()
         );
-        assert_eq!(log(&root, "head-reflog.json"), local);
+        assert_eq!(log(&root, "head-reflog.bin"), local);
         assert_eq!(ok(&["rev-parse", p(&root), "HEAD"]), second);
         assert_eq!(ok(&["rev-parse", p(&root), suffix]), first);
     }
@@ -318,7 +312,7 @@ fn verify_noop_and_unborn_head_use_real_absence_without_synthetic_commits() {
         false,
         false,
     ));
-    let last = log(&root, "head-reflog.json").pop().unwrap();
+    let last = log(&root, "head-reflog.bin").pop().unwrap();
     assert!(last["old"].is_null() && last["new"].is_null());
     assert_eq!(
         fs::read_dir(root.join(".uwgit/objects")).unwrap().count(),
@@ -483,7 +477,7 @@ fn linked_worktree_head_registry_and_local_logs_change_together_without_touching
     ok(&["branch", p(&root), "peer", &first]);
     ok(&["branch", p(&root), "topic", &second]);
     ok(&["worktree", p(&root), "add", p(&peer), "peer"]);
-    let primary_log = fs::read(root.join(".uwgit/head-reflog.json")).unwrap();
+    let primary_log = fs::read(root.join(".uwgit/head-reflog.bin")).unwrap();
     let index = fs::read(peer.join(".uwgit/index")).unwrap();
     let bytes = fs::read(peer.join("a.wasm")).unwrap();
     success(batch(
@@ -495,7 +489,7 @@ fn linked_worktree_head_registry_and_local_logs_change_together_without_touching
     assert_eq!(ok(&["symbolic-ref", p(&peer), "HEAD"]), "refs/heads/topic");
     assert_eq!(ok(&["rev-parse", p(&peer), "HEAD"]), second);
     assert_eq!(
-        fs::read(root.join(".uwgit/head-reflog.json")).unwrap(),
+        fs::read(root.join(".uwgit/head-reflog.bin")).unwrap(),
         primary_log
     );
     assert_eq!(fs::read(peer.join(".uwgit/index")).unwrap(), index);
@@ -561,9 +555,12 @@ fn prepared_head_batch_holds_the_writer_lock_and_abort_or_eof_preserves_every_by
             rx.recv_timeout(Duration::from_secs(10)).unwrap(),
             "prepare: ok"
         );
-        assert_eq!(fs::read(root.join(".uwgit/HEAD")).unwrap(), b"main\n");
+        assert_eq!(
+            fs::read(root.join(".uwgit/HEAD")).unwrap(),
+            native::reference("main")
+        );
         assert!(!root.join(".uwgit/refs/reviewed").exists());
-        assert!(!root.join(".uwgit/ref-transaction.json").exists());
+        assert!(!root.join(".uwgit/ref-transaction.bin").exists());
         assert!(!execute(&["show-ref", p(&root)], &[]).status.success());
         if ending != "eof" {
             writeln!(input, "{ending}").unwrap();

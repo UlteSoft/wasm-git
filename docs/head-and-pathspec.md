@@ -25,7 +25,7 @@ linked worktree 可以同时 detached 在同一提交；这不占用任何分支
 
 完整 bundle 为 detached HEAD 使用 manifest format 4，对象 envelope 和对象 ID 不变。新 clone/广告/fetch/unbundle 理解实际指针；旧客户端会拒绝扩展，不会把它误当成 unborn 分支。GC 与 fsck 将 detached HEAD 作为真实对象图根，故没有任何分支时也能保留并克隆这段历史。
 
-HEAD 切换、提交和恢复使用各工作树自己的 `head-reflog.json`；上一检出身份使用各自的 `checkouts.json`。两者为有界、规范编码的本地恢复记录，各保留最近 4096 项，不进入 bundle。共享分支日志仍在原来的 reflog 中。写入故障会明确指出 HEAD 是否已经发布；prepared 冲突续作可补齐缺失的完成日志，重试不重复创建提交或完成事件。
+HEAD 切换、提交和恢复使用各工作树自己的 `head-reflog.bin`；上一检出身份使用各自的 `checkouts.bin`。两者为有界、规范编码的本地恢复记录，各保留最近 4096 项，不进入 bundle。共享分支日志仍在原来的 reflog 中。写入故障会明确指出 HEAD 是否已经发布；prepared 冲突续作可补齐缺失的完成日志，重试不重复创建提交或完成事件。
 
 HEAD 的批量 `symref-update/verify`、ref/oid 租约、显式 no-deref update 和 version 2 原子恢复见[引用事务](ref-transactions.md)。单独 symbolic-ref 同样使用该事务，保持原有指针操作语义及 index/工作字节。
 

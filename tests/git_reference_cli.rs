@@ -1047,12 +1047,14 @@ fn native_head_transactions_match_git_symbolic_oid_leases_and_pointer_only_outco
                     }
                 })
                 .collect::<Vec<String>>();
-            let head = fs::read_to_string(root.join(if is_native {
-                ".uwgit/HEAD"
+            let head = if is_native {
+                wasm_git::repository::Repository::open(root)
+                    .unwrap()
+                    .current_branch()
+                    .unwrap()
             } else {
-                ".git/HEAD"
-            }))
-            .unwrap();
+                fs::read_to_string(root.join(".git/HEAD")).unwrap()
+            };
             let head = head.trim();
             let identity = if is_native && !ids.iter().any(|id| id == head) {
                 format!("refs/heads/{head}")

@@ -28,7 +28,7 @@ use crate::fingerprint::FuncFingerprint;
 /// are stored via `Unrecognized(String)` which preserves the wasmparser
 /// `Debug` name for display and hashing, without enabling pattern-matching
 /// on the string.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub enum Opcode {
     // ── Control ──
     Unreachable,
@@ -635,6 +635,50 @@ pub enum Opcode {
     Delegate,
     // ── Tail call ──
     // (ReturnCall and ReturnCallIndirect already covered above)
+    // Complete typed projections for decoder-known proposal families.
+    RefTestNullable,
+    RefCastNullable,
+    MemoryDiscard,
+    GlobalAtomicGet,
+    GlobalAtomicSet,
+    GlobalAtomicRmwAdd,
+    GlobalAtomicRmwSub,
+    GlobalAtomicRmwAnd,
+    GlobalAtomicRmwOr,
+    GlobalAtomicRmwXor,
+    GlobalAtomicRmwXchg,
+    GlobalAtomicRmwCmpxchg,
+    TableAtomicGet,
+    TableAtomicSet,
+    TableAtomicRmwXchg,
+    TableAtomicRmwCmpxchg,
+    StructAtomicGet,
+    StructAtomicGetS,
+    StructAtomicGetU,
+    StructAtomicSet,
+    StructAtomicRmwAdd,
+    StructAtomicRmwSub,
+    StructAtomicRmwAnd,
+    StructAtomicRmwOr,
+    StructAtomicRmwXor,
+    StructAtomicRmwXchg,
+    StructAtomicRmwCmpxchg,
+    ArrayAtomicGet,
+    ArrayAtomicGetS,
+    ArrayAtomicGetU,
+    ArrayAtomicSet,
+    ArrayAtomicRmwAdd,
+    ArrayAtomicRmwSub,
+    ArrayAtomicRmwAnd,
+    ArrayAtomicRmwOr,
+    ArrayAtomicRmwXor,
+    ArrayAtomicRmwXchg,
+    ArrayAtomicRmwCmpxchg,
+    RefI31Shared,
+    I64Add128,
+    I64Sub128,
+    I64MulWideS,
+    I64MulWideU,
     // ── Catch-all for opcodes not yet individually enumerated ──
     #[serde(serialize_with = "serialize_unrecognized")]
     Unrecognized(String),
@@ -1298,6 +1342,49 @@ impl Opcode {
             Opcode::Catch => "Catch",
             Opcode::CatchAll => "CatchAll",
             Opcode::Delegate => "Delegate",
+            Opcode::RefTestNullable => "RefTestNullable",
+            Opcode::RefCastNullable => "RefCastNullable",
+            Opcode::MemoryDiscard => "MemoryDiscard",
+            Opcode::GlobalAtomicGet => "GlobalAtomicGet",
+            Opcode::GlobalAtomicSet => "GlobalAtomicSet",
+            Opcode::GlobalAtomicRmwAdd => "GlobalAtomicRmwAdd",
+            Opcode::GlobalAtomicRmwSub => "GlobalAtomicRmwSub",
+            Opcode::GlobalAtomicRmwAnd => "GlobalAtomicRmwAnd",
+            Opcode::GlobalAtomicRmwOr => "GlobalAtomicRmwOr",
+            Opcode::GlobalAtomicRmwXor => "GlobalAtomicRmwXor",
+            Opcode::GlobalAtomicRmwXchg => "GlobalAtomicRmwXchg",
+            Opcode::GlobalAtomicRmwCmpxchg => "GlobalAtomicRmwCmpxchg",
+            Opcode::TableAtomicGet => "TableAtomicGet",
+            Opcode::TableAtomicSet => "TableAtomicSet",
+            Opcode::TableAtomicRmwXchg => "TableAtomicRmwXchg",
+            Opcode::TableAtomicRmwCmpxchg => "TableAtomicRmwCmpxchg",
+            Opcode::StructAtomicGet => "StructAtomicGet",
+            Opcode::StructAtomicGetS => "StructAtomicGetS",
+            Opcode::StructAtomicGetU => "StructAtomicGetU",
+            Opcode::StructAtomicSet => "StructAtomicSet",
+            Opcode::StructAtomicRmwAdd => "StructAtomicRmwAdd",
+            Opcode::StructAtomicRmwSub => "StructAtomicRmwSub",
+            Opcode::StructAtomicRmwAnd => "StructAtomicRmwAnd",
+            Opcode::StructAtomicRmwOr => "StructAtomicRmwOr",
+            Opcode::StructAtomicRmwXor => "StructAtomicRmwXor",
+            Opcode::StructAtomicRmwXchg => "StructAtomicRmwXchg",
+            Opcode::StructAtomicRmwCmpxchg => "StructAtomicRmwCmpxchg",
+            Opcode::ArrayAtomicGet => "ArrayAtomicGet",
+            Opcode::ArrayAtomicGetS => "ArrayAtomicGetS",
+            Opcode::ArrayAtomicGetU => "ArrayAtomicGetU",
+            Opcode::ArrayAtomicSet => "ArrayAtomicSet",
+            Opcode::ArrayAtomicRmwAdd => "ArrayAtomicRmwAdd",
+            Opcode::ArrayAtomicRmwSub => "ArrayAtomicRmwSub",
+            Opcode::ArrayAtomicRmwAnd => "ArrayAtomicRmwAnd",
+            Opcode::ArrayAtomicRmwOr => "ArrayAtomicRmwOr",
+            Opcode::ArrayAtomicRmwXor => "ArrayAtomicRmwXor",
+            Opcode::ArrayAtomicRmwXchg => "ArrayAtomicRmwXchg",
+            Opcode::ArrayAtomicRmwCmpxchg => "ArrayAtomicRmwCmpxchg",
+            Opcode::RefI31Shared => "RefI31Shared",
+            Opcode::I64Add128 => "I64Add128",
+            Opcode::I64Sub128 => "I64Sub128",
+            Opcode::I64MulWideS => "I64MulWideS",
+            Opcode::I64MulWideU => "I64MulWideU",
             // Unrecognized
             Opcode::Unrecognized(_) => "Unrecognized",
         }
@@ -1315,7 +1402,7 @@ fn serialize_unrecognized<S: serde::Serializer>(
 ///
 /// Each variant corresponds to the operand category of one or more opcodes.
 /// `None` covers opcodes that carry no immediate data (e.g. `i32.add`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub enum Immediate {
     /// No immediate operands
     None,
@@ -1453,12 +1540,40 @@ pub enum Immediate {
     },
     /// throw / rethrow: tag index
     TagIndex(u32),
+    ArrayCopy {
+        dst_type: u32,
+        src_type: u32,
+    },
+    HeapType(String),
+    AtomicGlobal {
+        ordering: AtomicOrdering,
+        index: u32,
+    },
+    AtomicTable {
+        ordering: AtomicOrdering,
+        index: u32,
+    },
+    AtomicArray {
+        ordering: AtomicOrdering,
+        type_index: u32,
+    },
+    AtomicStruct {
+        ordering: AtomicOrdering,
+        type_index: u32,
+        field_index: u32,
+    },
     /// Any unrecognized immediate, stored as the wasmparser Debug text
     /// for display and hashing compatibility.
     Unrecognized(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub enum AtomicOrdering {
+    SeqCst,
+    AcqRel,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub enum CatchIr {
     One { tag: u32, label: u32 },
     OneRef { tag: u32, label: u32 },
@@ -1592,6 +1707,25 @@ impl Immediate {
                 catches,
             } => format!("blockty:{block_type},catches:{catches:?}"),
             Immediate::TagIndex(idx) => format!("tag_index:{idx}"),
+            Immediate::ArrayCopy { dst_type, src_type } => {
+                format!("dst_type:{dst_type},src_type:{src_type}")
+            }
+            Immediate::HeapType(ty) => format!("heap_type:{ty}"),
+            Immediate::AtomicGlobal { ordering, index } => {
+                format!("ordering:{ordering:?},global:{index}")
+            }
+            Immediate::AtomicTable { ordering, index } => {
+                format!("ordering:{ordering:?},table:{index}")
+            }
+            Immediate::AtomicArray {
+                ordering,
+                type_index,
+            } => format!("ordering:{ordering:?},array_type:{type_index}"),
+            Immediate::AtomicStruct {
+                ordering,
+                type_index,
+                field_index,
+            } => format!("ordering:{ordering:?},struct_type:{type_index},field:{field_index}"),
             Immediate::Unrecognized(s) => s.clone(),
         }
     }
@@ -1726,6 +1860,9 @@ impl ParsedOperator {
             }
             Immediate::TryTableFull { block_type, catches } => format!("{kind} {{ blockty: {block_type}, catches: {catches:?} }}"),
             Immediate::TagIndex(idx) => format!("{kind} {{ tag_index: {idx} }}"),
+            Immediate::ArrayCopy {..} | Immediate::HeapType(_) | Immediate::AtomicGlobal {..}
+            | Immediate::AtomicTable {..} | Immediate::AtomicArray {..} | Immediate::AtomicStruct {..}
+                => format!("{kind} {{ {} }}", self.immediate.as_hash_text()),
             Immediate::Unrecognized(s) => s.clone(),
         }
     }
@@ -1886,6 +2023,14 @@ impl Deref for AnalysisModule {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct ModuleIr {
+    /// Untrusted custom symbol advice, excluded from identity proofs.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub function_names: std::collections::BTreeMap<u32, String>,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub function_symbol_sources: std::collections::BTreeMap<u32, &'static str>,
+    /// Shared, optional presentation index; never part of object/IR identity.
+    #[serde(skip)]
+    pub debug_info: std::sync::Arc<crate::debug_info::DebugInfo>,
     pub types: Vec<TypeIr>,
     /// Every core type, including GC types, in the module's type index space.
     pub type_definitions: Vec<TypeDefinitionIr>,
@@ -1899,6 +2044,30 @@ pub struct ModuleIr {
 }
 
 impl ModuleIr {
+    /// Advisory custom symbols cannot change the executable function projection.
+    pub(crate) fn same_function_projection(&self, other: &Self) -> bool {
+        (
+            &self.types,
+            &self.type_definitions,
+            &self.recursion_groups,
+            &self.imports,
+            &self.exports,
+            &self.tables,
+            &self.elements,
+            &self.start_function_index,
+            &self.functions,
+        ) == (
+            &other.types,
+            &other.type_definitions,
+            &other.recursion_groups,
+            &other.imports,
+            &other.exports,
+            &other.tables,
+            &other.elements,
+            &other.start_function_index,
+            &other.functions,
+        )
+    }
     pub fn new() -> Self {
         Self::default()
     }

@@ -1,6 +1,9 @@
+#![cfg(feature = "server")]
 //! Fixed remote workflows. The bridge retains real framed stdio server behavior;
 //! it only supplies the HTTP envelope, so client transport and repository receive
 //! semantics are exercised together without an external service or credentials.
+#[path = "support/native.rs"]
+mod native;
 use serde_json::Value;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -139,7 +142,7 @@ impl Bridge {
                                 let length =
                                     u32::from_be_bytes(packet[8..12].try_into().unwrap()) as usize;
                                 let metadata: Value =
-                                    serde_json::from_slice(&packet[20..20 + length]).unwrap();
+                                    native::request_value(&packet[20..20 + length]);
                                 if metadata["operation"]["kind"] == "update_ref" {
                                     response.push(0x5a);
                                 }
@@ -148,21 +151,20 @@ impl Bridge {
                                 let request_length =
                                     u32::from_be_bytes(packet[8..12].try_into().unwrap()) as usize;
                                 let request: Value =
-                                    serde_json::from_slice(&packet[20..20 + request_length])
-                                        .unwrap();
+                                    native::request_value(&packet[20..20 + request_length]);
                                 if request["operation"]["kind"] == "update_ref" {
                                     let length =
                                         u32::from_be_bytes(response[8..12].try_into().unwrap())
                                             as usize;
                                     let mut metadata: Value =
-                                        serde_json::from_slice(&response[20..20 + length]).unwrap();
+                                        native::response_value(&response[20..20 + length]);
                                     metadata["publication_unknown"] = true.into();
                                     if matches!(alter, Alter::PublicationUnknown) {
                                         metadata["ok"] = false.into();
                                         metadata["error"] =
                                             "fixed post-publication I/O failure".into();
                                     }
-                                    let encoded = serde_json::to_vec(&metadata).unwrap();
+                                    let encoded = native::response_bytes(&metadata);
                                     let mut changed = response[..8].to_vec();
                                     changed
                                         .extend_from_slice(&(encoded.len() as u32).to_be_bytes());
@@ -173,13 +175,17 @@ impl Bridge {
                                 }
                             }
                             Alter::StateMismatch => {
-                                assert_eq!(&response[..8], b"UWGRPC01");
+                                assert_eq!(&response[..8], b"UWGRPC02");
                                 let length = u32::from_be_bytes(response[8..12].try_into().unwrap())
                                     as usize;
                                 let mut metadata: Value =
-                                    serde_json::from_slice(&response[20..20 + length]).unwrap();
-                                metadata["state"]["head"] = "different".into();
-                                let encoded = serde_json::to_vec(&metadata).unwrap();
+                                    native::response_value(&response[20..20 + length]);
+                                if metadata["state"].is_null() {
+                                    metadata["state"] = serde_json::json!({"format":1,"head":"different","branches":{},"tags":{}});
+                                } else {
+                                    metadata["state"]["head"] = "different".into();
+                                }
+                                let encoded = native::response_bytes(&metadata);
                                 let mut changed = response[..8].to_vec();
                                 changed.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
                                 changed.extend_from_slice(&response[12..20]);
@@ -290,11 +296,11 @@ fn named_remote_configuration_is_strict_and_reversible() {
         "http://example.invalid/repo",
     ]);
     assert!(failure(&["fetch", &repo]).contains("--allow-insecure-http"));
-    let path = Path::new(&repo).join(".uwgit/remotes/origin.json");
-    let mut metadata: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    metadata["unexpected"] = true.into();
-    std::fs::write(&path, serde_json::to_vec(&metadata).unwrap()).unwrap();
-    assert!(failure(&["remote", &repo, "show", "origin"]).contains("unknown field"));
+    let path = Path::new(&repo).join(".uwgit/remotes/origin.bin");
+    let mut metadata = std::fs::read(&path).unwrap();
+    metadata.push(0);
+    std::fs::write(&path, metadata).unwrap();
+    assert!(failure(&["remote", &repo, "show", "origin"]).contains("remaining"));
 }
 
 #[test]
@@ -368,8 +374,10 @@ fn http_clone_fetch_pull_push_and_explicit_force_lease_preserve_history() {
         "absent",
     ]);
     assert_eq!(tip(&upstream, "publication"), initial);
-    let metadata =
-        std::fs::read_to_string(Path::new(&local).join(".uwgit/remotes/origin.json")).unwrap();
+    let metadata = String::from_utf8_lossy(
+        &std::fs::read(Path::new(&local).join(".uwgit/remotes/origin.bin")).unwrap(),
+    )
+    .into_owned();
     assert!(!metadata.contains("Authorization"));
     run(&["fsck", &local]);
     run(&["fsck", &upstream]);
@@ -559,7 +567,7 @@ fn empty_http_clone_authentication_and_rejected_response_leave_no_destination() 
     assert_eq!(json(&["fsck", &destination])["commits"], 0);
     assert_eq!(
         std::fs::read(Path::new(&destination).join(".uwgit/HEAD")).unwrap(),
-        b"main\n"
+        native::reference("main")
     );
     drop(bridge);
     for (index, alteration) in [Alter::Trailing, Alter::StateMismatch]
@@ -909,8 +917,7 @@ impl FetchBarrierBridge {
                             // completely before allowing the upstream to change.
                             let length =
                                 u32::from_be_bytes(packet[8..12].try_into().unwrap()) as usize;
-                            let metadata: Value =
-                                serde_json::from_slice(&packet[20..20 + length]).unwrap();
+                            let metadata: Value = native::request_value(&packet[20..20 + length]);
                             assert_eq!(metadata["operation"]["kind"], "fetch");
                             let released = released.take().unwrap();
                             let captured_sender = captured_sender.clone();
@@ -983,7 +990,7 @@ fn overlapping_fetches_compare_complete_tracking_and_allow_later_remote_rewinds(
                     ".uwgit/objects",
                     ".uwgit/tmp",
                     ".uwgit/remote.lock",
-                    ".uwgit/remotes/origin.tracking.json",
+                    ".uwgit/remotes/origin.tracking.bin",
                 ]
                 .iter()
                 .any(|excluded| relative == Path::new(excluded))
@@ -1035,7 +1042,7 @@ fn overlapping_fetches_compare_complete_tracking_and_allow_later_remote_rewinds(
             run(&["remote", &local, "remove", "origin"]);
             run(&["remote", &local, "add", "origin", &url]);
         }
-        let tracking_path = Path::new(&local).join(".uwgit/remotes/origin.tracking.json");
+        let tracking_path = Path::new(&local).join(".uwgit/remotes/origin.tracking.bin");
         assert_eq!(tracking_path.exists(), has_tracking);
 
         // Keep an independently staged edit, a further unstaged edit, a local
@@ -1064,7 +1071,7 @@ fn overlapping_fetches_compare_complete_tracking_and_allow_later_remote_rewinds(
         run(&["tag", &upstream, "new_remote_tag"]);
         run(&["fetch", &local]);
         let published = std::fs::read(&tracking_path).unwrap();
-        let tracking: Value = serde_json::from_slice(&published).unwrap();
+        let tracking: Value = native::tracking_value(&published);
         assert_eq!(tracking["state"]["branches"]["main"], new);
         assert_eq!(tracking["state"]["tags"]["new_remote_tag"], new);
         assert_eq!(tip(&local, "origin/main"), new);
@@ -1114,8 +1121,7 @@ fn overlapping_fetches_compare_complete_tracking_and_allow_later_remote_rewinds(
             assert_eq!(tip(&upstream, "HEAD"), old);
             run(&["fetch", &local]);
             assert_eq!(tip(&local, "origin/main"), old);
-            let rewound: Value =
-                serde_json::from_slice(&std::fs::read(&tracking_path).unwrap()).unwrap();
+            let rewound: Value = native::tracking_value(&std::fs::read(&tracking_path).unwrap());
             assert_eq!(rewound["state"]["branches"]["main"], old);
             assert_eq!(rewound["state"]["tags"]["new_remote_tag"], new);
             assert_eq!(local_files(Path::new(&local)), protected);

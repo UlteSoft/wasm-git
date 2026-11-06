@@ -61,7 +61,7 @@ wasm-git update-ref DIR --no-deref HEAD EXISTING_COMMIT_ID EXPECTED_OLD_COMMIT_I
 
 NUL 输入为 `symref-update SP HEAD NUL TARGET NUL MODE NUL OLD NUL`，不提供旧值时 MODE 和 OLD 均为空字段；MODE 只能为 ref 或 oid。`symref-verify SP HEAD NUL OLD_TARGET NUL` 的空字段表示未提供目标。HEAD 与其默认解引用分支不能在同一批次重复指定；`--no-deref` 操作 HEAD 本身时，可与普通分支更新并列。HEAD 的 JSON 报告明确区分 symbolic/commit 身份及实际 old_commit/new_commit，不把分支名当作提交 ID。
 
-单独 `symbolic-ref HEAD TARGET` 也使用相同事务。HEAD 身份真正变化时，共享日志和该工作树自己的 HEAD 日志各记一次；prepare、abort、EOF 丢弃和同身份操作不追加。`checkouts.json` 保持原样，因为这些入口只修改指针。索引、Wasm 工作副本和其他工作树的 HEAD 日志不变。
+单独 `symbolic-ref HEAD TARGET` 也使用相同事务。HEAD 身份真正变化时，共享日志和该工作树自己的 HEAD 日志各记一次；prepare、abort、EOF 丢弃和同身份操作不追加。`checkouts.bin` 保持原样，因为这些入口只修改指针。索引、Wasm 工作副本和其他工作树的 HEAD 日志不变。
 
 包含 HEAD 的事务使用 journal version 2，记录 origin 的已注册 worktree ID（primary 使用空 ID）、HEAD 原/新身份、原始 worktree 注册和本地 HEAD 日志。仅更新普通引用的 version 1 编码保持兼容。恢复目标从注册 ID 或 primary 的实际目录解析，journal 不能直接指定任意输出路径。恢复前同时核对 HEAD、注册、两个日志及全部引用的原/新像；linked worktree 打开时先完成持久事务恢复，再核对注册一致性，允许修复两次写入之间的合法中断。任何第三种人工编辑都先失败保持。
 
@@ -88,7 +88,7 @@ prepare 保存接受项及其拒绝结果，并持有共享锁，不输出拒绝
 
 没有 start 或 prepare 的输入在 EOF 隐式提交；使用 start 或 prepare 后必须 commit，否则 EOF 丢弃当前事务。start 也可将此前已排队的更新纳入显式事务。prepare 验证快照后持有共享 writer 锁，响应 `prepare: ok` 后不会提前发布。abort 或 EOF 释放这个锁，不写入持久提交决定。commit/abort 后可用新的 start 开始下一笔事务；已经提交的前一笔不因后来一笔失败而撤销。各控制响应立即 flush，可用于交互管道。
 
-commit 先同步 `.uwgit/ref-transaction.json`，保存完整引用前像、逐项旧/新值、原始 upstream 和 reflog 字节。该记录是持久提交决定：随后顺序写入配置、引用和完整日志，最后同步删除记录。返回 I/O 错误时会明确说明提交可能已经发生，不能把错误当作回滚。
+commit 先同步 `.uwgit/ref-transaction.bin`，保存完整引用前像、逐项旧/新值、原始 upstream 和 reflog 字节。该记录是持久提交决定：随后顺序写入配置、引用和完整日志，最后同步删除记录。返回 I/O 错误时会明确说明提交可能已经发生，不能把错误当作回滚。
 
 每次获取共享 writer 锁后，查询和写入都会先检查这份记录。恢复使用保存的前像验证完整对象库和其他元数据，再一次性预检所有当前引用、upstream 和 reflog：只能是各项原像或目标像。随后幂等补齐最终结果和固定日志字节，避免重复追加。若有后来人工写入的第三种内容，整次恢复先失败，保留内容和记录，所有后续受锁操作也停止。应检查并恢复对应原像/目标像，再重试查询。进程崩溃遗留的 writer 锁仍沿用现有规则，需要人工检查并移除；不会根据 PID 猜测并自动解锁。
 

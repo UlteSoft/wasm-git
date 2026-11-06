@@ -94,7 +94,7 @@ fn export_is_a_frozen_three_way_snapshot_and_explicit_tool_staging_never_moves_h
     let root = temp.path("repo");
     let (ours, theirs) = pending(&root);
     let index = fs::read(root.join(".uwgit/index")).unwrap();
-    let original_pending = fs::read(root.join(".uwgit/pending.json")).unwrap();
+    let original_pending = fs::read(root.join(".uwgit/pending.bin")).unwrap();
     let output = temp.path("review");
     let report = json(&["mergetool", p(&root), "--output", p(&output)]);
     assert_eq!(report["ours"], ours);
@@ -108,7 +108,7 @@ fn export_is_a_frozen_three_way_snapshot_and_explicit_tool_staging_never_moves_h
     }
     assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), index);
     assert_eq!(
-        fs::read(root.join(".uwgit/pending.json")).unwrap(),
+        fs::read(root.join(".uwgit/pending.bin")).unwrap(),
         original_pending
     );
     let tool = temp.path("select-remote.sh");
@@ -131,7 +131,7 @@ fn export_is_a_frozen_three_way_snapshot_and_explicit_tool_staging_never_moves_h
     assert_eq!(fs::read(root.join("a.wasm")).unwrap(), module(2));
     assert_eq!(ok(&["rev-parse", p(&root), "HEAD"]), ours);
     assert_eq!(
-        fs::read(root.join(".uwgit/pending.json")).unwrap(),
+        fs::read(root.join(".uwgit/pending.bin")).unwrap(),
         original_pending
     );
     json(&["merge", p(&root), "--continue", "--resolved-index"]);
@@ -156,7 +156,7 @@ fn failed_tools_invalid_outputs_symlinks_and_changed_inputs_cannot_stage_results
     let root = temp.path("repo");
     pending(&root);
     let index = fs::read(root.join(".uwgit/index")).unwrap();
-    let pending = fs::read(root.join(".uwgit/pending.json")).unwrap();
+    let pending = fs::read(root.join(".uwgit/pending.bin")).unwrap();
     for (position, body) in [
         "exit 7",
         "printf invalid > \"$MERGED\"",
@@ -181,7 +181,7 @@ fn failed_tools_invalid_outputs_symlinks_and_changed_inputs_cannot_stage_results
         .status
         .success());
         assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), index);
-        assert_eq!(fs::read(root.join(".uwgit/pending.json")).unwrap(), pending);
+        assert_eq!(fs::read(root.join(".uwgit/pending.bin")).unwrap(), pending);
         assert_eq!(fs::read(root.join("a.wasm")).unwrap(), module(2));
     }
 }

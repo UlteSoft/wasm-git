@@ -19,10 +19,7 @@ fn file_ids(snapshot: &Snapshot, id: &str) -> RepositoryResult<FileIds> {
     }
 }
 fn blob<'a>(snapshot: &'a Snapshot, id: &str) -> RepositoryResult<&'a [u8]> {
-    match snapshot.objects.get(id) {
-        Some(Object::Wasm(bytes)) => Ok(bytes),
-        _ => Err("expected history Wasm blob".into()),
-    }
+    partial_storage::blob(snapshot, id)
 }
 fn witness(snapshot: &Snapshot, id: Option<&String>) -> RepositoryResult<Value> {
     id.map(|id| {
@@ -58,17 +55,17 @@ fn series(
         let Some(Object::Commit(commit)) = snapshot.objects.get(&current) else {
             return Err("range endpoint is not a commit".into());
         };
-        if commit.parents.is_empty() {
+        if commit.history_parents().is_empty() {
             return Err("range base is not on the selected parent chain".into());
         }
-        if commit.parents.len() > 1 && !first_parent {
+        if commit.history_parents().len() > 1 && !first_parent {
             return Err("range-diff requires linear ranges; use --first-parent for an explicit merge projection".into());
         }
         commits.push(CommitInfo {
             id: current,
             commit: commit.clone(),
         });
-        current = commit.parents[0].clone();
+        current = commit.history_parents()[0].clone();
     }
     commits.reverse();
     Ok((base, tip, commits))
@@ -82,7 +79,7 @@ fn transitions(
     let mut result = Vec::new();
     for info in commits {
         let current = file_ids(snapshot, &info.id)?;
-        let old = if let Some(parent) = info.commit.parents.first() {
+        let old = if let Some(parent) = info.commit.history_parents().first() {
             file_ids(snapshot, parent)?
         } else {
             BTreeMap::new()
@@ -117,7 +114,7 @@ fn transitions(
             changes.push(change);
         }
         let signature =
-            object_id(&serde_json::to_vec(&signature).map_err(|error| error.to_string())?);
+            object_id(&crate::binary::encode(&signature).map_err(|error| error.to_string())?);
         result.push(json!({"commit":info.id,"parents":info.commit.parents,"message":info.commit.message,"transition_id":signature,"changes":changes}));
     }
     Ok(result)
@@ -151,15 +148,14 @@ impl Repository {
             } else {
                 let current = file_ids(&snapshot, &info.id)?;
                 let mut changed = BTreeSet::new();
-                if info.commit.parents.is_empty() {
+                if info.commit.history_parents().is_empty() {
                     changed.extend(current.keys().cloned());
                 }
-                for parent in
-                    info.commit
-                        .parents
-                        .iter()
-                        .take(if first_parent { 1 } else { usize::MAX })
-                {
+                for parent in info.commit.history_parents().iter().take(if first_parent {
+                    1
+                } else {
+                    usize::MAX
+                }) {
                     let before = file_ids(&snapshot, parent)?;
                     changed.extend(
                         current

@@ -1,4 +1,4 @@
-//! Verifiable offline patches for original core WebAssembly bytes.
+//! Verifiable offline patches for original WebAssembly bytes of any encoding.
 //!
 //! The wire format contains only physical edits and raw-file integrity hashes.
 //! It makes no claims about instruction decoding, feature support, validation,
@@ -9,7 +9,8 @@ use crate::audit;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-const FORMAT: &str = "uwgit-byte-patch-v1";
+const FORMAT: &str = "uwgit-byte-patch-binary-v1";
+const MAGIC: &[u8; 8] = b"UWGPAT01";
 const CORE_HEADER: &[u8; 8] = b"\0asm\x01\0\0\0";
 
 /// Physical half-open offsets into one original file, independent of host size.
@@ -30,7 +31,7 @@ pub struct PatchEdit {
     pub new_hex: String,
 }
 
-/// Field order is part of the version-one canonical JSON encoding.
+/// Binary patches store raw hashes and edit bytes; hex fields are a display DTO.
 /// SHA-256 fields hash the raw files, not repository object envelopes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -58,12 +59,7 @@ fn sha256(bytes: &[u8]) -> String {
 }
 
 fn header(bytes: &[u8], which: &str) -> Result<(), String> {
-    if !bytes.starts_with(CORE_HEADER) {
-        return Err(format!(
-            "{which}: expected original core WebAssembly version-1 bytes; Component Model is outside this patch format"
-        ));
-    }
-    Ok(())
+    audit::section::check_header(bytes).map_err(|error| format!("{which}: {error}"))
 }
 
 fn offset(value: u64, which: &str) -> Result<usize, String> {
@@ -121,24 +117,25 @@ fn append_hex(output: &mut Vec<u8>, encoded: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Create a patch from the complete physical edit script produced by audit.
+/// Use the audit's identical physical edit algorithm without constructing its
+/// discarded typed regions, feature reports, contexts and semantic changes.
 pub fn create(old: &[u8], new: &[u8]) -> Result<BytePatch, String> {
-    let changes = audit::compare(old, new)?.edits;
+    header(old, "source")?;
+    header(new, "target")?;
+    let (changes, _) = audit::byte_spans(old, new);
     let mut edits: Vec<PatchEdit> = Vec::with_capacity(changes.len());
-    for change in changes {
+    for (old_span, new_span) in changes {
         let edit = PatchEdit {
             old_span: PatchSpan {
-                start: u64::try_from(change.old_span.start)
-                    .map_err(|_| "old offset exceeds u64")?,
-                end: u64::try_from(change.old_span.end).map_err(|_| "old offset exceeds u64")?,
+                start: u64::try_from(old_span.start).map_err(|_| "old offset exceeds u64")?,
+                end: u64::try_from(old_span.end).map_err(|_| "old offset exceeds u64")?,
             },
             new_span: PatchSpan {
-                start: u64::try_from(change.new_span.start)
-                    .map_err(|_| "new offset exceeds u64")?,
-                end: u64::try_from(change.new_span.end).map_err(|_| "new offset exceeds u64")?,
+                start: u64::try_from(new_span.start).map_err(|_| "new offset exceeds u64")?,
+                end: u64::try_from(new_span.end).map_err(|_| "new offset exceeds u64")?,
             },
-            old_hex: change.old_hex,
-            new_hex: change.new_hex,
+            old_hex: hex(&old[old_span.start..old_span.end]),
+            new_hex: hex(&new[new_span.start..new_span.end]),
         };
         if let Some(previous) = edits.last_mut() {
             if previous.old_span.end == edit.old_span.start
@@ -168,24 +165,75 @@ pub fn create(old: &[u8], new: &[u8]) -> Result<BytePatch, String> {
 }
 
 impl BytePatch {
-    /// Decode the exact canonical JSON encoding. Unknown or duplicate fields,
-    /// reordered fields, alternate escapes, whitespace, and trailing bytes fail.
+    /// Decode bounded physical edits, raw SHA-256 values and original bytes.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
-        let patch: Self = serde_json::from_slice(bytes)
-            .map_err(|error| format!("invalid patch JSON: {error}"))?;
-        patch.validate_structure()?;
-        let canonical = serde_json::to_vec(&patch)
-            .map_err(|error| format!("cannot encode patch JSON: {error}"))?;
-        if canonical != bytes {
-            return Err("patch JSON is not the canonical uwgit-byte-patch-v1 encoding".into());
+        let mut r = crate::binary::Reader::new(bytes);
+        if r.take(8)? != MAGIC {
+            return Err("unsupported binary patch format".into());
         }
+        let old_sha256 = r.oid()?;
+        let new_sha256 = r.oid()?;
+        let old_len = r.u64()?;
+        let new_len = r.u64()?;
+        let count = r.count(32)?;
+        let mut edits = Vec::with_capacity(count);
+        for _ in 0..count {
+            let old_span = PatchSpan {
+                start: r.u64()?,
+                end: r.u64()?,
+            };
+            let new_span = PatchSpan {
+                start: r.u64()?,
+                end: r.u64()?,
+            };
+            let old_size = old_span
+                .end
+                .checked_sub(old_span.start)
+                .ok_or("reversed old patch span")?;
+            let new_size = new_span
+                .end
+                .checked_sub(new_span.start)
+                .ok_or("reversed new patch span")?;
+            let old_hex = hex(r.take(offset(old_size, "old edit length")?)?);
+            let new_hex = hex(r.take(offset(new_size, "new edit length")?)?);
+            edits.push(PatchEdit {
+                old_span,
+                new_span,
+                old_hex,
+                new_hex,
+            });
+        }
+        r.end()?;
+        let patch = Self {
+            format: FORMAT.into(),
+            old_sha256,
+            new_sha256,
+            old_len,
+            new_len,
+            edits,
+        };
+        patch.validate_structure()?;
         Ok(patch)
     }
 
-    /// Encode a structurally valid patch without a trailing newline.
+    /// Encode each payload once as raw bytes, with no hexadecimal expansion.
     pub fn to_bytes(&self) -> Result<Vec<u8>, String> {
         self.validate_structure()?;
-        serde_json::to_vec(self).map_err(|error| format!("cannot encode patch JSON: {error}"))
+        let mut w = crate::binary::Writer(MAGIC.to_vec());
+        w.oid(&self.old_sha256)?;
+        w.oid(&self.new_sha256)?;
+        w.u64(self.old_len);
+        w.u64(self.new_len);
+        w.u32(u32::try_from(self.edits.len()).map_err(|_| "too many patch edits")?);
+        for edit in &self.edits {
+            w.u64(edit.old_span.start);
+            w.u64(edit.old_span.end);
+            w.u64(edit.new_span.start);
+            w.u64(edit.new_span.end);
+            append_hex(&mut w.0, &edit.old_hex)?;
+            append_hex(&mut w.0, &edit.new_hex)?;
+        }
+        Ok(w.0)
     }
 
     fn validate_structure(&self) -> Result<(), String> {
@@ -570,63 +618,54 @@ mod tests {
     }
 
     #[test]
-    fn input_and_target_core_headers_are_checked_without_validating_bodies() {
+    fn input_and_target_magic_is_checked_without_rejecting_future_versions() {
         assert!(create(b"not wasm", CORE_HEADER).is_err());
         let mut component = CORE_HEADER.to_vec();
         component[4] = 0x0d;
-        assert!(create(CORE_HEADER, &component).is_err());
+        roundtrip(CORE_HEADER, &component);
         let mut patch = create(CORE_HEADER, CORE_HEADER).unwrap();
         let mut target = CORE_HEADER.to_vec();
-        target[4] = 2;
+        target[0] = b'X';
         patch.new_sha256 = sha256(&target);
         patch.edits.push(PatchEdit {
-            old_span: PatchSpan { start: 4, end: 5 },
-            new_span: PatchSpan { start: 4, end: 5 },
-            old_hex: "01".into(),
-            new_hex: "02".into(),
+            old_span: PatchSpan { start: 0, end: 1 },
+            new_span: PatchSpan { start: 0, end: 1 },
+            old_hex: "00".into(),
+            new_hex: "58".into(),
         });
         assert!(patch.apply(CORE_HEADER).unwrap_err().contains("target"));
     }
 
     #[test]
-    fn json_unknown_duplicate_and_noncanonical_forms_are_rejected() {
-        let (_, _, patch) = replacement();
-        let canonical = patch.to_bytes().unwrap();
-        let text = String::from_utf8(canonical.clone()).unwrap();
-        let unknown = format!("{},\"unexpected\":0}}", &text[..text.len() - 1]);
-        assert!(BytePatch::from_bytes(unknown.as_bytes()).is_err());
-        let duplicate = format!("{{\"format\":\"{FORMAT}\",{}", &text[1..]);
-        assert!(BytePatch::from_bytes(duplicate.as_bytes()).is_err());
-        let mut trailing = canonical.clone();
-        trailing.push(b'\n');
-        assert!(BytePatch::from_bytes(&trailing).is_err());
-        assert!(BytePatch::from_bytes(&serde_json::to_vec_pretty(&patch).unwrap()).is_err());
-        let escaped = text.replacen("uwgit", "\\u0075wgit", 1);
-        assert!(BytePatch::from_bytes(escaped.as_bytes()).is_err());
-        let value: serde_json::Value = serde_json::from_slice(&canonical).unwrap();
-        assert!(BytePatch::from_bytes(&serde_json::to_vec(&value).unwrap()).is_err());
-        for path in ["edit", "span"] {
-            let mut value = serde_json::to_value(&patch).unwrap();
-            let target = if path == "edit" {
-                &mut value["edits"][0]
-            } else {
-                &mut value["edits"][0]["old_span"]
-            };
-            target["unexpected"] = serde_json::json!(0);
-            assert!(BytePatch::from_bytes(&serde_json::to_vec(&value).unwrap()).is_err());
+    fn binary_patch_rejects_truncation_trailing_data_old_json_and_invalid_counts() {
+        let (old, new, patch) = replacement();
+        let bytes = patch.to_bytes().unwrap();
+        assert!(bytes.starts_with(MAGIC));
+        assert_eq!(
+            bytes.len(),
+            92 + patch
+                .edits
+                .iter()
+                .map(|e| 32 + e.old_hex.len() / 2 + e.new_hex.len() / 2)
+                .sum::<usize>()
+        );
+        assert_eq!(
+            BytePatch::from_bytes(&bytes).unwrap().apply(&old).unwrap(),
+            new
+        );
+        for end in 0..bytes.len() {
+            assert!(BytePatch::from_bytes(&bytes[..end]).is_err(), "{end}");
         }
-    }
-
-    #[test]
-    fn json_integer_overflow_and_wrong_format_are_rejected() {
-        let patch = create(CORE_HEADER, CORE_HEADER).unwrap();
-        let text = String::from_utf8(patch.to_bytes().unwrap()).unwrap();
-        let overflow = text.replace("\"old_len\":8", "\"old_len\":18446744073709551616");
-        assert!(BytePatch::from_bytes(overflow.as_bytes()).is_err());
-        let negative = text.replace("\"old_len\":8", "\"old_len\":-1");
-        assert!(BytePatch::from_bytes(negative.as_bytes()).is_err());
-        let wrong = text.replace(FORMAT, "uwgit-byte-patch-v2");
-        assert!(BytePatch::from_bytes(wrong.as_bytes()).is_err());
+        let mut bad = bytes.clone();
+        bad.push(0);
+        assert!(BytePatch::from_bytes(&bad).is_err());
+        let mut bad = bytes.clone();
+        bad[..8].copy_from_slice(b"UWGPAT00");
+        assert!(BytePatch::from_bytes(&bad).is_err());
+        let mut bad = bytes.clone();
+        bad[88..92].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(BytePatch::from_bytes(&bad).is_err());
+        assert!(BytePatch::from_bytes(br#"{"format":"uwgit-byte-patch-v1"}"#).is_err());
     }
 
     #[test]
@@ -635,9 +674,8 @@ mod tests {
         let new = custom("opaque", &vec![0x42; 6144]);
         assert!(!audit::compare(&old, &new).unwrap().exact_minimal);
         let patch = roundtrip(&old, &new);
-        let json: serde_json::Value = serde_json::from_slice(&patch.to_bytes().unwrap()).unwrap();
-        assert!(json.get("exact_minimal").is_none());
-        assert!(json.get("feature").is_none());
-        assert!(json.get("context").is_none());
+        let bytes = patch.to_bytes().unwrap();
+        assert!(bytes.starts_with(MAGIC));
+        assert_eq!(BytePatch::from_bytes(&bytes).unwrap(), patch);
     }
 }

@@ -5,6 +5,15 @@
 //! instructions terminate decoding of their expression; no instruction boundary
 //! is guessed. A malformed custom convention is treated as opaque custom data.
 
+#[path = "custom_diff.rs"]
+mod custom_diff;
+#[path = "audit_custom.rs"]
+mod custom_extensions;
+#[path = "section_diff.rs"]
+pub mod section;
+pub use custom_diff::{CustomChange, CustomSite, SignatureInputEvidence};
+pub(crate) use custom_extensions::function_names;
+
 use crate::standard::{Standard, StandardReport, StandardSupport};
 use serde::Serialize;
 use std::borrow::Cow;
@@ -138,6 +147,7 @@ pub struct AuditDiff {
     pub new: AuditModule,
     pub edits: Vec<ByteEdit>,
     pub semantic_changes: Vec<SemanticChange>,
+    pub custom_changes: Vec<CustomChange>,
     /// True means shortest insertion/deletion distance, with no substitutions.
     pub exact_minimal: bool,
     pub alignment: String,
@@ -178,8 +188,8 @@ fn section_name(id: u8) -> &'static str {
     }
 }
 
-/// Inspect a core module without discarding unsupported or malformed payloads.
-/// Invalid headers and Component Model encodings are outside this API's scope.
+/// Inspect Wasm without discarding unsupported or malformed payloads. Core has
+/// typed evidence; components have outer-section evidence; future headers stay opaque.
 pub fn inspect(bytes: &[u8]) -> Result<AuditModule, String> {
     inspect_with_standard(bytes, Standard::AllKnown)
 }
@@ -195,11 +205,9 @@ pub fn core_reader_bytes(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
 
 /// Recognize with all-known grammar, then evaluate the selected Core standard.
 pub fn inspect_with_standard(bytes: &[u8], standard: Standard) -> Result<AuditModule, String> {
-    if bytes.len() < 8 || &bytes[..4] != b"\0asm" {
-        return Err("expected an eight-byte core WebAssembly header".into());
-    }
+    section::check_header(bytes)?;
     if bytes[4..8] != [1, 0, 0, 0] {
-        return Err("unsupported WebAssembly encoding/version; only core modules are in scope (Component Model excluded)".into());
+        return section::inspect_envelopes(bytes, standard, &[section::Selector::All]);
     }
     let mut module = AuditModule {
         byte_len: bytes.len(),
@@ -1850,6 +1858,19 @@ fn custom(
         "name" => name_convention(&mut reader, &path),
         "producers" => producers_convention(&mut reader, &path),
         "target_features" => features_convention(&mut reader, &path),
+        _ if matches!(
+            name,
+            "sourceMappingURL"
+                | "external_debug_info"
+                | "metadata.code.branch_hint"
+                | "dylink.0"
+                | "linking"
+                | "uwvm.wsea.v2"
+                | "wasm-cosign"
+        ) =>
+        {
+            custom_extensions::decode(name, &mut reader, &path).unwrap()
+        }
         _ => {
             section.status = "opaque".into();
             section.regions.push(Region::new(
@@ -2046,11 +2067,57 @@ fn hex(bytes: &[u8]) -> String {
     text
 }
 
-fn flatten<'a>(regions: &'a [Region], out: &mut BTreeMap<String, &'a Region>) {
+fn flatten<'a>(regions: &'a [Region], out: &mut BTreeMap<&'a str, &'a Region>) {
     for region in regions {
-        out.insert(region.path.clone(), region);
+        out.insert(region.path.as_str(), region);
         flatten(&region.children, out);
     }
+}
+
+// Borrow decoded paths and merge sorted maps once. Only actual changes allocate
+// owned paths; unchanged modules no longer copy all paths into a third tree.
+fn region_changes<'a>(
+    old: BTreeMap<&'a str, &'a Region>,
+    new: BTreeMap<&'a str, &'a Region>,
+) -> Vec<SemanticChange> {
+    let mut old = old.into_iter().peekable();
+    let mut new = new.into_iter().peekable();
+    let mut changes = Vec::new();
+    while old.peek().is_some() || new.peek().is_some() {
+        let (path, a, b) = match (old.peek(), new.peek()) {
+            (Some((a, _)), Some((b, _))) if a == b => {
+                let (p, a) = old.next().unwrap();
+                let (_, b) = new.next().unwrap();
+                (p, Some(a), Some(b))
+            }
+            (Some((a, _)), Some((b, _))) if a > b => {
+                let (p, b) = new.next().unwrap();
+                (p, None, Some(b))
+            }
+            (Some(_), _) => {
+                let (p, a) = old.next().unwrap();
+                (p, Some(a), None)
+            }
+            _ => {
+                let (p, b) = new.next().unwrap();
+                (p, None, Some(b))
+            }
+        };
+        if a.map(|r| (&r.description, &r.feature)) == b.map(|r| (&r.description, &r.feature)) {
+            continue;
+        }
+        let context = |r: &Region| Context {
+            path: r.path.clone(),
+            span: r.span,
+            description: r.description.clone(),
+        };
+        changes.push(SemanticChange {
+            path: path.into(),
+            old: a.map(context),
+            new: b.map(context),
+        });
+    }
+    changes
 }
 
 struct ContextRecord<'a> {
@@ -2128,7 +2195,11 @@ impl<'a> ContextIndex<'a> {
         let mut records = vec![ContextRecord {
             path: "header",
             span: Span::new(0, 8),
-            description: Cow::Borrowed("core WebAssembly header"),
+            description: Cow::Borrowed(if module.format == "core WebAssembly binary, version 1" {
+                "core WebAssembly header"
+            } else {
+                "WebAssembly header"
+            }),
             parent: None,
             section_order: 0,
             container: false,
@@ -2574,7 +2645,7 @@ fn anchored_fallback(old: &[u8], new: &[u8], remaining_work: &mut usize) -> Vec<
 // Exact global Myers gets most of the total work budget. If it cannot finish,
 // verified unique-content anchors localize gaps, which share the remainder.
 // The fallback is complete and bounded, but never globally minimal by assertion.
-fn byte_spans(old: &[u8], new: &[u8]) -> (Vec<(Span, Span)>, bool) {
+pub(crate) fn byte_spans(old: &[u8], new: &[u8]) -> (Vec<(Span, Span)>, bool) {
     let mut global_work = 6_000_000;
     if let Some(edits) = shortest_spans(old, new, 0, 0, &mut global_work) {
         return (edits, true);
@@ -2595,8 +2666,13 @@ pub fn compare_with_standard(
     new: &[u8],
     standard: Standard,
 ) -> Result<AuditDiff, String> {
-    let old_module = inspect_with_standard(old, standard)?;
-    let new_module = inspect_with_standard(new, standard)?;
+    let (old_module, new_module) = crate::parallel::join(
+        old.len().saturating_add(new.len()),
+        || inspect_with_standard(old, standard),
+        || inspect_with_standard(new, standard),
+    );
+    let old_module = old_module?;
+    let new_module = new_module?;
     let (spans, exact_minimal) = byte_spans(old, new);
     let old_context = ContextIndex::new(&old_module);
     let new_context = ContextIndex::new(&new_module);
@@ -2619,31 +2695,10 @@ pub fn compare_with_standard(
     for section in &new_module.sections {
         flatten(&section.regions, &mut new_regions);
     }
-    let paths: BTreeSet<_> = old_regions
-        .keys()
-        .chain(new_regions.keys())
-        .cloned()
-        .collect();
-    let mut semantic_changes = Vec::new();
-    for path in paths {
-        let a = old_regions.get(&path);
-        let b = new_regions.get(&path);
-        if a.map(|r| (&r.description, &r.feature)) == b.map(|r| (&r.description, &r.feature)) {
-            continue;
-        }
-        let convert = |r: &&Region| Context {
-            path: r.path.clone(),
-            span: r.span,
-            description: r.description.clone(),
-        };
-        semantic_changes.push(SemanticChange {
-            path,
-            old: a.map(convert),
-            new: b.map(convert),
-        });
-    }
+    let semantic_changes = region_changes(old_regions, new_regions);
+    let custom_changes = custom_diff::compare(&old_module, old, &new_module, new);
     Ok(AuditDiff {
-        changed: old != new, old: old_module, new: new_module, edits, semantic_changes, exact_minimal,
+        changed: old != new, old: old_module, new: new_module, edits, semantic_changes, custom_changes, exact_minimal,
         alignment: if exact_minimal { "shortest byte insertion/deletion script; semantic paths use section occurrence and entry/operator index, not inferred identity" }
             else { "bounded byte-diff fallback: verified unique byte-window anchors with monotone alignment; gaps share a bounded local Myers budget, then positional mismatch runs or complete gap replacements; not guaranteed globally minimal; semantic paths are positional" }.into(),
     })
@@ -2714,6 +2769,53 @@ impl AuditModule {
 }
 
 impl AuditDiff {
+    pub fn custom_summary(&self) -> String {
+        self.custom_text(true)
+    }
+    pub fn custom_short(&self) -> String {
+        self.custom_text(false)
+    }
+    fn custom_text(&self, detailed: bool) -> String {
+        let mut out = String::new();
+        for change in &self.custom_changes {
+            let side = |site: &Option<CustomSite>| {
+                site.as_ref().map_or_else(
+                    || "absent".into(),
+                    |s| {
+                        format!(
+                            "#{} [{}..{}) {}",
+                            s.ordinal, s.span.start, s.span.end, s.interpretation
+                        )
+                    },
+                )
+            };
+            let _=writeln!(out,"Custom {:?}: {} -> {}; content_changed={} data_changed={} position_changed={} pairing={} ambiguous={}",change.name,side(&change.old),side(&change.new),change.content_changed,change.data_changed,change.position_changed,change.pairing,change.ambiguous);
+            if !detailed {
+                let _ = writeln!(
+                    out,
+                    "  {} decoded field changes",
+                    change.decoded_changes.len()
+                );
+            }
+            for decoded in change.decoded_changes.iter().filter(|_| detailed) {
+                let _ = writeln!(
+                    out,
+                    "  decoded {}: {:?} -> {:?}",
+                    decoded.path.escape_debug(),
+                    decoded.old.as_ref().map(|c| &c.description),
+                    decoded.new.as_ref().map(|c| &c.description)
+                );
+            }
+            if let Some(s) = &change.signature_input {
+                let _ = writeln!(
+                    out,
+                    "  claimed signature input changed={:?}; verification={}; {}",
+                    s.changed, s.verification, s.note
+                );
+            }
+        }
+        out
+    }
     pub fn to_text(&self) -> String {
         fn binary_paths(module: &AuditModule) -> BTreeMap<&str, &str> {
             let mut flattened = BTreeMap::new();
@@ -2748,6 +2850,7 @@ impl AuditDiff {
             self.old.validation,
             self.new.validation
         );
+        out.push_str(&self.custom_summary());
         standard_text(&mut out, "old ", &self.old.standard);
         standard_text(&mut out, "new ", &self.new.standard);
         for edit in &self.edits {
@@ -2817,6 +2920,7 @@ fn binary_description(status: &str) -> &'static str {
 }
 
 fn standard_text(out: &mut String, side: &str, standard: &StandardReport) {
+    standard.deprecations_text(out, side);
     let _ = writeln!(
         out,
         "{side}standard={} compatibility={} validator_valid={} validator_input={}; all-known recognition is separate from standard validity",
@@ -2896,7 +3000,7 @@ mod tests {
     fn module(sections: &[u8]) -> Vec<u8> {
         [b"\0asm\x01\0\0\0".as_slice(), sections].concat()
     }
-    fn all_regions(module: &AuditModule) -> BTreeMap<String, &Region> {
+    fn all_regions(module: &AuditModule) -> BTreeMap<&str, &Region> {
         let mut regions = BTreeMap::new();
         for section in &module.sections {
             flatten(&section.regions, &mut regions);
@@ -3265,12 +3369,14 @@ mod tests {
         );
     }
     #[test]
-    fn malformed_core_is_explicit_and_component_is_rejected() {
+    fn malformed_core_is_explicit_and_component_keeps_opaque_evidence() {
         let parsed = inspect(&module(&[1, 2, 1, 0xff, 0, 2, 1, b'x'])).unwrap();
         assert_eq!(parsed.sections[0].status, "malformed");
         assert_eq!(parsed.sections.len(), 2);
         assert!(parsed.diagnostics.iter().any(|d| d.code == "core_decode"));
-        assert!(inspect(b"\0asm\x0d\0\x01\0").is_err());
+        let component = inspect(b"\0asm\x0d\0\x01\0").unwrap();
+        assert_eq!(component.validation, "not_validated");
+        assert!(component.format.contains("component"));
         assert!(inspect(b"bad").is_err());
     }
     #[test]

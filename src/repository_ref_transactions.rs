@@ -5,7 +5,7 @@ use super::*;
 mod head_transaction;
 use head_transaction::{ReferenceHead, ResolvedHeadEdit};
 
-const JOURNAL: &str = "ref-transaction.json";
+const JOURNAL: &str = "ref-transaction.bin";
 const MAX_TRANSACTION_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_REFERENCE_EDITS: usize = 4096;
 
@@ -127,7 +127,6 @@ struct ReferencePlan {
     message: String,
     before: ReferenceState,
     changes: Vec<ReferenceChange>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     head: Option<ReferenceHead>,
 }
 
@@ -315,7 +314,8 @@ impl ReferenceState {
 
 impl ReferencePlan {
     fn after(&self) -> RepositoryResult<ReferenceState> {
-        if self.version != if self.head.is_some() { 2 } else { 1 }
+        if !(self.version == if self.head.is_some() { 2 } else { 1 }
+            || self.version == 3 && self.head.is_none())
             || self.message.is_empty()
             || self.changes.len() + usize::from(self.head.is_some()) > MAX_REFERENCE_EDITS
         {
@@ -327,7 +327,13 @@ impl ReferencePlan {
         let mut seen = BTreeSet::new();
         let mut upstreams =
             decode_upstreams_optional(self.before.upstreams.as_deref(), &self.before.refs)?;
-        let mut reflog = decode_reflog(self.before.reflog.as_deref().unwrap_or_default())?;
+        let mut reflog = self
+            .before
+            .reflog
+            .as_deref()
+            .map(decode_reflog)
+            .transpose()?
+            .unwrap_or_default();
         let mut changed = false;
         for change in &self.changes {
             let (namespace, name) = reference_parts(&change.reference)?;
@@ -382,11 +388,7 @@ impl ReferencePlan {
             after.upstreams = Some(encode_upstreams(&upstreams)?);
         }
         if changed {
-            let mut bytes = Vec::new();
-            for entry in reflog {
-                serde_json::to_writer(&mut bytes, &entry).map_err(|error| error.to_string())?;
-                bytes.push(b'\n');
-            }
+            let bytes = crate::binary::encode(&reflog)?;
             after.reflog = Some(bytes);
         }
         Ok(after)
@@ -394,7 +396,7 @@ impl ReferencePlan {
 
     fn bytes(&self) -> RepositoryResult<Vec<u8>> {
         self.after()?;
-        let bytes = serde_json::to_vec(self).map_err(|error| error.to_string())?;
+        let bytes = crate::binary::encode(self).map_err(|error| error.to_string())?;
         if bytes.len() as u64 > MAX_TRANSACTION_BYTES {
             return Err("reference transaction exceeds 64 MiB".into());
         }
@@ -500,7 +502,7 @@ impl Repository {
             before: ReferenceState {
                 refs: snapshot.manifest.refs,
                 tags: snapshot.manifest.tags,
-                upstreams: optional_file(&self.common_metadata.join("upstreams.json"))?,
+                upstreams: optional_file(&self.common_metadata.join("upstreams.bin"))?,
                 reflog: optional_file(&self.common_metadata.join("reflog"))?,
             },
             changes,
@@ -571,6 +573,8 @@ impl Repository {
             .as_ref()
             .map_or_else(|| snapshot.manifest.head.clone(), |head| head.after.clone());
         let manifest = Manifest {
+            shallow: self.partial_state()?.shallow,
+            promised: self.partial_state()?.promised,
             format: manifest_format(&after_head, &after.tags, &snapshot.objects),
             head: after_head,
             refs: after.refs.clone(),
@@ -580,7 +584,11 @@ impl Repository {
         for change in &plan.changes {
             let (namespace, name) = reference_parts(&change.reference)?;
             if change.old != change.new && namespace == "refs" {
-                if name == snapshot.manifest.head {
+                if name == snapshot.manifest.head
+                    && !(plan.version == 3
+                        && change.new.is_some()
+                        && optional_file(&self.metadata.join("index"))?.is_none())
+                {
                     return Err(
                         "update-ref refuses the checked-out branch; use commit or reset".into(),
                     );
@@ -613,7 +621,7 @@ impl Repository {
             }
         }
         for (name, before, after) in [
-            ("upstreams.json", &plan.before.upstreams, &after.upstreams),
+            ("upstreams.bin", &plan.before.upstreams, &after.upstreams),
             ("reflog", &plan.before.reflog, &after.reflog),
         ] {
             let actual = optional_file(&self.common_metadata.join(name))?;
@@ -640,7 +648,7 @@ impl Repository {
         self.check_reference_preimages(plan, after)?;
         if after.upstreams != plan.before.upstreams {
             self.atomic_write(
-                &self.common_metadata.join("upstreams.json"),
+                &self.common_metadata.join("upstreams.bin"),
                 after
                     .upstreams
                     .as_deref()
@@ -728,7 +736,7 @@ impl Repository {
             }
             self.atomic_write(
                 &self.common_metadata.join(namespace).join(name),
-                format!("{new}\n").as_bytes(),
+                &encode_reference(new, false)?,
             )?;
             checkpoint()?;
         }
@@ -775,7 +783,7 @@ impl Repository {
             return Err("reference transaction must be a bounded regular file".into());
         }
         let bytes = read_regular(&path)?;
-        let plan: ReferencePlan = serde_json::from_slice(&bytes)
+        let plan: ReferencePlan = crate::binary::decode(&bytes)
             .map_err(|error| format!("invalid reference transaction: {error}"))?;
         if plan.bytes()? != bytes {
             return Err("noncanonical reference transaction".into());
@@ -818,6 +826,129 @@ impl PreparedReferences<'_> {
     }
 }
 
+impl Repository {
+    /// One durable decision publishes the whole leased receive batch. Hook
+    /// rejection precedes installation; the hook sees a verified quarantine
+    /// bundle, never an unverified object in the repository's public store.
+    pub fn receive_batch_checked(
+        &self,
+        bytes: &[u8],
+        updates: &[crate::protocol::RefUpdate],
+        before_receive: impl FnOnce(&[u8]) -> RepositoryResult<()>,
+    ) -> Result<(), ReceiveError> {
+        let mut publishing = false;
+        let result = (|| {
+            if updates.is_empty() || updates.len() > MAX_REFERENCE_EDITS {
+                return Err("receive requires 1..=4096 updates".into());
+            }
+            let _index = self.lock_named("index.lock")?;
+            let lock = self.lock()?;
+            let current = self.snapshot()?;
+            let incoming = if bytes.is_empty() {
+                None
+            } else {
+                let incoming = if network_storage::compressed(bytes) {
+                    network_storage::decode_transfer(bytes, Some(&current))?
+                } else {
+                    decode_bundle(bytes)?
+                };
+                if !incoming.manifest.shallow.is_empty() || !incoming.manifest.promised.is_empty() {
+                    return Err(
+                        "receive needs a complete graph; deepen or materialize missing objects"
+                            .into(),
+                    );
+                }
+                check_collisions(&current, &incoming)?;
+                Some(incoming)
+            };
+            let mut changes = Vec::new();
+            let mut names = BTreeSet::new();
+            for update in updates {
+                let (namespace, refs) = match update.namespace {
+                    crate::protocol::RefNamespace::Branch => ("heads", &current.manifest.refs),
+                    crate::protocol::RefNamespace::Tag => ("tags", &current.manifest.tags),
+                };
+                validate_ref_name(&update.name)?;
+                let reference = format!("refs/{namespace}/{}", update.name);
+                if !names.insert(reference.clone()) {
+                    return Err("duplicate receive reference".into());
+                }
+                let old = refs.get(&update.name);
+                check_expected(old, update.expected.as_deref())?;
+                if namespace == "heads" {
+                    if self.branch_unavailable_reason(&update.name)?.is_some() {
+                        return Err("cannot receive into a linked worktree branch".into());
+                    }
+                    if update.name == current.manifest.head
+                        && (update.new.is_none()
+                            || optional_file(&self.metadata.join("index"))?.is_some())
+                    {
+                        return Err("cannot delete HEAD or receive into the checked-out branch of a tracked worktree".into());
+                    }
+                }
+                if let Some(new) = &update.new {
+                    require_id(new)?;
+                    let objects = incoming.as_ref().map_or(&current.objects, |s| &s.objects);
+                    if !matches!(objects.get(new), Some(Object::Commit(_))) {
+                        return Err(format!("incoming bundle lacks requested commit {new}"));
+                    }
+                    if let Some(old) = old {
+                        if !update.force
+                            && old != new
+                            && (namespace == "tags" || !is_ancestor(old, new, objects)?)
+                        {
+                            return Err(format!(
+                                "refusing non-fast-forward or tag replacement: {reference}"
+                            ));
+                        }
+                    }
+                } else if old.is_none() {
+                    return Err(format!("cannot delete missing reference {reference}"));
+                }
+                changes.push(ReferenceChange {
+                    reference,
+                    old: old.cloned(),
+                    new: update.new.clone(),
+                });
+            }
+            let plan = ReferencePlan {
+                version: 3,
+                message: "receive-atomic".into(),
+                head: None,
+                changes,
+                before: ReferenceState {
+                    refs: current.manifest.refs.clone(),
+                    tags: current.manifest.tags.clone(),
+                    upstreams: optional_file(&self.common_metadata.join("upstreams.bin"))?,
+                    reflog: optional_file(&self.common_metadata.join("reflog"))?,
+                },
+            };
+            plan.after()?;
+            plan.bytes()?;
+            let quarantine = incoming
+                .as_ref()
+                .map(encode_bundle)
+                .transpose()?
+                .unwrap_or_default();
+            before_receive(&quarantine)?;
+            if let Some(incoming) = &incoming {
+                self.install_snapshot_objects(incoming)?;
+            }
+            self.validate_reference_plan(&plan)?;
+            publishing = true;
+            PreparedReferences {
+                repo: self,
+                _lock: lock,
+                plan,
+                rejections: Vec::new(),
+            }
+            .commit()?;
+            Ok(())
+        })();
+        receive_result(result, publishing)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -855,7 +986,7 @@ mod tests {
         // A deleted branch must not leave an orphaned upstream association,
         // even when a crash occurs between config and reference publication.
         repo.atomic_write(
-            &repo.common_metadata.join("upstreams.json"),
+            &repo.common_metadata.join("upstreams.bin"),
             &encode_upstreams(&BTreeMap::from([(
                 "topic".into(),
                 Upstream {
@@ -901,6 +1032,52 @@ mod tests {
     }
 
     #[test]
+    fn bare_receive_recovers_each_durable_publication_prefix_including_head() {
+        for stop in 0..=3 {
+            let temp = Temp::new();
+            let (repo, mut plan, _) = fixture(&temp);
+            let old = plan.before.refs["main"].clone();
+            let new = plan.before.refs["topic"].clone();
+            plan.version = 3;
+            plan.message = "receive-atomic".into();
+            plan.changes = vec![
+                ReferenceChange {
+                    reference: "refs/heads/main".into(),
+                    old: Some(old),
+                    new: Some(new.clone()),
+                },
+                ReferenceChange {
+                    reference: "refs/tags/received".into(),
+                    old: None,
+                    new: Some(new.clone()),
+                },
+            ];
+            let after = repo.validate_reference_plan(&plan).unwrap();
+            persist(&repo, &plan);
+            if stop > 0 {
+                let mut writes = 0;
+                let interrupted = repo.apply_reference_plan(&plan, &after, || {
+                    writes += 1;
+                    if writes == stop {
+                        Err("power loss".into())
+                    } else {
+                        Ok(())
+                    }
+                });
+                assert!(interrupted.is_err(), "missing receive checkpoint {stop}");
+            }
+            let reopened = Repository::open(&repo.root).unwrap();
+            assert_eq!(reopened.state().unwrap().tip(), Some(&new));
+            assert_eq!(reopened.tags().unwrap().get("received"), Some(&new));
+            let log = reopened.reflog().unwrap();
+            persist(&repo, &plan);
+            reopened.state().unwrap();
+            assert_eq!(reopened.reflog().unwrap(), log);
+            reopened.fsck().unwrap();
+        }
+    }
+
+    #[test]
     fn every_write_prefix_recovers_before_queries_and_records_each_change_once() {
         // Config, two deletions, three writes, and the final shared reflog.
         for stop in 0..=7 {
@@ -924,7 +1101,7 @@ mod tests {
             assert_eq!(refs, after.refs);
             assert_eq!(repo.read_named_refs("tags", true).unwrap(), after.tags);
             assert_eq!(
-                optional_file(&repo.common_metadata.join("upstreams.json")).unwrap(),
+                optional_file(&repo.common_metadata.join("upstreams.bin")).unwrap(),
                 after.upstreams
             );
             assert_eq!(
@@ -960,13 +1137,13 @@ mod tests {
             let path = match target {
                 "ref" => repo.common_metadata.join("refs/topic"),
                 "reflog" => repo.common_metadata.join("reflog"),
-                "upstreams" => repo.common_metadata.join("upstreams.json"),
+                "upstreams" => repo.common_metadata.join("upstreams.bin"),
                 _ => repo.common_metadata.join("refs/later"),
             };
             let bytes = match target {
                 "reflog" => b"later log bytes".to_vec(),
                 "upstreams" => b"later config bytes".to_vec(),
-                _ => format!("{second}\n").into_bytes(),
+                _ => encode_reference(&second, false).unwrap(),
             };
             fs::write(&path, &bytes).unwrap();
             assert!(repo.branches().is_err());
@@ -1001,7 +1178,7 @@ mod tests {
                 }
                 _ => {}
             }
-            let mut bytes = serde_json::to_vec(&plan).unwrap();
+            let mut bytes = crate::binary::encode(&plan).unwrap();
             if mutation == "noncanonical" {
                 bytes.push(b'\n');
             }
@@ -1132,7 +1309,7 @@ mod tests {
         primary.create_branch("retired", &first).unwrap();
         primary
             .atomic_write(
-                &primary.common_metadata.join("upstreams.json"),
+                &primary.common_metadata.join("upstreams.bin"),
                 &encode_upstreams(&BTreeMap::from([(
                     "retired".into(),
                     Upstream {
@@ -1190,8 +1367,7 @@ mod tests {
                     assert_eq!(plan.version, 2);
                     let head = plan.head.as_ref().unwrap();
                     let other = if linked { &primary } else { &peer };
-                    let other_log =
-                        optional_file(&other.metadata.join("head-reflog.json")).unwrap();
+                    let other_log = optional_file(&other.metadata.join("head-reflog.bin")).unwrap();
                     let work = optional_file(&origin.root.join("a.wasm")).unwrap();
                     let index = optional_file(&origin.metadata.join("index")).unwrap();
                     persist(&primary, &plan);
@@ -1223,7 +1399,7 @@ mod tests {
                         after.reflog
                     );
                     assert_eq!(
-                        optional_file(&primary.common_metadata.join("upstreams.json")).unwrap(),
+                        optional_file(&primary.common_metadata.join("upstreams.bin")).unwrap(),
                         after.upstreams
                     );
                     let old =
@@ -1232,7 +1408,7 @@ mod tests {
                     assert_eq!(events.len(), old.len() + 1);
                     assert_eq!(events.last().unwrap().operation, "recover HEAD batch");
                     assert_eq!(
-                        optional_file(&other.metadata.join("head-reflog.json")).unwrap(),
+                        optional_file(&other.metadata.join("head-reflog.bin")).unwrap(),
                         other_log
                     );
                     assert_eq!(optional_file(&origin.root.join("a.wasm")).unwrap(), work);
@@ -1355,23 +1531,24 @@ mod tests {
             persist(&primary, &plan);
             let path = match damage {
                 "head" => origin.metadata.join("HEAD"),
-                "head-log" => origin.metadata.join("head-reflog.json"),
-                "registry" => primary.common_metadata.join("worktrees.json"),
+                "head-log" => origin.metadata.join("head-reflog.bin"),
+                "registry" => primary.common_metadata.join("worktrees.bin"),
                 "marker" => origin.metadata.join("worktree-id"),
                 _ => primary.common_metadata.join("refs/later"),
             };
             let bytes = match damage {
-                "head" | "ref" => format!("{}\n", plan.before.refs["main"]).into_bytes(),
+                "head" | "ref" => encode_reference(&plan.before.refs["main"], false).unwrap(),
                 "head-log" => b"later HEAD log bytes".to_vec(),
-                "marker" => format!("{}\n", "f".repeat(64)).into_bytes(),
-                _ => String::from_utf8(head.worktrees.as_ref().unwrap().clone())
-                    .unwrap()
-                    .replace("\"locked\":null", "\"locked\":\"manual lock edit\"")
-                    .into_bytes(),
+                "marker" => encode_reference(&"f".repeat(64), true).unwrap(),
+                _ => {
+                    let mut bytes = head.worktrees.as_ref().unwrap().clone();
+                    bytes.push(0);
+                    bytes
+                }
             };
             fs::write(&path, &bytes).unwrap();
             if damage == "registry" {
-                assert!(linked_worktrees::has_entries(&primary.common_metadata).unwrap());
+                assert!(linked_worktrees::has_entries(&primary.common_metadata).is_err());
             }
             assert!(Repository::open(&primary.root).is_err(), "{damage}");
             assert_eq!(fs::read(&path).unwrap(), bytes);
@@ -1382,7 +1559,7 @@ mod tests {
                 plan.before.reflog
             );
             assert_eq!(
-                optional_file(&primary.common_metadata.join("upstreams.json")).unwrap(),
+                optional_file(&primary.common_metadata.join("upstreams.bin")).unwrap(),
                 plan.before.upstreams
             );
             assert_eq!(
@@ -1412,14 +1589,12 @@ mod tests {
     }
 
     #[test]
-    fn old_ref_journals_remain_canonical_and_invalid_head_versions_or_origins_fail_closed() {
+    fn binary_ref_journals_recover_and_invalid_head_versions_or_origins_fail_closed() {
         let temp = Temp::new();
         let (repo, legacy, after) = fixture(&temp);
         assert_eq!(legacy.version, 1);
-        assert!(serde_json::from_slice::<Value>(&legacy.bytes().unwrap())
-            .unwrap()
-            .get("head")
-            .is_none());
+        let decoded: ReferencePlan = crate::binary::decode(&legacy.bytes().unwrap()).unwrap();
+        assert!(decoded.head.is_none());
         persist(&repo, &legacy);
         Repository::open(&repo.root).unwrap();
         assert_eq!(repo.read_refs().unwrap(), after.refs);
@@ -1431,15 +1606,12 @@ mod tests {
             } else if damage == "origin" {
                 plan.head.as_mut().unwrap().worktree = Some("f".repeat(64));
             }
-            let mut value = serde_json::to_value(&plan).unwrap();
+            let mut bytes = crate::binary::encode(&plan).unwrap();
             if damage == "unknown-field" {
-                value["head"]["output_path"] = json!("/tmp/unrelated");
+                bytes.push(0);
             }
             primary
-                .atomic_write(
-                    &primary.common_metadata.join(JOURNAL),
-                    &serde_json::to_vec(&value).unwrap(),
-                )
+                .atomic_write(&primary.common_metadata.join(JOURNAL), &bytes)
                 .unwrap();
             assert!(Repository::open(&primary.root).is_err(), "{damage}");
             assert_eq!(primary.read_refs().unwrap(), plan.before.refs);

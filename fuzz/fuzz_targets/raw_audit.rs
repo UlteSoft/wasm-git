@@ -203,7 +203,7 @@ fn patches(old: &[u8], new: &[u8]) {
         // A second producer bypasses create and its shared diff implementation.
         // A whole-file replacement is a valid nonminimal physical patch.
         let manual = BytePatch {
-            format: "uwgit-byte-patch-v1".into(),
+            format: "uwgit-byte-patch-binary-v1".into(),
             old_sha256: format!("{:x}", Sha256::digest(base)),
             new_sha256: format!("{:x}", Sha256::digest(target)),
             old_len: base.len() as u64,

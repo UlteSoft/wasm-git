@@ -1,5 +1,8 @@
+#![cfg(feature = "server")]
 //! Fixed upstream selection and acknowledgement workflows. No fuzzing.
 #![cfg(unix)]
+#[path = "support/native.rs"]
+mod native;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
@@ -71,9 +74,9 @@ fn write(root: &Path, name: &str, value: u8) {
     .unwrap();
 }
 fn bindings(root: &Path) -> Value {
-    let p = root.join(".uwgit/upstreams.json");
+    let p = root.join(".uwgit/upstreams.bin");
     if p.exists() {
-        serde_json::from_slice(&fs::read(p).unwrap()).unwrap()
+        native::upstreams_value(&fs::read(p).unwrap())
     } else {
         serde_json::json!({"version":1,"branches":{}})
     }
@@ -93,7 +96,7 @@ fn snapshot(root: &Path, fetch: bool) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
             if fetch
                 && (rel.starts_with(".uwgit/objects")
                     || rel.starts_with(".uwgit/tmp")
-                    || rel.to_str().unwrap().ends_with(".tracking.json"))
+                    || rel.to_str().unwrap().ends_with(".tracking.bin"))
             {
                 continue;
             }
@@ -261,7 +264,7 @@ fn network_clone_binds_only_its_committed_advertised_head() {
         let local_copy = f.temp.path("local-copy");
         run(&["clone", path(&local), path(&local_copy)]);
         assert!(
-            !local_copy.join(".uwgit/upstreams.json").exists(),
+            !local_copy.join(".uwgit/upstreams.bin").exists(),
             "local clone must not inherit transport-local bindings"
         );
         let empty = f.temp.path("empty.git");
@@ -269,7 +272,7 @@ fn network_clone_binds_only_its_committed_advertised_head() {
         let url = f.url.replace("/upstream.git", "/empty.git");
         let empty_clone = f.temp.path("empty-clone");
         f.run(&["clone", &url, path(&empty_clone)]);
-        assert!(!empty_clone.join(".uwgit/upstreams.json").exists());
+        assert!(!empty_clone.join(".uwgit/upstreams.bin").exists());
     }
 }
 #[test]
@@ -416,17 +419,27 @@ fn wait_for(path: &Path) {
     }
 }
 const ACK_SHIM: &str = r#"#!/usr/bin/python3
-import json,os,pathlib,struct,subprocess,sys,time
+import os,pathlib,struct,subprocess,sys,time
 request=sys.stdin.buffer.read()
 n=struct.unpack('>I',request[8:12])[0]
-kind=json.loads(request[20:20+n])['operation']['kind']
+meta=request[20:20+n]
+def integer(data,p):
+ v=data[p];p+=1
+ if v<251:return v,p
+ width={251:2,252:4,253:8}[v]
+ return int.from_bytes(data[p:p+width],'little'),p+width
+version,p=integer(meta,8)
+length,p=integer(meta,p);p+=length
+opcode,p=integer(meta,p)
+kind={6:'push',7:'update_ref'}.get(opcode,'other')
 result=subprocess.run([os.environ['UWGIT_UPSTREAM_TEST_BINARY'],'server','--stdio','--root',os.environ['UWGIT_UPSTREAM_TEST_ROOT']],input=request,capture_output=True,check=True)
 response=result.stdout
 if kind in ['push','update_ref']:
  if os.environ.get('UWGIT_UPSTREAM_BAD_ACK')=='1':
   size=struct.unpack('>I',response[8:12])[0]
-  metadata=json.loads(response[20:20+size]);metadata['tip']='0'*64
-  encoded=json.dumps(metadata,separators=(',',':')).encode()
+  encoded=response[20:20+size]
+  assert len(encoded)>=64 and all(c in b'0123456789abcdef' for c in encoded[-64:])
+  encoded=encoded[:-64]+b'0'*64
   response=response[:8]+struct.pack('>I',len(encoded))+response[12:20]+encoded+response[20+size:]
  else:
   pathlib.Path(os.environ['UWGIT_UPSTREAM_READY']).write_text('published')

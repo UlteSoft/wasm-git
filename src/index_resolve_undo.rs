@@ -45,21 +45,13 @@ mod tests {
     }
 
     #[test]
-    fn resolve_undo_upgrades_without_changing_old_index_encodings_or_images() {
-        for (version, magic) in [(2, MAGIC), (3, STAGED_MAGIC), (4, FLAGS_MAGIC)] {
-            let mut index = Index::empty();
-            index.format = version;
-            index.files.insert("a.wasm".into(), WASM.to_vec());
-            let bytes = [magic.as_slice(), &canonical(&index).unwrap()].concat();
-            assert_eq!(index_bytes(&decode_index(&bytes).unwrap()).unwrap(), bytes);
+    fn binary_index_preserves_conflict_images_and_rejects_old_headers() {
+        for version in 1..=5 {
+            let mut old = b"UWGITIDX".to_vec();
+            old.push(version);
+            old.extend_from_slice(b"{}");
+            assert!(decode_index(&old).is_err());
         }
-        let mut old = OLD_MAGIC.to_vec();
-        old.extend_from_slice(&6u64.to_le_bytes());
-        old.extend_from_slice(&8u64.to_le_bytes());
-        old.extend_from_slice(b"a.wasm");
-        old.extend_from_slice(WASM);
-        assert_eq!(decode_index(&old).unwrap().files["a.wasm"], WASM);
-
         let mut index = Index::empty();
         index.format = 3;
         index.conflicts.insert("a.wasm".into(), sides());
@@ -74,12 +66,12 @@ mod tests {
         );
         index.intents.insert("later.wasm".into());
         let bytes = index_bytes(&index).unwrap();
-        assert!(bytes.starts_with(RESOLVE_MAGIC));
+        assert!(bytes.starts_with(MAGIC));
         assert_eq!(decode_index(&bytes).unwrap(), index);
         assert_eq!(index.resolve_undo["a.wasm"], sides());
         index.resolve_undo.clear();
         let bytes = index_bytes(&index).unwrap();
-        assert!(bytes.starts_with(RESOLVE_MAGIC));
+        assert!(bytes.starts_with(MAGIC));
         assert!(decode_index(&bytes).unwrap().skipped("a.wasm"));
     }
 
@@ -114,14 +106,13 @@ mod tests {
                 }
                 _ => index.format = 6,
             }
-            let bytes = [RESOLVE_MAGIC.as_slice(), &canonical(&index).unwrap()].concat();
+            let bytes = [MAGIC.as_slice(), &canonical(&index).unwrap()].concat();
             assert!(decode_index(&bytes).is_err(), "case {bad}");
         }
-        let mut payload = serde_json::to_vec(&good).unwrap();
-        payload.pop();
-        payload.extend_from_slice(b",\"output_path\":\"/tmp/forged\"}\n");
-        let error = decode_index(&[RESOLVE_MAGIC.as_slice(), &payload].concat()).unwrap_err();
-        assert!(error.contains("unknown field"), "{error}");
+        let mut payload = canonical(&good).unwrap();
+        payload.push(0);
+        let error = decode_index(&[MAGIC.as_slice(), &payload].concat()).unwrap_err();
+        assert!(error.contains("remaining"), "{error}");
         let mut bytes = index_bytes(&good).unwrap();
         bytes[8] = 4;
         assert!(decode_index(&bytes).is_err());

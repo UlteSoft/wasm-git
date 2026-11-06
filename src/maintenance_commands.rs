@@ -43,9 +43,14 @@ enum Command {
         quiet: bool,
         paths: Vec<String>,
     },
-    /// Verify and report unreachable objects; prune only with --prune=now.
+    /// Compress native objects without changing their IDs or original Wasm bytes.
+    Repack { dir: String },
+    /// Compress history and report unreachable objects; prune only with --prune=now.
     Gc {
         dir: String,
+        /// Explicit alias for the default history compression.
+        #[arg(long)]
+        pack: bool,
         #[arg(long, value_parser = ["now", "never"], default_value = "never")]
         prune: String,
         #[arg(short = 'n', long)]
@@ -66,7 +71,10 @@ enum Command {
 }
 
 pub fn handles(command: &str) -> bool {
-    matches!(command, "clean" | "gc" | "maintenance" | "mergetool")
+    matches!(
+        command,
+        "clean" | "gc" | "repack" | "maintenance" | "mergetool"
+    )
 }
 
 pub fn run(args: &[String]) -> RepositoryResult<QueryOutput> {
@@ -80,6 +88,11 @@ pub fn run(args: &[String]) -> RepositoryResult<QueryOutput> {
         Err(error) => return Err(error.to_string()),
     };
     let (output, quiet) = match cli.command {
+        Command::Repack { dir } => (
+            serde_json::to_string_pretty(&Repository::open(dir)?.repack()?)
+                .map_err(|e| e.to_string())?,
+            false,
+        ),
         Command::Mergetool {
             dir,
             output,
@@ -118,10 +131,16 @@ pub fn run(args: &[String]) -> RepositoryResult<QueryOutput> {
             prune,
             dry_run,
             quiet,
-        } => (
-            crate::porcelain::garbage_collect(&dir, prune == "now" && !dry_run)?,
-            quiet,
-        ),
+            pack: _,
+        } => {
+            let output = crate::porcelain::garbage_collect_with_pack(
+                &dir,
+                prune == "now" && !dry_run,
+                !dry_run,
+            )?;
+            (output, quiet)
+        }
+
         Command::Maintenance {
             dir,
             action: _,
@@ -142,8 +161,12 @@ pub fn run(args: &[String]) -> RepositoryResult<QueryOutput> {
             if task.is_empty() || task.iter().any(|task| task == "gc") {
                 report.insert(
                     "gc".into(),
-                    serde_json::from_str(&crate::porcelain::garbage_collect(&dir, prune == "now")?)
-                        .map_err(|error| error.to_string())?,
+                    serde_json::from_str(&crate::porcelain::garbage_collect_with_pack(
+                        &dir,
+                        prune == "now",
+                        true,
+                    )?)
+                    .map_err(|error| error.to_string())?,
                 );
             } else if prune != "never" {
                 return Err("--prune requires the gc maintenance task".into());

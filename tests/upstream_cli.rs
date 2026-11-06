@@ -2,6 +2,8 @@
 //! The SSH shim runs the real framed stdio service with fixtures only in /tmp.
 #![cfg(unix)]
 
+#[path = "support/native.rs"]
+mod native;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
@@ -435,7 +437,7 @@ fn network_detached_head_advertisements_fetch_and_clone_preserve_the_native_poin
     fixture.ok(&["clone", &fixture.url, path(&destination)]);
     assert_eq!(
         fs::read(destination.join(".uwgit/HEAD")).unwrap(),
-        format!("{tip}\n").as_bytes()
+        native::reference(&tip)
     );
     let status: Value = serde_json::from_str(&run(&["status", path(&destination)])).unwrap();
     assert_eq!(status["detached"], true);
@@ -475,11 +477,11 @@ fn upstream_revision_ancestry_is_shared_by_history_object_and_graph_commands() {
             .trim(),
         "1"
     );
-    let config = fixture.local.join(".uwgit/remotes/origin.json");
+    let config = fixture.local.join(".uwgit/remotes/origin.bin");
     let original = fs::read(&config).unwrap();
-    let mut value: Value = serde_json::from_slice(&original).unwrap();
+    let mut value: Value = native::remote_value(&original);
     value["url"] = serde_json::json!("ssh://test@different-host.invalid/unused");
-    fs::write(&config, serde_json::to_vec(&value).unwrap()).unwrap();
+    fs::write(&config, native::remote_bytes(value)).unwrap();
     fixture.reject(&["log", fixture.repo(), "@{u}~0"]);
     fixture.ok(&["log", fixture.repo(), "HEAD"]);
     fs::write(&config, original).unwrap();

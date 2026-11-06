@@ -1,0 +1,19 @@
+[Unit]
+Description=Native Wasm version-history server
+After=network.target
+
+[Service]
+Type=simple
+User=uwgit
+Group=uwgit
+ExecStart=/usr/local/bin/wasm-git-server --root /srv/uwgit --listen 127.0.0.1:9419 --token-file /etc/uwgit/token --allow-write
+Restart=on-failure
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/srv/uwgit
+
+[Install]
+WantedBy=multi-user.target

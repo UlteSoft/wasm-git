@@ -420,8 +420,10 @@ fn profile_diff_and_bidirectional_cli_patches_preserve_original_shared_type_byte
                 let output_path = temp.path(&format!("{label}-{count}-{direction}.wasm"));
                 run_json(&["patch", old_path, new_path, "--output", &patch_path]);
                 let encoded = std::fs::read(&patch_path).unwrap();
-                let patch: Value = serde_json::from_slice(&encoded).unwrap();
-                assert_eq!(patch["format"], "uwgit-byte-patch-v1");
+                let patch: Value =
+                    serde_json::to_value(wasm_git::patch::BytePatch::from_bytes(&encoded).unwrap())
+                        .unwrap();
+                assert_eq!(patch["format"], "uwgit-byte-patch-binary-v1");
                 replay(old, new, &patch["edits"]);
                 let applied = run_json(&["apply", old_path, &patch_path, "--output", &output_path]);
                 assert_eq!(applied["written"], true);

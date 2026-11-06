@@ -97,6 +97,19 @@ impl Repository {
     /// Explicit pruning retains every recovery root. Deleting commits from
     /// children toward parents keeps every interrupted prefix verifiable.
     pub fn garbage_collect(&self, extra_roots: &[String], prune: bool) -> RepositoryResult<Value> {
+        self.garbage_collect_mode(extra_roots, prune, false)
+    }
+
+    /// One writer lease covers planning, compression, publication and pruning.
+    pub fn garbage_collect_mode(
+        &self,
+        extra_roots: &[String],
+        prune: bool,
+        pack: bool,
+    ) -> RepositoryResult<Value> {
+        if prune || pack {
+            self.expire_transfers()?;
+        }
         let _lock = self.lock()?;
         let snapshot = self.snapshot()?;
         let mut roots: BTreeSet<String> = snapshot
@@ -128,34 +141,25 @@ impl Repository {
                 if entry
                     .file_name()
                     .to_string_lossy()
-                    .ends_with(".tracking.json")
+                    .ends_with(".tracking.bin")
                 {
-                    let value: Value = serde_json::from_slice(&read_regular(&entry.path())?)
-                        .map_err(|error| error.to_string())?;
-                    if let Some(head) = value["state"]["head"].as_str().filter(|id| valid_id(id)) {
-                        roots.insert(head.into());
+                    let value: crate::remote::Tracking =
+                        crate::binary::decode(&read_regular(&entry.path())?)?;
+                    if valid_id(&value.state.head) {
+                        roots.insert(value.state.head);
                     }
-                    if let Some(tags) = value["state"]["tags"].as_object() {
-                        for id in tags.values() {
-                            roots.insert(id.as_str().ok_or("invalid remote tag root")?.into());
-                        }
-                    }
+                    roots.extend(value.state.tags.into_values());
                 }
             }
         }
         let mut pinned = Vec::new();
-        for name in [
-            "pending.json",
-            "bisect.json",
-            "notes.json",
-            "worktrees.json",
-        ] {
-            if name == "worktrees.json"
+        for name in ["pending.bin", "bisect.bin", "notes.bin", "worktrees.bin"] {
+            if name == "worktrees.bin"
                 && !super::linked_worktrees::has_entries(&self.common_metadata)?
             {
                 continue;
             }
-            let directory = if name == "worktrees.json" {
+            let directory = if name == "worktrees.bin" {
                 &self.common_metadata
             } else {
                 &self.metadata
@@ -189,12 +193,26 @@ impl Repository {
             order.extend(
                 candidates
                     .iter()
-                    .filter(|id| snapshot.encoded[*id][8] == kind)
+                    .filter(|id| snapshot.encoded.get(*id).is_some_and(|b| b[8] == kind))
                     .cloned(),
             );
         }
         let mut removed = Vec::new();
-        if prune {
+        let packed = pack_storage::has_packs(self)?;
+        let mut repack = None;
+        if pack || (prune && packed) {
+            let all;
+            let keep = if prune {
+                &reachable
+            } else {
+                all = snapshot.objects.keys().cloned().collect();
+                &all
+            };
+            repack = Some(pack_storage::repack(self, &snapshot, keep)?);
+            if prune {
+                removed = order.clone();
+            }
+        } else if prune {
             for id in &order {
                 let path = self.common_metadata.join("objects").join(id);
                 if read_regular(&path)? != snapshot.encoded[id] {
@@ -210,7 +228,7 @@ impl Repository {
             sync_directory(&self.common_metadata.join("objects"))?;
         }
         Ok(
-            json!({"schema_version":1,"dry_run":!prune,"objects_before":snapshot.objects.len(),"retained":reachable.len(),"candidates":candidates,"deletion_order":order,"removed":removed,"conservative_recovery_metadata":pinned,"root_policy":"branches+tags+fetched_branches+fetched_tags+reflog+stash_bases+notes_targets; active_auxiliary_metadata_pins_all_objects","packing":false}),
+            json!({"schema_version":1,"dry_run":!prune && !pack,"prune":prune,"objects_before":snapshot.objects.len(),"retained":reachable.len(),"candidates":candidates,"deletion_order":order,"removed":removed,"conservative_recovery_metadata":pinned,"root_policy":"branches+tags+fetched_branches+fetched_tags+reflog+stash_bases+notes_targets; active_auxiliary_metadata_pins_all_objects","packing":packed || pack,"repack":repack}),
         )
     }
     /// Hash canonical native payloads. Writing also validates the entire graph
@@ -240,7 +258,7 @@ impl Repository {
         entries: BTreeMap<String, String>,
     ) -> RepositoryResult<String> {
         let tree = Tree { format: 1, entries };
-        let payload = serde_json::to_vec(&tree).map_err(|error| error.to_string())?;
+        let payload = encode_tree(&tree).map_err(|error| error.to_string())?;
         self.hash_payload("tree", &payload, true)
     }
 
@@ -260,7 +278,7 @@ impl Repository {
             );
         }
         let payload =
-            serde_json::to_vec(&Tree { format: 1, entries }).map_err(|error| error.to_string())?;
+            encode_tree(&Tree { format: 1, entries }).map_err(|error| error.to_string())?;
         let tree = stage_tree_object(TREE_KIND, &payload, &snapshot.encoded, &mut staged)?;
         self.install_tree_objects(&staged, &[])?;
         Ok(tree)
@@ -288,6 +306,8 @@ impl Repository {
             resolved.push(id);
         }
         let commit = Commit {
+            shallow: false,
+            signature: None,
             format: 2,
             wasm: String::new(),
             parents: resolved,
@@ -365,9 +385,9 @@ impl Repository {
                 };
                 if revision.ends_with("^!") {
                     expanded.push(id);
-                    excludes.extend(commit.parents.iter().cloned());
+                    excludes.extend(commit.history_parents().iter().cloned());
                 } else {
-                    expanded.extend(commit.parents.iter().cloned());
+                    expanded.extend(commit.history_parents().iter().cloned());
                 }
                 continue;
             }
@@ -555,7 +575,7 @@ fn best_in_common(
         let Some(Object::Commit(commit)) = objects.get(id) else {
             return Err("common ancestor is not a stored commit".into());
         };
-        dominated.extend(commit.parents.iter().cloned());
+        dominated.extend(commit.history_parents().iter().cloned());
     }
     Ok(common.difference(&dominated).cloned().collect())
 }
@@ -597,10 +617,11 @@ pub(super) fn walk_snapshot(
         let Some(Object::Commit(commit)) = snapshot.objects.get(id) else {
             return Err("walk contains a non-commit".into());
         };
-        for parent in commit
-            .parents
-            .iter()
-            .take(if first_parent { 1 } else { usize::MAX })
+        for parent in
+            commit
+                .history_parents()
+                .iter()
+                .take(if first_parent { 1 } else { usize::MAX })
         {
             if let Some(count) = children.get_mut(parent) {
                 *count += 1;
@@ -621,10 +642,11 @@ pub(super) fn walk_snapshot(
             id: id.clone(),
             commit: commit.clone(),
         });
-        for parent in commit
-            .parents
-            .iter()
-            .take(if first_parent { 1 } else { usize::MAX })
+        for parent in
+            commit
+                .history_parents()
+                .iter()
+                .take(if first_parent { 1 } else { usize::MAX })
         {
             if let Some(count) = children.get_mut(parent) {
                 *count -= 1;
@@ -656,7 +678,7 @@ fn collect_commits(
         };
         pending.extend(
             commit
-                .parents
+                .history_parents()
                 .iter()
                 .take(if first_parent { 1 } else { usize::MAX })
                 .cloned(),

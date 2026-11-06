@@ -459,7 +459,7 @@ fn verify_report(pair: &Pair, report: &Value) {
         }
     }
     for entry in bindings(report) {
-        assert_eq!(entry["pairing"], "opcode_alignment");
+        assert_eq!(entry["pairing"], "wasm_region_instruction_alignment");
         assert_eq!(entry["match_scope"], SCOPE);
         assert_eq!(entry["identity_unproven"], true);
         verify_site(&entry["old"], &old);
@@ -517,9 +517,12 @@ fn export_role_swaps_cannot_hide_real_call_ref_func_or_return_call_retargeting()
             .iter()
             .find(|entry| entry["old_source_index"] == 0)
             .unwrap();
-        assert_eq!(global["new_source_index"], 1);
-        assert_eq!(global["reason"], "same_stable_id");
-        assert_ne!(
+        // The implementation view now follows the unique typed body rather
+        // than the exchanged export role. The real caller retargeting above
+        // must still be reported independently.
+        assert_eq!(global["new_source_index"], 0);
+        assert_eq!(global["reason"], "same_matched_reference_body");
+        assert_eq!(
             entry["target_match"]["new_source_index"],
             global["new_source_index"]
         );
@@ -688,7 +691,14 @@ fn same_index_implementation_changes_and_opcode_alignment_preserve_caller_eviden
         let new = old.replace("i32.const 7", "i32.const 8");
         let report = Pair::new(&old, &new).diff();
         assert!(caller(&report, "run").is_none());
-        assert!(bindings(&report).is_empty());
+        // An unchanged numeric operand is not implementation continuity:
+        // a replaced/deleted callee can reuse this slot. Keep uncertainty as
+        // an informational note, without inventing a changed caller body.
+        assert_eq!(bindings(&report).len(), 1);
+        let entry = binding(&report, 0, 0);
+        assert_eq!(entry["relation"], "unresolved_target");
+        unproved(entry);
+        assert_eq!(report["call_binding_notes"].as_array().unwrap().len(), 1);
         assert!(node(&report, 0).is_none());
         assert_eq!(report["summary"]["functions_changed"], 1);
     }
@@ -862,7 +872,9 @@ fn dependency_bindings_preserve_four_profile_raw_replay_patches_and_physical_his
             let applied = pair.temp.path(&format!("{label}.wasm"));
             run_json(&["patch", old_path, new_path, "--output", &patch]);
             let raw = std::fs::read(&patch).unwrap();
-            let encoded: Value = serde_json::from_slice(&raw).unwrap();
+            let encoded: Value =
+                serde_json::to_value(wasm_git::patch::BytePatch::from_bytes(&raw).unwrap())
+                    .unwrap();
             replay(old, new, &encoded["edits"]);
             assert_eq!(
                 BytePatch::from_bytes(&raw).unwrap().apply(old).unwrap(),

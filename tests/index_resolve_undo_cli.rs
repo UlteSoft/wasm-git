@@ -1,3 +1,5 @@
+#[path = "support/native.rs"]
+mod native;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
@@ -145,7 +147,7 @@ fn resolution_lists_original_unpublished_images_with_stage_tags_paths_and_nul() 
     t.write("modules/a.wasm", UNKNOWN);
     let mut before = files(&t.repo);
     ok(&["add", t.root(), "modules/a.wasm"], None);
-    assert!(t.index().starts_with(b"UWGITIDX\x05"));
+    assert!(t.index().starts_with(b"UWGITIDX\x06"));
     before.insert(PathBuf::from(".uwgit/index"), t.index());
     assert_eq!(files(&t.repo), before);
     let expected = ids
@@ -629,7 +631,7 @@ fn recorded_rebase_can_unresolve_review_again_and_preserve_undo_across_publicati
     );
     assert_eq!(fs::read(t.path("a.wasm")).unwrap(), UNKNOWN);
     assert_eq!(fs::read(t.path("tail.wasm")).unwrap(), wasm(4));
-    assert!(!t.path(".uwgit/pending.json").exists());
+    assert!(!t.path(".uwgit/pending.bin").exists());
     ok(&["fsck", t.root()], None);
 }
 
@@ -659,7 +661,7 @@ fn recorded_rebase_abort_restores_the_original_v5_index_and_skip_keeps_saved_sid
                 resolved
             );
             assert_eq!(fs::read(t.path("a.wasm")).unwrap(), wasm(2));
-            assert!(!t.path(".uwgit/pending.json").exists());
+            assert!(!t.path(".uwgit/pending.bin").exists());
         }
     }
 }
@@ -879,9 +881,9 @@ fn conflict_restore_respects_skip_and_reinstates_flags_only_with_explicit_overri
         None,
     );
     assert_eq!(fs::read(t.path("a.wasm")).unwrap(), wasm(2));
-    let index: Value = serde_json::from_slice(&t.index()[9..]).unwrap();
-    assert!(index.get("flags").is_none());
-    assert!(index.get("resolve_undo").is_none());
+    let index: Value = native::index_value(&t.index());
+    assert!(index["flags"].as_object().unwrap().is_empty());
+    assert!(index["resolve_undo"].as_object().unwrap().is_empty());
     assert_eq!(ok(&["ls-files", t.root(), "-u"], None).lines().count(), 3);
 }
 
@@ -1066,7 +1068,7 @@ fn linked_worktree_merge_restore_remains_local_and_can_continue_the_replay_queue
     assert_eq!(done["status"], "rebased");
     assert_eq!(fs::read(t.path("a.wasm")).unwrap(), UNKNOWN);
     assert_eq!(fs::read(t.path("tail.wasm")).unwrap(), wasm(4));
-    assert!(!t.path(".uwgit/pending.json").exists());
+    assert!(!t.path(".uwgit/pending.bin").exists());
     assert_eq!(files(&linked), linked_before);
     ok(&["fsck", t.root()], None);
 }

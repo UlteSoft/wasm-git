@@ -1,12 +1,12 @@
 //! Function matching using deterministic anchors and fingerprints.
 //! Maps functions from old and new modules even under index drift.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use serde::Serialize;
 
 use crate::fingerprint::canonical_operators;
-use crate::ir::{FunctionIr, FunctionKindIr, Immediate, NormalizedModule, ParsedOperator};
+use crate::ir::{FunctionIr, FunctionKindIr, Immediate, NormalizedModule, Opcode, ParsedOperator};
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct FunctionMatch {
@@ -14,9 +14,15 @@ pub struct FunctionMatch {
     pub new_id: String,
     pub old_source_index: u32,
     pub new_source_index: u32,
+    #[serde(serialize_with = "serialize_score")]
     pub confidence: f32,
+    #[serde(serialize_with = "serialize_score")]
     pub similarity: f32,
     pub reason: MatchReason,
+    /// Unique equal custom symbols break equal-body candidate ties or
+    /// add at most 0.03 after the similarity threshold. Never an identity proof.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol_hint: Option<String>,
     /// Both bodies have resolved static function-reference contexts. A unique
     /// import/export role may still anchor a body whose context is incomplete.
     pub reference_context_complete: bool,
@@ -25,11 +31,28 @@ pub struct FunctionMatch {
     pub ambiguous: bool,
 }
 
+/// Preserve the existing shortest f32 JSON number when reports are first
+/// converted to serde_json::Value (which otherwise widens it to a long f64).
+pub(crate) fn serialize_score<S: serde::Serializer>(
+    value: &f32,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    if !value.is_finite() {
+        return serializer.serialize_none();
+    }
+    serde_json::to_string(value)
+        .map_err(serde::ser::Error::custom)?
+        .parse::<serde_json::Number>()
+        .map_err(serde::ser::Error::custom)?
+        .serialize(serializer)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 #[allow(clippy::enum_variant_names)]
 pub enum MatchReason {
     SameStableId,
+    SameExportRole,
     SameExactBodyHash,
     SameCanonicalBodyHash,
     SameMatchedReferenceBody,
@@ -42,7 +65,16 @@ struct MatchUncertainty {
     new: BTreeSet<usize>,
 }
 
+pub const SIMILARITY_PAIR_LIMIT: usize = 16 * 1024 * 1024;
+
 pub fn match_functions(old: &NormalizedModule, new: &NormalizedModule) -> Vec<FunctionMatch> {
+    match_functions_with_status(old, new).0
+}
+
+pub fn match_functions_with_status(
+    old: &NormalizedModule,
+    new: &NormalizedModule,
+) -> (Vec<FunctionMatch>, bool) {
     let mut matches = Vec::new();
     let mut matched_old = BTreeSet::new();
     let mut matched_new = BTreeSet::new();
@@ -53,7 +85,7 @@ pub fn match_functions(old: &NormalizedModule, new: &NormalizedModule) -> Vec<Fu
         new,
         |_, function| {
             (function.kind == FunctionKindIr::Imported || !function.export_names.is_empty())
-                .then(|| function.id.clone())
+                .then(|| function.id.as_bytes().to_vec())
         },
         MatchReason::SameStableId,
         1.0,
@@ -80,9 +112,9 @@ pub fn match_functions(old: &NormalizedModule, new: &NormalizedModule) -> Vec<Fu
                     let operators: Vec<_> = function
                         .operators
                         .iter()
-                        .map(|op| (op.opcode.as_str(), &op.immediate))
+                        .map(|op| (&op.opcode, &op.immediate))
                         .collect();
-                    serde_json::to_string(&(
+                    crate::binary::encode(&(
                         &function.type_id,
                         fingerprint.exact_body_hash.hex(),
                         &function.locals,
@@ -111,7 +143,7 @@ pub fn match_functions(old: &NormalizedModule, new: &NormalizedModule) -> Vec<Fu
                 .as_ref()
                 .filter(|fingerprint| fingerprint.reference_context_complete)
                 .map(|fingerprint| {
-                    serde_json::to_string(&(
+                    crate::binary::encode(&(
                         &function.type_id,
                         fingerprint.canonical_body_hash.hex(),
                         &function.locals,
@@ -127,7 +159,7 @@ pub fn match_functions(old: &NormalizedModule, new: &NormalizedModule) -> Vec<Fu
         &mut uncertainty,
         &mut matches,
     );
-    match_by_similarity(
+    let similarity_complete = match_by_similarity(
         old,
         new,
         0.6,
@@ -152,7 +184,7 @@ pub fn match_functions(old: &NormalizedModule, new: &NormalizedModule) -> Vec<Fu
             .then_with(|| left.old_source_index.cmp(&right.old_source_index))
             .then_with(|| left.new_source_index.cmp(&right.new_source_index))
     });
-    matches
+    (matches, similarity_complete)
 }
 
 pub fn unmatched_old_function_ids(
@@ -191,7 +223,7 @@ pub fn unmatched_new_function_ids(
 fn match_by_key(
     old: &NormalizedModule,
     new: &NormalizedModule,
-    key: impl Fn(&NormalizedModule, &FunctionIr) -> Option<String>,
+    key: impl Fn(&NormalizedModule, &FunctionIr) -> Option<Vec<u8>>,
     reason: MatchReason,
     confidence: f32,
     matched_old: &mut BTreeSet<usize>,
@@ -201,6 +233,7 @@ fn match_by_key(
 ) {
     let old_candidates = grouped_candidates(old, &key, matched_old);
     let new_candidates = grouped_candidates(new, &key, matched_new);
+    let mut symbols = None;
 
     for (candidate_key, old_indices) in old_candidates {
         let Some(new_indices) = new_candidates.get(&candidate_key) else {
@@ -221,7 +254,27 @@ fn match_by_key(
             uncertainty.old.extend(old_indices.iter().copied());
             uncertainty.new.extend(new_indices.iter().copied());
         }
-        for (old_index, new_index) in old_indices.iter().zip(new_indices) {
+        // A source edit can make one body identical to an existing sibling.
+        // Within that exact-key group, prefer globally unique equal symbols
+        // before index order. All original ambiguity remains, including surplus
+        // endpoints; a name never overrides a different body or exported role.
+        let use_symbols = (old_indices.len() > 1 || new_indices.len() > 1)
+            && matches!(
+                reason,
+                MatchReason::SameExactBodyHash | MatchReason::SameCanonicalBodyHash
+            );
+        let pairs = if use_symbols {
+            symbols
+                .get_or_insert_with(|| SymbolHints::new(old, new))
+                .equal_key_pairs(&old_indices, new_indices)
+        } else {
+            old_indices
+                .iter()
+                .copied()
+                .zip(new_indices.iter().copied())
+                .collect()
+        };
+        for (old_index, new_index) in &pairs {
             if matched_old.contains(old_index) || matched_new.contains(new_index) {
                 continue;
             }
@@ -250,6 +303,10 @@ fn match_by_key(
                 reference_context_complete: complete_reference_context(old_function)
                     && complete_reference_context(new_function),
                 ambiguous,
+                symbol_hint: use_symbols
+                    .then(|| symbols.as_ref().unwrap())
+                    .filter(|hints| hints.agrees(*old_index, *new_index))
+                    .map(|_| old.function_names[&old_function.source_index].clone()),
             });
         }
     }
@@ -257,10 +314,10 @@ fn match_by_key(
 
 fn grouped_candidates(
     module: &NormalizedModule,
-    key: &impl Fn(&NormalizedModule, &FunctionIr) -> Option<String>,
+    key: &impl Fn(&NormalizedModule, &FunctionIr) -> Option<Vec<u8>>,
     already_matched: &BTreeSet<usize>,
-) -> BTreeMap<String, Vec<usize>> {
-    let mut candidates = BTreeMap::<String, Vec<usize>>::new();
+) -> BTreeMap<Vec<u8>, Vec<usize>> {
+    let mut candidates = BTreeMap::<Vec<u8>, Vec<usize>>::new();
     for (index, function) in module.functions.iter().enumerate() {
         if already_matched.contains(&index) {
             continue;
@@ -280,6 +337,76 @@ struct SimilarityCandidate {
     score: SimilarityScore,
     locals_equal: bool,
     direct_call_similarity: f32,
+    ordered_similarity: f32,
+    symbol_agrees: bool,
+}
+
+impl SimilarityCandidate {
+    fn ranking_score(&self) -> f32 {
+        self.score.combined + if self.symbol_agrees { 0.03 } else { 0.0 }
+    }
+}
+
+struct SymbolHints {
+    old: Vec<Option<usize>>,
+    new: Vec<Option<usize>>,
+}
+impl SymbolHints {
+    fn new(old: &NormalizedModule, new: &NormalizedModule) -> Self {
+        fn unique(module: &NormalizedModule) -> BTreeMap<&str, Option<usize>> {
+            let mut out = BTreeMap::new();
+            for (&i, name) in &module.function_names {
+                if (i as usize) < module.functions.len() {
+                    out.entry(name.as_str())
+                        .and_modify(|i| *i = None)
+                        .or_insert(Some(i as usize));
+                }
+            }
+            out
+        }
+        let a = unique(old);
+        let b = unique(new);
+        let mut out = Self {
+            old: vec![None; old.functions.len()],
+            new: vec![None; new.functions.len()],
+        };
+        for (name, i) in a {
+            if let (Some(i), Some(Some(j))) = (i, b.get(name)) {
+                out.old[i] = Some(i);
+                out.new[*j] = Some(i);
+            }
+        }
+        out
+    }
+    fn agrees(&self, a: usize, b: usize) -> bool {
+        self.old[a].is_some() && self.old[a] == self.new[b]
+    }
+    fn equal_key_pairs(&self, old: &[usize], new: &[usize]) -> Vec<(usize, usize)> {
+        let new_by_symbol: BTreeMap<_, _> = new
+            .iter()
+            .filter_map(|&i| self.new[i].map(|symbol| (symbol, i)))
+            .collect();
+        let mut used_old = BTreeSet::new();
+        let mut used_new = BTreeSet::new();
+        let mut pairs = Vec::with_capacity(old.len().min(new.len()));
+        for &a in old {
+            if let Some(b) = self.old[a]
+                .and_then(|symbol| new_by_symbol.get(&symbol))
+                .copied()
+            {
+                pairs.push((a, b));
+                used_old.insert(a);
+                used_new.insert(b);
+            }
+        }
+        pairs.extend(
+            old.iter()
+                .filter(|i| !used_old.contains(i))
+                .copied()
+                .zip(new.iter().filter(|i| !used_new.contains(i)).copied()),
+        );
+        pairs
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -290,6 +417,72 @@ struct SimilarityScore {
     length: f32,
 }
 
+/// Prove a whole candidate matrix has exactly one score/secondary quality.
+/// For each immediate token, min(count_old,count_new) must have equal lower
+/// and upper bounds over the entire two groups. This is an exact shortcut,
+/// never a sampled similarity guess. Original index-order tie breaking and
+/// all ambiguity survive without materializing the quadratic matrix.
+fn uniform_scores(
+    old: &NormalizedModule,
+    a: &[SimilarityProfile],
+    left: &[usize],
+    new: &NormalizedModule,
+    b: &[SimilarityProfile],
+    right: &[usize],
+) -> bool {
+    let stable = |module: &NormalizedModule, profiles: &[SimilarityProfile], group: &[usize]| {
+        let first = &profiles[group[0]];
+        group.iter().all(|i| {
+            profiles[*i].len == first.len
+                && profiles[*i].opcode == first.opcode
+                && profiles[*i].calls == first.calls
+                && profiles[*i].call_len == first.call_len
+                && module.functions[*i].locals == module.functions[group[0]].locals
+        })
+    };
+    if !stable(old, a, left) || !stable(new, b, right) {
+        return false;
+    }
+    overlap_uniform(a, left, b, right, |p| &p.immediate)
+        && overlap_uniform(a, left, b, right, |p| &p.ordered)
+}
+
+/// Exact min/max overlap bounds preserve the large uniform-matrix shortcut,
+/// including the new order evidence. Hashes here only rank heuristic matches.
+fn overlap_uniform<K: Eq + std::hash::Hash + Clone>(
+    a: &[SimilarityProfile],
+    left: &[usize],
+    b: &[SimilarityProfile],
+    right: &[usize],
+    histogram: fn(&SimilarityProfile) -> &HashMap<K, usize>,
+) -> bool {
+    let ranges = |profiles: &[SimilarityProfile], group: &[usize]| {
+        let mut result = HashMap::new();
+        for i in group {
+            for (key, count) in histogram(&profiles[*i]) {
+                let e = result.entry(key.clone()).or_insert((*count, *count, 0));
+                e.0 = e.0.min(*count);
+                e.1 = e.1.max(*count);
+                e.2 += 1;
+            }
+        }
+        result
+    };
+    let (x, y) = (ranges(a, left), ranges(b, right));
+    for key in x.keys().chain(y.keys()) {
+        let bounds = |r: Option<&(usize, usize, usize)>, size| match r {
+            Some((min, max, seen)) => (if *seen == size { *min } else { 0 }, *max),
+            None => (0, 0),
+        };
+        let (xmin, xmax) = bounds(x.get(key), left.len());
+        let (ymin, ymax) = bounds(y.get(key), right.len());
+        if xmin.min(ymin) != xmax.min(ymax) {
+            return false;
+        }
+    }
+    true
+}
+
 fn match_by_similarity(
     old: &NormalizedModule,
     new: &NormalizedModule,
@@ -298,44 +491,171 @@ fn match_by_similarity(
     matched_new: &mut BTreeSet<usize>,
     uncertainty: &mut MatchUncertainty,
     matches: &mut Vec<FunctionMatch>,
-) {
-    let mut candidates = Vec::new();
-
-    for (old_index, old_function) in old.functions.iter().enumerate() {
-        if matched_old.contains(&old_index) {
+) -> bool {
+    let symbols = SymbolHints::new(old, new);
+    let mut new_by_type = BTreeMap::<&str, Vec<usize>>::new();
+    for (i, f) in new.functions.iter().enumerate() {
+        if !matched_new.contains(&i) && f.kind == FunctionKindIr::Defined {
+            new_by_type.entry(&f.type_id).or_default().push(i);
+        }
+    }
+    let mut old_profiles = crate::parallel::map(old.functions.len(), |i| {
+        if matched_old.contains(&i) {
+            SimilarityProfile::default()
+        } else {
+            SimilarityProfile::new(old, &old.functions[i])
+        }
+    });
+    let mut new_profiles = crate::parallel::map(new.functions.len(), |i| {
+        if matched_new.contains(&i) {
+            SimilarityProfile::default()
+        } else {
+            SimilarityProfile::new(new, &new.functions[i])
+        }
+    });
+    intern_profiles(&mut old_profiles, &mut new_profiles);
+    let mut old_by_type = BTreeMap::<&str, Vec<usize>>::new();
+    for (i, f) in old.functions.iter().enumerate() {
+        if !matched_old.contains(&i) && f.kind == FunctionKindIr::Defined {
+            old_by_type.entry(&f.type_id).or_default().push(i);
+        }
+    }
+    let mut uniform_types = BTreeSet::new();
+    for (ty, old_group) in old_by_type {
+        let Some(new_group) = new_by_type.get(ty) else {
+            continue;
+        };
+        if !uniform_scores(
+            old,
+            &old_profiles,
+            &old_group,
+            new,
+            &new_profiles,
+            new_group,
+        ) {
             continue;
         }
-        if old_function.kind != FunctionKindIr::Defined {
+        uniform_types.insert(ty);
+        let score = old_profiles[old_group[0]].score(&new_profiles[new_group[0]]);
+        if score.combined < threshold {
             continue;
         }
-        for (new_index, new_function) in new.functions.iter().enumerate() {
-            if matched_new.contains(&new_index)
-                || new_function.kind != FunctionKindIr::Defined
-                || old_function.type_id != new_function.type_id
-            {
-                continue;
+        let tied = old_group.len() > 1 || new_group.len() > 1;
+        if tied {
+            uncertainty.old.extend(old_group.iter().copied());
+            uncertainty.new.extend(new_group.iter().copied());
+        }
+        // A uniform matrix still has a linear-size solution with name advice;
+        // do not turn thousands of identical bodies into quadratic work.
+        let by_symbol: BTreeMap<_, _> = new_group
+            .iter()
+            .filter_map(|&b| symbols.new[b].map(|n| (n, b)))
+            .collect();
+        let mut pairs = Vec::new();
+        let mut named_old = BTreeSet::new();
+        let mut named_new = BTreeSet::new();
+        for &a in &old_group {
+            if let Some(b) = symbols.old[a].and_then(|n| by_symbol.get(&n)).copied() {
+                pairs.push((a, b));
+                named_old.insert(a);
+                named_new.insert(b);
             }
-
-            let score = function_similarity_score(old, old_function, new, new_function);
+        }
+        pairs.extend(
+            old_group
+                .iter()
+                .filter(|a| !named_old.contains(*a))
+                .copied()
+                .zip(
+                    new_group
+                        .iter()
+                        .filter(|b| !named_new.contains(*b))
+                        .copied(),
+                ),
+        );
+        for (a, b) in pairs {
+            let old_function = &old.functions[a];
+            let new_function = &new.functions[b];
+            let complete = complete_reference_context(old_function)
+                && complete_reference_context(new_function);
+            let ambiguous =
+                tied || !complete || uncertainty.old.contains(&a) || uncertainty.new.contains(&b);
+            let candidate = SimilarityCandidate {
+                old_index: a,
+                new_index: b,
+                score,
+                locals_equal: old_function.locals == new_function.locals,
+                direct_call_similarity: old_profiles[a].calls(&new_profiles[b]),
+                ordered_similarity: old_profiles[a].order(&new_profiles[b]),
+                symbol_agrees: symbols.agrees(a, b),
+            };
+            matched_old.insert(a);
+            matched_new.insert(b);
+            matches.push(FunctionMatch {
+                old_id: old_function.id.clone(),
+                new_id: new_function.id.clone(),
+                old_source_index: old_function.source_index,
+                new_source_index: new_function.source_index,
+                confidence: if ambiguous {
+                    0.5
+                } else {
+                    similarity_confidence(old_function, new_function, &candidate)
+                },
+                similarity: score.combined,
+                reason: MatchReason::SimilarityFallback,
+                reference_context_complete: complete,
+                ambiguous,
+                symbol_hint: candidate
+                    .symbol_agrees
+                    .then(|| old.function_names[&old_function.source_index].clone()),
+            });
+        }
+    }
+    new_by_type.retain(|ty, _| !uniform_types.contains(ty));
+    let mut pairs = 0_usize;
+    for (i, f) in old.functions.iter().enumerate() {
+        if !matched_old.contains(&i) && f.kind == FunctionKindIr::Defined {
+            pairs = pairs.saturating_add(new_by_type.get(f.type_id.as_str()).map_or(0, Vec::len));
+            if pairs > SIMILARITY_PAIR_LIMIT {
+                return false;
+            }
+        }
+    }
+    let rows = crate::parallel::map(old.functions.len(), |old_index| {
+        let old_function = &old.functions[old_index];
+        let mut row = Vec::new();
+        if matched_old.contains(&old_index) || old_function.kind != FunctionKindIr::Defined {
+            return row;
+        }
+        for &new_index in new_by_type
+            .get(old_function.type_id.as_str())
+            .into_iter()
+            .flatten()
+        {
+            let new_function = &new.functions[new_index];
+            let score = old_profiles[old_index].score(&new_profiles[new_index]);
             if score.combined < threshold {
                 continue;
             }
-
-            candidates.push(SimilarityCandidate {
+            row.push(SimilarityCandidate {
                 old_index,
                 new_index,
                 score,
                 locals_equal: old_function.locals == new_function.locals,
-                direct_call_similarity: direct_call_similarity(old_function, new_function),
+                direct_call_similarity: old_profiles[old_index].calls(&new_profiles[new_index]),
+                ordered_similarity: old_profiles[old_index].order(&new_profiles[new_index]),
+                symbol_agrees: symbols.agrees(old_index, new_index),
             });
         }
-    }
+        row
+    });
+    let mut candidates: Vec<_> = rows.into_iter().flatten().collect();
 
     candidates.sort_by(|left, right| {
         right
-            .score
-            .combined
-            .total_cmp(&left.score.combined)
+            .ranking_score()
+            .total_cmp(&left.ranking_score())
+            .then_with(|| right.ordered_similarity.total_cmp(&left.ordered_similarity))
             .then_with(|| right.locals_equal.cmp(&left.locals_equal))
             .then_with(|| {
                 right
@@ -345,6 +665,29 @@ fn match_by_similarity(
             .then_with(|| left.old_index.cmp(&right.old_index))
             .then_with(|| left.new_index.cmp(&right.new_index))
     });
+
+    // Index all original ties before greedy assignment. Consumption is never
+    // evidence that an originally ambiguous endpoint became unique.
+    let mut old_ties: Vec<BTreeMap<_, Vec<usize>>> =
+        (0..old.functions.len()).map(|_| BTreeMap::new()).collect();
+    let mut new_ties: Vec<BTreeMap<_, Vec<usize>>> =
+        (0..new.functions.len()).map(|_| BTreeMap::new()).collect();
+    for (i, candidate) in candidates.iter().enumerate() {
+        let quality = (
+            candidate.score.combined.to_bits(),
+            candidate.ordered_similarity.to_bits(),
+            candidate.locals_equal,
+            candidate.direct_call_similarity.to_bits(),
+        );
+        old_ties[candidate.old_index]
+            .entry(quality)
+            .or_default()
+            .push(i);
+        new_ties[candidate.new_index]
+            .entry(quality)
+            .or_default()
+            .push(i);
+    }
 
     for candidate in &candidates {
         if matched_old.contains(&candidate.old_index) || matched_new.contains(&candidate.new_index)
@@ -359,15 +702,18 @@ fn match_by_similarity(
         // Candidates contain only functions left unanchored at the start of
         // this pass. Greedy assignment cannot resolve an existing score tie:
         // its deterministic ordering is not additional identity evidence.
-        let alternatives: Vec<_> = candidates
+        let quality = (
+            candidate.score.combined.to_bits(),
+            candidate.ordered_similarity.to_bits(),
+            candidate.locals_equal,
+            candidate.direct_call_similarity.to_bits(),
+        );
+        let alternatives: Vec<_> = old_ties[candidate.old_index][&quality]
             .iter()
+            .chain(&new_ties[candidate.new_index][&quality])
+            .map(|i| &candidates[*i])
             .filter(|other| {
-                (other.old_index != candidate.old_index || other.new_index != candidate.new_index)
-                    && (other.old_index == candidate.old_index
-                        || other.new_index == candidate.new_index)
-                    && other.score.combined == candidate.score.combined
-                    && other.locals_equal == candidate.locals_equal
-                    && other.direct_call_similarity == candidate.direct_call_similarity
+                other.old_index != candidate.old_index || other.new_index != candidate.new_index
             })
             .collect();
         let ambiguous = !reference_context_complete
@@ -399,8 +745,12 @@ fn match_by_similarity(
             reason: MatchReason::SimilarityFallback,
             reference_context_complete,
             ambiguous,
+            symbol_hint: candidate
+                .symbol_agrees
+                .then(|| old.function_names[&old_function.source_index].clone()),
         });
     }
+    true
 }
 
 fn complete_reference_context(function: &FunctionIr) -> bool {
@@ -411,7 +761,7 @@ fn complete_reference_context(function: &FunctionIr) -> bool {
 }
 
 type ReferenceMap = BTreeMap<u32, (u32, f32)>;
-type ReferenceBodyCandidates = BTreeMap<String, Vec<(usize, f32)>>;
+type ReferenceBodyCandidates = BTreeMap<Vec<u8>, Vec<(usize, f32)>>;
 
 fn reference_body_candidates(
     module: &NormalizedModule,
@@ -440,7 +790,7 @@ fn reference_body_candidates(
 fn matched_reference_body_key(
     function: &FunctionIr,
     references: &ReferenceMap,
-) -> Option<(String, f32)> {
+) -> Option<(Vec<u8>, f32)> {
     let mut confidence = 0.9_f32;
     let mut has_reference = false;
     let mut operators = Vec::with_capacity(function.operators.len());
@@ -450,16 +800,16 @@ fn matched_reference_body_key(
                 let &(translated, support_confidence) = references.get(index)?;
                 confidence = confidence.min(support_confidence);
                 has_reference = true;
-                serde_json::to_string(&(operator.opcode.as_str(), "matched_function", translated))
+                crate::binary::encode(&(&operator.opcode, 0_u8, translated))
             }
-            immediate => serde_json::to_string(&(operator.opcode.as_str(), immediate)),
+            immediate => crate::binary::encode(&(&operator.opcode, 1_u8, immediate)),
         }
         .expect("function keys are serializable");
         operators.push(key);
     }
     has_reference.then(|| {
         (
-            serde_json::to_string(&(&function.type_id, &function.locals, operators))
+            crate::binary::encode(&(&function.type_id, &function.locals, operators))
                 .expect("function keys are serializable"),
             confidence,
         )
@@ -529,6 +879,7 @@ fn match_by_reference_neighborhood(
                     reason: MatchReason::SameMatchedReferenceBody,
                     reference_context_complete: true,
                     ambiguous,
+                    symbol_hint: None,
                 });
             }
         }
@@ -538,6 +889,176 @@ fn match_by_reference_neighborhood(
             break;
         }
     }
+}
+
+// Typed, owned keys avoid formatting instructions into temporary text during
+// every matching pass. Reference identities retain canonical target context.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct SimilarityFeature(Opcode, SimilarityOperand);
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum SimilarityOperand {
+    Ignored,
+    Immediate(Immediate),
+    Target(String),
+    Unresolved(u32),
+}
+fn similarity_feature(
+    module: &NormalizedModule,
+    op: &ParsedOperator,
+    operands: bool,
+) -> SimilarityFeature {
+    let value = match &op.immediate {
+        Immediate::Call(i) | Immediate::RefFunc(i) => module
+            .functions
+            .get(*i as usize)
+            .map_or(SimilarityOperand::Unresolved(*i), |f| {
+                SimilarityOperand::Target(f.id.clone())
+            }),
+        value if operands => SimilarityOperand::Immediate(value.clone()),
+        _ => SimilarityOperand::Ignored,
+    };
+    SimilarityFeature(op.opcode.clone(), value)
+}
+
+#[derive(Default)]
+struct SimilarityProfile {
+    len: usize,
+    opcode: HashMap<SimilarityFeature, usize>,
+    immediate: HashMap<SimilarityFeature, usize>,
+    calls: BTreeMap<u32, usize>,
+    call_len: usize,
+    ordered: HashMap<[u64; 3], usize>,
+    opcode_ids: Vec<(usize, usize)>,
+    immediate_ids: Vec<(usize, usize)>,
+    ordered_ids: Vec<(usize, usize)>,
+}
+impl SimilarityProfile {
+    fn new(module: &NormalizedModule, function: &FunctionIr) -> Self {
+        use std::hash::{Hash, Hasher};
+        let mut result = Self {
+            len: function.operators.len(),
+            calls: item_histogram(&function.direct_calls),
+            call_len: function.direct_calls.len(),
+            ..Self::default()
+        };
+        let mut tokens = Vec::with_capacity(function.operators.len());
+        for op in &function.operators {
+            let key = similarity_feature(module, op, true);
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            key.hash(&mut h);
+            tokens.push(h.finish());
+            *result.immediate.entry(key).or_default() += 1;
+            *result
+                .opcode
+                .entry(similarity_feature(module, op, false))
+                .or_default() += 1;
+        }
+        result.ordered = ordered_histogram(&tokens);
+        result
+    }
+
+    fn score(&self, other: &Self) -> SimilarityScore {
+        if self.len == 0 && other.len == 0 {
+            return SimilarityScore::exact();
+        }
+        if self.len == 0 || other.len == 0 {
+            return SimilarityScore::zero();
+        }
+        let opcode =
+            feature_similarity(&self.opcode_ids, &other.opcode_ids, self.len.max(other.len));
+        let immediate = feature_similarity(
+            &self.immediate_ids,
+            &other.immediate_ids,
+            self.len.max(other.len),
+        );
+        let length = length_similarity(self.len, other.len);
+        SimilarityScore {
+            combined: opcode * 0.7 + immediate * 0.15 + length * 0.15,
+            opcode,
+            immediate,
+            length,
+        }
+    }
+    fn order(&self, other: &Self) -> f32 {
+        feature_similarity(
+            &self.ordered_ids,
+            &other.ordered_ids,
+            self.len.max(other.len).saturating_sub(2).max(1),
+        )
+    }
+    fn calls(&self, other: &Self) -> f32 {
+        if self.call_len == 0 && other.call_len == 0 {
+            return 1.0;
+        }
+        histogram_similarity(&self.calls, &other.calls, self.call_len.max(other.call_len))
+    }
+}
+
+/// Intern once per matching pass. VTune identifies per-candidate string-tree
+/// lookups as a hotspot; sorted integer features use a linear intersection.
+/// The original full keys remain available for the exact uniform-score proof.
+fn intern_profiles(old: &mut [SimilarityProfile], new: &mut [SimilarityProfile]) {
+    fn encode<K: Eq + std::hash::Hash + Clone>(
+        map: &HashMap<K, usize>,
+        intern: &mut HashMap<K, usize>,
+    ) -> Vec<(usize, usize)> {
+        let mut ids: Vec<_> = map
+            .iter()
+            .map(|(key, count)| {
+                let next = intern.len();
+                (*intern.entry(key.clone()).or_insert(next), *count)
+            })
+            .collect();
+        ids.sort_unstable_by_key(|x| x.0);
+        ids
+    }
+    let mut opcodes = HashMap::new();
+    let mut immediates = HashMap::new();
+    let mut ordered = HashMap::new();
+    for p in old.iter_mut().chain(new) {
+        p.opcode_ids = encode(&p.opcode, &mut opcodes);
+        p.immediate_ids = encode(&p.immediate, &mut immediates);
+        p.ordered_ids = encode(&p.ordered, &mut ordered);
+    }
+}
+
+fn feature_similarity(old: &[(usize, usize)], new: &[(usize, usize)], total: usize) -> f32 {
+    if total == 0 {
+        return 1.0;
+    }
+    let (mut a, mut b, mut common) = (0, 0, 0usize);
+    while a < old.len() && b < new.len() {
+        match old[a].0.cmp(&new[b].0) {
+            std::cmp::Ordering::Less => a += 1,
+            std::cmp::Ordering::Greater => b += 1,
+            std::cmp::Ordering::Equal => {
+                common += old[a].1.min(new[b].1);
+                a += 1;
+                b += 1;
+            }
+        }
+    }
+    common as f32 / total as f32
+}
+
+/// Ordered typed three-instruction neighborhoods retain block/else/end tokens
+/// and canonical reference identities. This distinguishes equal bags of
+/// instructions with different Wasm control-arm or operand order. The hash is
+/// only a similarity feature: it cannot establish an exact/unique identity.
+fn ordered_histogram(tokens: &[u64]) -> HashMap<[u64; 3], usize> {
+    let mut result = HashMap::new();
+    if tokens.len() < 3 {
+        if !tokens.is_empty() {
+            let mut gram = [0; 3];
+            gram[..tokens.len()].copy_from_slice(tokens);
+            result.insert(gram, 1);
+        }
+    } else {
+        for gram in tokens.windows(3) {
+            *result.entry([gram[0], gram[1], gram[2]]).or_default() += 1;
+        }
+    }
+    result
 }
 
 fn function_similarity(
@@ -624,6 +1145,7 @@ fn similarity_confidence(
     confidence.clamp(0.5, 0.9)
 }
 
+#[cfg(test)]
 fn direct_call_similarity(old: &FunctionIr, new: &FunctionIr) -> f32 {
     if old.direct_calls.is_empty() && new.direct_calls.is_empty() {
         return 1.0;
@@ -770,6 +1292,65 @@ mod tests {
     fn normalized(bytes: &[u8]) -> crate::ir::NormalizedModule {
         let resolved = resolve_module(parse_module(bytes).unwrap());
         normalize_module(&resolved)
+    }
+
+    #[test]
+    fn large_uniform_ties_are_exactly_paired_without_losing_ambiguity_or_truncating_search() {
+        let module = |base| {
+            let functions = (0..5000)
+                .map(|i| format!("(func (result i32) i32.const {})", base + i))
+                .collect::<String>();
+            normalized(&wat::parse_str(format!("(module {functions})")).unwrap())
+        };
+        let old = module(0);
+        let new = module(100_000);
+        let (matches, complete) = super::match_functions_with_status(&old, &new);
+        assert!(complete);
+        assert_eq!(matches.len(), 5000);
+        for m in matches {
+            assert_eq!(m.old_source_index, m.new_source_index);
+            assert!(m.ambiguous);
+            assert_eq!(m.confidence, 0.5);
+            assert_eq!(m.reason, MatchReason::SimilarityFallback);
+        }
+    }
+
+    #[test]
+    fn large_unanchored_sets_report_the_search_budget_instead_of_inventing_pairings() {
+        let module = |base| {
+            let functions = (0..5000)
+                .map(|i| {
+                    format!(
+                        "(func (result i32) i32.const {i} drop i32.const {})",
+                        i + base
+                    )
+                })
+                .collect::<String>();
+            normalized(&wat::parse_str(format!("(module {functions})")).unwrap())
+        };
+        let old = module(1);
+        let new = module(2);
+        let (matches, complete) = super::match_functions_with_status(&old, &new);
+        assert!(!complete);
+        assert!(matches.is_empty());
+        let report = crate::diff::diff_modules("old", &old, "new", &new);
+        assert!(!report.function_matching.similarity_search_complete);
+        assert_eq!(
+            report
+                .function_matching
+                .unclassified_old_function_indices
+                .len(),
+            5000
+        );
+        assert_eq!(
+            report
+                .function_matching
+                .unclassified_new_function_indices
+                .len(),
+            5000
+        );
+        assert_eq!(report.summary.functions_added, 0);
+        assert_eq!(report.summary.functions_removed, 0);
     }
 
     fn make_simple_wasm(with_import: bool) -> Vec<u8> {
@@ -1534,3 +2115,7 @@ mod tests {
         assert_eq!(direct_call_similarity(old_function, new_function), 0.0);
     }
 }
+
+#[cfg(test)]
+#[path = "matcher_intent_tests.rs"]
+mod intent_tests;

@@ -46,7 +46,7 @@ Wasm→tree→父先于子提交的闭包安装后才保存物化检查点。逐
 修复到冲突停止时不会消费未经审定的 index。最终引用已发布而 reflog/清理未完成时，继续可保留后来编辑的 index/工作区并补 log。
 这不是跨文件断电原子事务；固定测试构造各写入前缀、引用已发布缺 log、状态篡改及迟到编辑。
 
-旧 version 1 rebase 记录继续可读，原有 prepared 手工 index 摘要约束及元数据续作保持有效。
+当前二进制 rebase 记录保留 prepared 手工 index 摘要约束；不读取旧 JSON journal。
 无 index 的命名对象仓库继续选用这种模式，不自动建立或物化工作区；continue 要自行准备完整树，skip 不替换其当前 index/工作文件。
 该兼容模式完成后可显式 restore。原本无 index 的 abort 恢复其不存在并保留工作字节。
 

@@ -239,26 +239,42 @@ fn every_payload_bit_and_single_byte_insertion_deletion_is_audited_and_replayed(
 }
 
 #[test]
-fn encoding_header_mutations_are_explicit_rejections_not_unchanged_core_modules() {
+fn header_mutations_preserve_future_encodings_but_reject_invalid_magic() {
     let old = &fixtures()[0].1;
+    let check = |new: &[u8]| {
+        let accepted = new.len() >= 8 && new.starts_with(b"\0asm");
+        for standard in PROFILES {
+            let inspected = audit::inspect_with_standard(new, standard);
+            let compared = audit::compare_with_standard(old, new, standard);
+            if accepted {
+                let inspected = inspected.unwrap();
+                if !new.starts_with(b"\0asm\x01\0\0\0") {
+                    assert_eq!(inspected.validation, "not_validated");
+                }
+                let report = compared.unwrap();
+                assert!(report.changed && !report.edits.is_empty());
+            } else {
+                assert!(inspected.is_err() && compared.is_err());
+            }
+        }
+        if accepted {
+            assert_eq!(patch::create(old, new).unwrap().apply(old).unwrap(), new);
+        } else {
+            assert!(patch::create(old, new).is_err());
+        }
+    };
     for position in 0..8 {
         for bit in 0..8 {
             let mut new = old.clone();
             new[position] ^= 1 << bit;
-            for standard in PROFILES {
-                assert!(audit::inspect_with_standard(&new, standard).is_err());
-                assert!(audit::compare_with_standard(old, &new, standard).is_err());
-            }
-            assert!(patch::create(old, &new).is_err());
+            check(&new);
         }
         let mut deleted = old.clone();
         deleted.remove(position);
-        assert!(audit::inspect(&deleted).is_err());
-        assert!(patch::create(old, &deleted).is_err());
+        check(&deleted);
         let mut inserted = old.clone();
         inserted.insert(position, 0xff);
-        assert!(audit::inspect(&inserted).is_err());
-        assert!(patch::create(old, &inserted).is_err());
+        check(&inserted);
     }
 }
 

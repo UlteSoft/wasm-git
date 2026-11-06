@@ -1,4 +1,6 @@
 //! Native HEAD identities, branch-independent commits, and shared-store leases.
+#[path = "support/native.rs"]
+mod native;
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -68,7 +70,7 @@ fn detached_commits_amend_and_reset_move_only_the_actual_head_pointer() {
     ok(&["switch", r, "--detach", "HEAD"]);
     assert_eq!(
         fs::read(root.join(".uwgit/HEAD")).unwrap(),
-        format!("{base}\n").as_bytes()
+        native::reference(&base)
     );
     let quiet = run(&["symbolic-ref", r, "-q", "HEAD"]);
     assert_eq!(quiet.status.code(), Some(1));
@@ -98,7 +100,10 @@ fn detached_commits_amend_and_reset_move_only_the_actual_head_pointer() {
     assert!(ok(&["branch", r]).contains("HEAD detached"));
     assert_eq!(ok(&["rev-parse", r, "HEAD@{1}"]), amended);
     ok(&["switch", r, "main"]);
-    assert_eq!(fs::read(root.join(".uwgit/HEAD")).unwrap(), b"main\n");
+    assert_eq!(
+        fs::read(root.join(".uwgit/HEAD")).unwrap(),
+        native::reference("main")
+    );
     ok(&["fsck", r]);
 }
 
@@ -185,7 +190,7 @@ fn detached_head_without_any_branch_survives_bundle_clone_gc_and_index_materiali
     ok(&["clone", r, p(&clone)]);
     assert_eq!(
         fs::read(clone.join(".uwgit/HEAD")).unwrap(),
-        format!("{tip}\n").as_bytes()
+        native::reference(&tip)
     );
     ok(&[
         "restore",
@@ -273,7 +278,7 @@ fn detached_conflict_continuation_keeps_branch_tips_and_records_two_real_parents
     );
     assert_eq!(ok(&["rev-parse", r, "main"]), ours);
     assert_eq!(ok(&["rev-parse", r, "topic"]), theirs);
-    assert!(!root.join(".uwgit/pending.json").exists());
+    assert!(!root.join(".uwgit/pending.bin").exists());
     assert_eq!(fs::read(root.join("a.wasm")).unwrap(), wasm(4));
     ok(&["fsck", r]);
 }

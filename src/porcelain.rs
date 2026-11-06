@@ -31,11 +31,8 @@ mod index_restore;
 mod replay_worktree;
 pub use replay_worktree::{replay_control, replay_start, try_replay_control};
 
-const OLD_MAGIC: &[u8; 9] = b"UWGITIDX\x01";
-const MAGIC: &[u8; 9] = b"UWGITIDX\x02";
-const STAGED_MAGIC: &[u8; 9] = b"UWGITIDX\x03";
-const FLAGS_MAGIC: &[u8; 9] = b"UWGITIDX\x04";
-const RESOLVE_MAGIC: &[u8; 9] = b"UWGITIDX\x05";
+const MAGIC: &[u8; 9] = b"UWGITIDX\x06";
+#[cfg(test)]
 const WASM: &[u8; 8] = b"\0asm\x01\0\0\0";
 const USAGE: &str = "tree commands: add DIR [-A|-u] [-f] [-n] [-N|--intent-to-add] [--sparse] [--] PATHSPEC...; status DIR; commit DIR [-a|--all] [--amend] [--allow-empty] [-m MESSAGE]; rm DIR [--cached] [-f] [--] [FILE...]; mv DIR [--] OLD NEW; restore DIR [--source REV] [--staged] [--worktree|-W] [--overlay] [--ignore-skip-worktree-bits] [--output NEW_FILE] [--] [PATH...]; restore DIR [--ours|--theirs|--merge|-m|--ignore-unmerged] [--ignore-skip-worktree-bits] -- PATHSPEC...; reset DIR [--soft|--mixed|--hard] [REV]; reset DIR [REV] -- PATH...; branch DIR [NAME [REV]|-d NAME|-D NAME|-m [OLD] NEW|-M [OLD] NEW|-c [OLD] NEW|-C [OLD] NEW|-f NAME [REV]|-r|-a|-vv|-u REMOTE/BRANCH [LOCAL_BRANCH]|--set-upstream-to REMOTE/BRANCH [LOCAL_BRANCH]|--unset-upstream [LOCAL_BRANCH]]; switch DIR NAME|-; switch DIR -c NAME [REV]; switch DIR --detach [REV]; switch DIR --orphan NAME; ls-files DIR; stash DIR [push [-m MESSAGE]|list|apply ID|pop ID|drop ID]; config DIR [KEY [VALUE]|--unset KEY]; tag DIR [NAME [REV]|-d NAME]; reflog DIR; rev-parse DIR REV (including @{upstream}, @{u}, NAME@{upstream}, NAME@{u}); cat-file DIR REV";
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -48,23 +45,16 @@ struct Index {
     format: u32,
     files: Files,
     legacy_path: Option<String>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     conflicts: BTreeMap<String, ConflictStages>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     flags: BTreeMap<String, IndexFlags>,
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     intents: BTreeSet<String>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     resolve_undo: BTreeMap<String, ConflictStages>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct IndexFlags {
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     assume_unchanged: bool,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     skip_worktree: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     fsmonitor_valid: Option<String>,
 }
 impl IndexFlags {
@@ -148,28 +138,6 @@ struct Stash {
     index: Index,
     worktree: Worktree,
 }
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct OldIndex {
-    path: String,
-    bytes: Vec<u8>,
-}
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct OldStash {
-    id: u64,
-    message: String,
-    base: String,
-    index: OldIndex,
-    worktree: Option<Vec<u8>>,
-}
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct OldStashes {
-    format: u32,
-    next_id: u64,
-    entries: Vec<OldStash>,
-}
 
 struct State {
     repo: Repository,
@@ -202,10 +170,7 @@ fn regular(path: &Path) -> Result<Option<Vec<u8>>, String> {
 }
 
 fn validate_wasm(bytes: &[u8]) -> Result<(), String> {
-    if !bytes.starts_with(WASM) {
-        return Err("expected a Core Wasm version-one binary header".into());
-    }
-    Ok(())
+    wasm_git::audit::section::check_header(bytes)
 }
 
 fn relative_path(path: &str) -> Result<(), String> {
@@ -327,79 +292,42 @@ fn index_bytes(index: &Index) -> Result<Vec<u8>, String> {
         normalized.format = 3;
     }
     validate_index(&normalized)?;
-    let mut bytes = if normalized.format == 5 {
-        RESOLVE_MAGIC
-    } else if normalized.format == 4 {
-        FLAGS_MAGIC
-    } else if normalized.format == 3 {
-        STAGED_MAGIC
-    } else {
-        MAGIC
-    }
-    .to_vec();
+    let mut bytes = MAGIC.to_vec();
     bytes.extend_from_slice(&canonical(&normalized)?);
     Ok(bytes)
 }
 fn decode_index(bytes: &[u8]) -> Result<Index, String> {
-    if let Some(payload) = bytes.strip_prefix(RESOLVE_MAGIC) {
-        let index: Index = decode_canonical(payload)?;
-        if index.format != 5 {
-            return Err("resolve-undo index magic/format mismatch".into());
-        }
-        validate_index(&index)?;
-        return Ok(index);
-    }
-    if let Some(payload) = bytes.strip_prefix(FLAGS_MAGIC) {
-        let index: Index = decode_canonical(payload)?;
-        if index.format != 4 {
-            return Err("flag index magic/format mismatch".into());
-        }
-        validate_index(&index)?;
-        return Ok(index);
-    }
-    if let Some(payload) = bytes.strip_prefix(STAGED_MAGIC) {
-        let index: Index = decode_canonical(payload)?;
-        if index.format != 3 {
-            return Err("extended index magic/format mismatch".into());
-        }
-        validate_index(&index)?;
-        return Ok(index);
-    }
-    if let Some(payload) = bytes.strip_prefix(MAGIC) {
-        let index: Index = decode_canonical(payload)?;
-        if index.format != 2 {
-            return Err("index magic/format mismatch".into());
-        }
-        validate_index(&index)?;
-        return Ok(index);
-    }
-    if bytes.len() < 25 || !bytes.starts_with(OLD_MAGIC) {
-        return Err("invalid index header".into());
-    }
-    let path_len = usize::try_from(u64::from_le_bytes(bytes[9..17].try_into().unwrap()))
-        .map_err(|_| "index path length exceeds this host")?;
-    let wasm_len = usize::try_from(u64::from_le_bytes(bytes[17..25].try_into().unwrap()))
-        .map_err(|_| "index module length exceeds this host")?;
-    let split = 25usize
-        .checked_add(path_len)
-        .ok_or("invalid index length")?;
-    if split.checked_add(wasm_len) != Some(bytes.len()) {
-        return Err("index lengths do not match payload".into());
-    }
-    let path = std::str::from_utf8(&bytes[25..split])
-        .map_err(|_| "index path is not UTF-8")?
-        .to_owned();
-    let index = Index {
-        format: 2,
-        files: BTreeMap::from([(path.clone(), bytes[split..].to_vec())]),
-        legacy_path: Some(path),
-        conflicts: BTreeMap::new(),
-        flags: BTreeMap::new(),
-        intents: BTreeSet::new(),
-        resolve_undo: BTreeMap::new(),
-    };
+    let payload = bytes
+        .strip_prefix(MAGIC)
+        .ok_or("invalid binary index header")?;
+    let index: Index = decode_canonical(payload)?;
     validate_index(&index)?;
     Ok(index)
+}
+
+#[cfg(test)]
+pub(crate) fn fixture_index(
+    files: &Files,
+    anchor: Option<&str>,
+    conflicts: &BTreeMap<String, [Option<Vec<u8>>; 3]>,
+) -> Vec<u8> {
+    let mut index = Index::empty();
+    index.files = files.clone();
+    index.legacy_path = anchor.map(str::to_owned);
+    index.conflicts = conflicts
+        .iter()
+        .map(|(p, s)| {
+            (
+                p.clone(),
+                ConflictStages {
+                    base: s[0].clone(),
+                    ours: s[1].clone(),
+                    theirs: s[2].clone(),
+                },
+            )
+        })
+        .collect();
+    index_bytes(&index).unwrap()
 }
 
 fn require_resolved_index(index: &Index) -> Result<(), String> {
@@ -616,28 +544,19 @@ pub fn validate_pending_resolution_index(
     Ok(())
 }
 fn decode_canonical<T: Serialize + DeserializeOwned>(bytes: &[u8]) -> Result<T, String> {
-    let value: T = serde_json::from_slice(bytes).map_err(|e| format!("invalid metadata: {e}"))?;
-    if canonical(&value)? != bytes {
-        return Err("noncanonical metadata".into());
-    }
-    Ok(value)
+    crate::binary::decode(bytes).map_err(|e| format!("invalid metadata: {e}"))
 }
 
 fn canonical<T: Serialize>(value: &T) -> Result<Vec<u8>, String> {
-    let mut bytes = serde_json::to_vec(value).map_err(|e| format!("encode metadata: {e}"))?;
-    bytes.push(b'\n');
-    Ok(bytes)
+    crate::binary::encode(value).map_err(|e| format!("encode metadata: {e}"))
 }
 
-fn read_json<T: Serialize + DeserializeOwned>(path: &Path) -> Result<Option<T>, String> {
+fn read_record<T: Serialize + DeserializeOwned>(path: &Path) -> Result<Option<T>, String> {
     let Some(bytes) = regular(path)? else {
         return Ok(None);
     };
     let value: T =
-        serde_json::from_slice(&bytes).map_err(|e| format!("invalid {}: {e}", path.display()))?;
-    if canonical(&value)? != bytes {
-        return Err(format!("noncanonical metadata: {}", path.display()));
-    }
+        crate::binary::decode(&bytes).map_err(|e| format!("invalid {}: {e}", path.display()))?;
     Ok(Some(value))
 }
 
@@ -938,40 +857,7 @@ impl State {
                 entries: Vec::new(),
             });
         };
-        let version = serde_json::from_slice::<Value>(&bytes)
-            .map_err(|e| format!("invalid stash metadata: {e}"))?["format"]
-            .as_u64();
-        let value = if version == Some(1) {
-            let old: OldStashes = decode_canonical(&bytes)?;
-            Stashes {
-                format: 2,
-                next_id: old.next_id,
-                entries: old
-                    .entries
-                    .into_iter()
-                    .map(|e| {
-                        let p = e.index.path;
-                        Stash {
-                            id: e.id,
-                            message: e.message,
-                            base: e.base,
-                            index: Index {
-                                format: 2,
-                                files: BTreeMap::from([(p.clone(), e.index.bytes)]),
-                                legacy_path: Some(p.clone()),
-                                conflicts: BTreeMap::new(),
-                                flags: BTreeMap::new(),
-                                intents: BTreeSet::new(),
-                                resolve_undo: BTreeMap::new(),
-                            },
-                            worktree: BTreeMap::from([(p, e.worktree)]),
-                        }
-                    })
-                    .collect(),
-            }
-        } else {
-            decode_canonical::<Stashes>(&bytes)?
-        };
+        let value = decode_canonical::<Stashes>(&bytes)?;
         if value.format != 2 {
             return Err("unsupported stash format".into());
         }
@@ -1003,7 +889,7 @@ impl State {
 
     fn config(&self) -> Result<Config, String> {
         self.metadata_directories()?;
-        let config = read_json::<Config>(&self.metadata.join("config"))?.unwrap_or(Config {
+        let config = read_record::<Config>(&self.metadata.join("config"))?.unwrap_or(Config {
             format: 1,
             values: BTreeMap::new(),
         });
@@ -1075,9 +961,8 @@ pub fn run(args: &[String]) -> Result<String, String> {
             match args[2].as_str() {
                 "-t" => Ok(kind),
                 "-s" => Ok(bytes.len().to_string()),
-                _ if kind != "wasm" => {
-                    String::from_utf8(bytes).map_err(|_| "object metadata is not UTF-8".into())
-                }
+                _ if kind == "commit" => json_text(&crate::repository::Commit::from_bytes(&bytes)?),
+                _ if kind == "tree" => json_text(&crate::repository::Tree::from_bytes(&bytes)?),
                 _ => Err("binary Wasm requires --output NEW_FILE".into()),
             }
         }
@@ -1241,7 +1126,7 @@ pub fn read_tree(root: &str, revision: Option<&str>) -> Result<String, String> {
     )
 }
 
-pub fn garbage_collect(root: &str, prune: bool) -> Result<String, String> {
+pub fn garbage_collect_with_pack(root: &str, prune: bool, pack: bool) -> Result<String, String> {
     let state = State::open(root)?;
     let _lock = state.lock()?;
     let roots: Vec<_> = state
@@ -1250,7 +1135,7 @@ pub fn garbage_collect(root: &str, prune: bool) -> Result<String, String> {
         .into_iter()
         .map(|stash| stash.base)
         .collect();
-    json_text(&state.repo.garbage_collect(&roots, prune)?)
+    json_text(&state.repo.garbage_collect_mode(&roots, prune, pack)?)
 }
 
 /// Ordinary history writes cannot accidentally replace a recorded resolution.
@@ -1430,7 +1315,7 @@ fn has_wasm_header(path: &Path) -> Result<bool, String> {
     let mut file = File::open(path).map_err(|e| error("open untracked file", path, e))?;
     let mut header = [0u8; 8];
     match file.read_exact(&mut header) {
-        Ok(()) => Ok(&header == WASM),
+        Ok(()) => Ok(header.starts_with(b"\0asm")),
         Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(false),
         Err(e) => Err(error("read untracked header", path, e)),
     }

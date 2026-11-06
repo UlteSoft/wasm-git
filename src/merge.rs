@@ -179,12 +179,7 @@ fn framed(module: &AuditModule, bytes: &[u8]) -> bool {
 pub fn merge(base: &[u8], ours: &[u8], theirs: &[u8]) -> Result<MergeReport, String> {
     let inputs = [base, ours, theirs];
     for (index, bytes) in inputs.iter().enumerate() {
-        if bytes.len() < 8 || bytes[..8] != *b"\0asm\x01\0\0\0" {
-            return Err(format!(
-                "{}: expected core WebAssembly version 1 header (Component Model excluded)",
-                source(index)
-            ));
-        }
+        audit::section::check_header(bytes).map_err(|e| format!("{}: {e}", source(index)))?;
     }
     let mut report = MergeReport::new();
     if let Some(index) = choice(base, ours, theirs) {
@@ -201,6 +196,13 @@ pub fn merge(base: &[u8], ours: &[u8], theirs: &[u8]) -> Result<MergeReport, Str
         return Ok(report);
     }
 
+    if inputs
+        .iter()
+        .any(|bytes| !bytes.starts_with(b"\0asm\x01\0\0\0"))
+    {
+        report.conflict("module/encoding", "concurrent non-Core edits require explicit resolution; no Component or unknown-encoding synthesis", whole_evidence(inputs));
+        return Ok(report);
+    }
     let modules = [
         audit::inspect(base)?,
         audit::inspect(ours)?,

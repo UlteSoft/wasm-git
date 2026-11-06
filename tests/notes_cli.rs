@@ -186,6 +186,6 @@ fn malformed_namespace_or_foreign_notes_layout_cannot_publish_partial_changes() 
     ]);
     fail(&["notes", p(&root), "add", "-m", "missing", &"f".repeat(64)]);
     assert_eq!(objects(&root), before);
-    assert!(!root.join(".uwgit/notes.json").exists());
+    assert!(!root.join(".uwgit/notes.bin").exists());
     ok(&["fsck", p(&root)]);
 }

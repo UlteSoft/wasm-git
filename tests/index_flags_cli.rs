@@ -79,7 +79,7 @@ fn assume_unchanged_is_a_persistent_query_promise_and_never_discards_hidden_work
     let r = t.root();
     let head = ok(&["rev-parse", r, "HEAD"]);
     ok(&["update-index", r, "--assume-unchanged", "a.wasm"]);
-    assert!(index(&t).starts_with(b"UWGITIDX\x04"));
+    assert!(index(&t).starts_with(b"UWGITIDX\x06"));
     assert_eq!(ok(&["ls-files", r, "-v"]), "h a.wasm");
     fs::write(t.0.join("a.wasm"), wasm(2)).unwrap();
     assert_eq!(json(&["status", r])["worktree"], "clean");

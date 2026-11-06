@@ -322,7 +322,9 @@ fn malformed_linkage_bytes_roundtrip_through_profile_diff_and_bidirectional_patc
             let applied = temp.path(&format!("{label}-{direction}.wasm"));
             run_json(&["patch", old_path, new_path, "--output", &patch]);
             let encoded = std::fs::read(&patch).unwrap();
-            let stored: Value = serde_json::from_slice(&encoded).unwrap();
+            let stored: Value =
+                serde_json::to_value(wasm_git::patch::BytePatch::from_bytes(&encoded).unwrap())
+                    .unwrap();
             replay(&old.bytes, &new.bytes, &stored["edits"]);
             run_json(&["apply", old_path, &patch, "--output", &applied]);
             assert_eq!(std::fs::read(applied).unwrap(), new.bytes);

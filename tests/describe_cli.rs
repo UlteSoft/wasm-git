@@ -558,7 +558,7 @@ fn unrelated_malformed_index_pending_dirty_missing_work_and_symlinks_are_ignored
     let plain = t.text(&["describe", t.root()]);
     let report = t.json(&["describe", t.root(), "--json"]);
     t.write(".uwgit/index", b"fixed malformed index\0\xff");
-    t.write(".uwgit/pending.json", b"fixed malformed pending\0\xff");
+    t.write(".uwgit/pending.bin", b"fixed malformed pending\0\xff");
     t.write("module.wasm", b"unfinished non-Wasm editor data\0");
     t.write("private.txt", b"untracked private bytes");
     #[cfg(unix)]
@@ -578,7 +578,7 @@ fn authoritative_corruption_and_writer_locks_are_reported_without_repairs() {
         (".uwgit/refs/main", b"not-an-object-id\n".as_slice()),
         (".uwgit/reflog", b"fixed truncated reflog\0".as_slice()),
         (
-            ".uwgit/remotes/origin.tracking.json",
+            ".uwgit/remotes/origin.tracking.bin",
             b"{bad fixed tracking".as_slice(),
         ),
         (

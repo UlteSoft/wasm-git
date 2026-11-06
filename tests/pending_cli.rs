@@ -1,4 +1,6 @@
 //! Fixed, persisted single-target conflict workflows. No fuzz or guest execution.
+#[path = "support/native.rs"]
+mod native;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
@@ -49,7 +51,7 @@ impl Temp {
         self.head()
     }
     fn pending(&self) -> PathBuf {
-        self.path(".uwgit/pending.json")
+        self.path(".uwgit/pending.bin")
     }
     fn record(&self, operation: &str, target: &str) -> Value {
         let output = invoke(&[
@@ -202,7 +204,7 @@ fn recording_is_explicit_and_populates_original_stages_without_changing_history(
         assert_eq!(t.head(), head);
         assert!(t.pending().is_file());
         let mut recorded = snapshot(&t.repo);
-        recorded.remove(Path::new(".uwgit/pending.json"));
+        recorded.remove(Path::new(".uwgit/pending.bin"));
         let mut expected = before.clone();
         expected.insert(
             PathBuf::from(".uwgit/index"),
@@ -568,7 +570,11 @@ fn immutable_target_is_retained_and_wrong_operation_or_changed_head_cannot_resum
     let (_, target) = conflicting_history(&t, "merge");
     t.record("merge", &target);
     let foreign = ok(&["rev-parse", t.root(), "topic"]);
-    fs::write(t.path(".uwgit/refs/main"), format!("{}\n", foreign.trim())).unwrap();
+    fs::write(
+        t.path(".uwgit/refs/main"),
+        native::reference(foreign.trim()),
+    )
+    .unwrap();
     assert_eq!(value(&["status", t.root()])["pending"]["stale"], true);
     rejected(&t, &["merge", t.root(), "--continue", "--resolved-index"]);
     rejected(&t, &["merge", t.root(), "--abort"]);
@@ -579,7 +585,7 @@ fn immutable_target_is_retained_and_wrong_operation_or_changed_head_cannot_resum
     let (head, target) = conflicting_history(&t, "merge");
     t.record("merge", &target);
     ok(&["branch", t.root(), "same-tip", "HEAD"]);
-    fs::write(t.path(".uwgit/HEAD"), b"same-tip\n").unwrap();
+    fs::write(t.path(".uwgit/HEAD"), native::reference("same-tip")).unwrap();
     assert_eq!(value(&["status", t.root()])["pending"]["stale"], true);
     rejected(&t, &["merge", t.root(), "--continue", "--resolved-index"]);
     rejected(&t, &["merge", t.root(), "--abort"]);
@@ -644,7 +650,7 @@ fn corrupt_or_redirected_pending_metadata_cannot_authorize_a_history_write() {
     fs::write(t.pending(), &raw).unwrap();
     #[cfg(unix)]
     {
-        let outside = t.base.join("external-pending.json");
+        let outside = t.base.join("external-pending.bin");
         fs::write(&outside, &raw).unwrap();
         fs::remove_file(t.pending()).unwrap();
         std::os::unix::fs::symlink(&outside, t.pending()).unwrap();

@@ -1,6 +1,4 @@
-//! Symbolic/unborn and detached HEAD without a synthetic branch. A complete
-//! lowercase object ID cannot be a branch name, so the old one-line HEAD file
-//! has an unambiguous extension that older clients reject closed.
+//! Symbolic/unborn and detached HEAD use explicit binary reference tags.
 use super::*;
 pub(crate) fn is_detached_identity(identity: &str) -> bool {
     valid_id(identity)
@@ -54,9 +52,9 @@ pub(super) fn decode_head_reflog(bytes: Option<&[u8]>) -> RepositoryResult<Vec<R
         return Err("HEAD reflog exceeds its size limit".into());
     }
     let entries: Vec<ReflogEntry> =
-        serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+        crate::binary::decode(bytes).map_err(|error| error.to_string())?;
     if entries.len() > 4096
-        || serde_json::to_vec(&entries).map_err(|error| error.to_string())? != bytes
+        || crate::binary::encode(&entries).map_err(|error| error.to_string())? != bytes
     {
         return Err("noncanonical or oversized HEAD reflog".into());
     }
@@ -79,7 +77,7 @@ pub(super) fn decode_head_reflog(bytes: Option<&[u8]>) -> RepositoryResult<Vec<R
 
 impl Repository {
     pub(super) fn read_head_reflog(&self) -> RepositoryResult<Vec<ReflogEntry>> {
-        let path = self.metadata.join("head-reflog.json");
+        let path = self.metadata.join("head-reflog.bin");
         let metadata = match fs::symlink_metadata(&path) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(error.to_string()),
@@ -121,8 +119,8 @@ impl Repository {
             operation: operation.into(),
         });
         self.atomic_write(
-            &self.metadata.join("head-reflog.json"),
-            &serde_json::to_vec(&entries).map_err(|error| error.to_string())?,
+            &self.metadata.join("head-reflog.bin"),
+            &crate::binary::encode(&entries).map_err(|error| error.to_string())?,
         )
         .map_err(|error| {
             format!("HEAD publication completed, but its local reflog may be incomplete: {error}")
@@ -134,7 +132,7 @@ impl Repository {
         let id = snapshot_revision(&snapshot, revision)?;
         if snapshot.manifest.head != id {
             self.register_selected_branch(&id)?;
-            self.atomic_write(&self.metadata.join("HEAD"), format!("{id}\n").as_bytes())?;
+            self.atomic_write(&self.metadata.join("HEAD"), &encode_reference(&id, false)?)?;
             self.record_reflog(
                 "HEAD",
                 snapshot.manifest.tip().cloned(),
@@ -161,7 +159,7 @@ impl Repository {
         self.register_selected_branch(branch)?;
         self.atomic_write(
             &self.metadata.join("HEAD"),
-            format!("{branch}\n").as_bytes(),
+            &encode_reference(branch, false)?,
         )?;
         self.record_reflog(
             "HEAD",
@@ -183,7 +181,7 @@ impl Repository {
         }
         self.read_commit_id(id)?;
         self.register_selected_branch(id)?;
-        self.atomic_write(&self.metadata.join("HEAD"), format!("{id}\n").as_bytes())?;
+        self.atomic_write(&self.metadata.join("HEAD"), &encode_reference(id, false)?)?;
         self.record_reflog("HEAD", Some(expected.into()), Some(id.into()), operation)?;
         self.record_head_event(Some(expected.into()), Some(id.into()), operation)
     }

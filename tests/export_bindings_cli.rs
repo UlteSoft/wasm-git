@@ -295,9 +295,9 @@ fn retargets_and_export_swaps_cannot_use_their_own_export_name_as_identity_proof
             .iter()
             .find(|matched| matched["old_source_index"] == 0)
             .unwrap();
-        assert_eq!(circular["new_source_index"], 1);
-        assert_eq!(circular["reason"], "same_stable_id");
-        assert_ne!(
+        assert_eq!(circular["new_source_index"], 0);
+        assert_eq!(circular["reason"], "same_matched_reference_body");
+        assert_eq!(
             run["target_match"]["new_source_index"],
             circular["new_source_index"]
         );
@@ -679,7 +679,9 @@ fn candidate_notes_preserve_four_profile_raw_edits_patches_and_repository_trace(
             let output = pair.temp.path(&format!("{direction}.wasm"));
             run_json(&["patch", old_path, new_path, "--output", &patch]);
             let encoded = std::fs::read(&patch).unwrap();
-            let stored: Value = serde_json::from_slice(&encoded).unwrap();
+            let stored: Value =
+                serde_json::to_value(wasm_git::patch::BytePatch::from_bytes(&encoded).unwrap())
+                    .unwrap();
             replay(old, new, &stored["edits"]);
             assert_eq!(
                 BytePatch::from_bytes(&encoded).unwrap().apply(old).unwrap(),

@@ -171,7 +171,7 @@ fn cleanup_never_follows_or_removes_symbolic_links() {
 }
 
 #[test]
-fn gc_defaults_to_a_plan_prunes_only_unretained_closures_and_keeps_reflog() {
+fn gc_dry_run_plans_and_explicit_prune_retains_reflog_closures() {
     let temp = Temp::new();
     let root = &temp.0;
     let first = seed(root, 1);
@@ -189,7 +189,7 @@ fn gc_defaults_to_a_plan_prunes_only_unretained_closures_and_keeps_reflog() {
         "child",
     ]);
     let before = snapshot(root);
-    let plan = json(&["gc", path(root)]);
+    let plan = json(&["gc", path(root), "-n"]);
     assert_eq!(snapshot(root), before);
     let order: Vec<_> = plan["deletion_order"]
         .as_array()
@@ -215,7 +215,7 @@ fn every_gc_deletion_prefix_retains_a_complete_object_graph() {
     let a = ok(&["commit-tree", path(root), &tree, "-m", "a"]);
     let b = ok(&["commit-tree", path(root), &tree, "-p", &a, "-m", "b"]);
     let _c = ok(&["commit-tree", path(root), &tree, "-p", &b, "-m", "c"]);
-    let plan = json(&["gc", path(root)]);
+    let plan = json(&["gc", path(root), "-n"]);
     for id in plan["deletion_order"].as_array().unwrap() {
         fs::remove_file(root.join(".uwgit/objects").join(id.as_str().unwrap())).unwrap();
         ok(&["fsck", path(root)]);
@@ -229,11 +229,16 @@ fn gc_pins_auxiliary_recovery_state_and_maintenance_rejects_unimplemented_tasks(
     seed(root, 1);
     let tree = ok(&["write-tree", path(root)]);
     ok(&["commit-tree", path(root), &tree, "-m", "dangling"]);
-    fs::write(root.join(".uwgit/notes.json"), b"future auxiliary metadata").unwrap();
-    let before = snapshot(root);
+    fs::write(root.join(".uwgit/notes.bin"), b"future auxiliary metadata").unwrap();
+    let index = fs::read(root.join(".uwgit/index")).unwrap();
     let result = json(&["gc", path(root), "--prune=now"]);
     assert!(result["removed"].as_array().unwrap().is_empty());
-    assert_eq!(snapshot(root), before);
+    assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), index);
+    assert_eq!(
+        fs::read(root.join(".uwgit/notes.bin")).unwrap(),
+        b"future auxiliary metadata"
+    );
+    let before = snapshot(root);
     assert!(json(&["maintenance", path(root), "run", "--task=verify"])["verify"].is_object());
     assert!(
         !execute(&["maintenance", path(root), "run", "--task=pack-refs"])

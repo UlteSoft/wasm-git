@@ -18,7 +18,7 @@ wasm-git rev-list DIR --parents --first-parent HEAD
 wasm-git rev-list DIR --count OLD..NEW
 ```
 
-`hash-object` 的 `wasm` 和 `blob` 都要求 Core Wasm 版本一文件头。`tree`、`commit` 使用原生规范编码的 JSON payload；写入前核对完整对象图，缺依赖、错误类型和非规范 payload 不发布对象。纯哈希不写入对象。
+`hash-object` 的 `wasm` 和 `blob` 都要求 Core Wasm 版本一文件头。`tree`、`commit` 使用原生规范二进制 payload（布局见[二进制格式](binary-format.md)）；写入前核对完整对象图，缺依赖、错误类型和非规范 payload 不发布对象。纯哈希不写入对象。
 
 `mktree` 读取 `100644 wasm ID<TAB>PATH`，也接受 `blob` 类型名；`-z` 使用 NUL 分隔。存储的是平面路径映射，没有 Git 目录对象、Unix 模式或符号链接。重复路径、前缀冲突、非 Wasm 对象和缺失对象都拒绝。
 
@@ -140,12 +140,14 @@ wasm-git clean DIR -f -X -e keep.log
 wasm-git clean DIR -f -x -- generated/
 wasm-git gc DIR
 wasm-git gc DIR --prune=now
+wasm-git gc DIR --pack
+wasm-git repack DIR
 wasm-git maintenance DIR run --task verify
 ```
 
 clean 必须给出 dry-run 或 force。默认遵循 `.gitignore` 与 `.uwgitignore`；`-x` 包括忽略文件，`-X` 仅选择忽略文件，`-e` 额外排除。默认不进入不含受控文件的 untracked 子目录；`-d` 或明确路径可选择它们。受控条目、`.uwgit`/`.git` 元数据、嵌套仓库、符号链接和特殊文件保留。删除前核对整个计划，并在每次删除前重查原字节摘要；中途失败报告已完成的路径。
 
-gc 默认只报告计划；只有 `--prune=now` 且未给 `-n` 时才删除。它保留分支、标签、fetched 分支/标签、reflog、stash base 及注释目标的闭包；存在辅助恢复状态或 linked worktree 注册时采取保守整库保留。先删除不可达子提交，再到父提交、tree 和 blob，每个中断前缀仍有完整剩余对象图。当前没有 pack 压缩、reflog 过期或时间型自动 prune。
+gc 默认压缩完整对象集，`-n` 只预览；只有 `--prune=now` 且未给 `-n` 时才删除。它保留分支、标签、fetched 分支/标签、reflog、stash base 及注释目标的闭包；存在辅助恢复状态或 linked worktree 注册时采取保守整库保留。先删除不可达子提交，再到父提交、tree 和 blob，每个中断前缀仍有完整剩余对象图。已增加带索引的压缩 pack、有限深度 delta 与共享 fork；采用按历史路径分组的块级 copy/insert delta 和 Zstandard，默认使用全部可用线程；规划、压缩及清理在单次 writer lease 内完成。尚无 reflog 过期或时间型自动 prune。格式、逐字节恢复和失败规则见[压缩存储](packed-storage.md)。
 
 maintenance 支持 verify 和 gc，未实现的任务明确拒绝。所有维护输出、编译产物及分轮测试结果留在任务目录，不进入源码版本控制。
 

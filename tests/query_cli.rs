@@ -1,5 +1,7 @@
 //! Fixed committed-object queries with complete byte-for-byte read-only checks.
 //! Executed by the parent only in the admitted SSH Linux cgroup; no fuzz/guests.
+#[path = "support/native.rs"]
+mod native;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -213,10 +215,10 @@ impl History {
     fn tracking(&self) {
         // A fixed, already-fetched tracking record, using the published transport
         // schema. No remote process is needed for local provenance queries.
-        self.t.write(".uwgit/remotes/origin.tracking.json", serde_json::to_string(&json!({
+        self.t.write(".uwgit/remotes/origin.tracking.bin", &native::tracking_bytes(json!({
             "version":1,"remote":"origin","url":"ssh://test@localhost/tmp/query.git",
             "state":{"format":1,"head":"main","branches":{"main":self.first},"tags":{"remote-only":self.tip}}
-        })).unwrap().as_bytes());
+        })));
         ok(&[
             "remote",
             self.t.root(),
@@ -759,7 +761,7 @@ fn corrupt_index_pending_and_dirty_missing_work_do_not_obstruct_committed_querie
     ]);
     let counts = t.json(&["count-objects", t.root(), "-v"]);
     t.write(".uwgit/index", b"invalid fixed index\0");
-    t.write(".uwgit/pending.json", b"invalid fixed pending\xff\0");
+    t.write(".uwgit/pending.bin", b"invalid fixed pending\xff\0");
     t.write("a.wasm", b"unfinished non-Wasm editor bytes\0");
     fs::remove_file(t.path("nested/b.wasm")).unwrap();
     t.write("private.txt", b"untracked private bytes");
@@ -803,7 +805,7 @@ fn valid_local_conflict_journal_and_staged_resolution_remain_entirely_unchanged(
         "pending query fixture",
     ]);
     assert_eq!(record.status.code(), Some(2));
-    assert!(t.path(".uwgit/pending.json").is_file());
+    assert!(t.path(".uwgit/pending.bin").is_file());
     let original_index = fs::read(t.path(".uwgit/index")).unwrap();
     let original_counts = t.json(&["count-objects", t.root(), "-v"]);
     t.stage("a.wasm", D);
@@ -881,13 +883,10 @@ fn corrupt_authoritative_metadata_objects_and_writer_locks_fail_without_repairs(
         (".uwgit/reflog", b"broken fixed reflog\0".as_slice()),
         (".uwgit/refs/main", b"not-an-object-id\n".as_slice()),
         (
-            ".uwgit/remotes/origin.tracking.json",
+            ".uwgit/remotes/origin.tracking.bin",
             b"{broken fixed tracking".as_slice(),
         ),
-        (
-            ".uwgit/upstreams.json",
-            b"{broken fixed upstream".as_slice(),
-        ),
+        (".uwgit/upstreams.bin", b"{broken fixed upstream".as_slice()),
         (".uwgit/write.lock", b"fixed crashed writer\n".as_slice()),
     ] {
         let original = fs::read(t.path(path)).ok();
@@ -927,7 +926,7 @@ fn explicit_branch_queries_ignore_bad_index_pending_and_an_unrelated_index_lock(
     let expected = t.text(&["branch", t.root(), "--contains=HEAD", "--format=%(refname)"]);
     for (path, bytes) in [
         (".uwgit/index", b"broken index\0".as_slice()),
-        (".uwgit/pending.json", b"{broken pending".as_slice()),
+        (".uwgit/pending.bin", b"{broken pending".as_slice()),
         (
             ".uwgit/index.lock",
             b"held by another index writer".as_slice(),
@@ -1021,7 +1020,7 @@ fn native_branch_scopes_tracking_filters_and_upstream_name_modifiers_use_real_re
         "origin/main|origin/main|refs/remotes\n"
     );
     ok(&["branch", t.root(), "origin/main", "HEAD"]);
-    fs::remove_file(t.path(".uwgit/remotes/origin.tracking.json")).unwrap();
+    fs::remove_file(t.path(".uwgit/remotes/origin.tracking.bin")).unwrap();
     // A gone configured target must not shorten to an unrelated local branch.
     assert_eq!(
         t.text(&[
@@ -1139,7 +1138,7 @@ fn explicit_branch_and_filtered_reference_queries_never_hide_repository_corrupti
     let t = &h.t;
     for (path, bytes) in [
         (".uwgit/write.lock", b"other writer".as_slice()),
-        (".uwgit/upstreams.json", b"{broken upstream".as_slice()),
+        (".uwgit/upstreams.bin", b"{broken upstream".as_slice()),
     ] {
         t.write(path, bytes);
         for command in ["branch", "for-each-ref"] {

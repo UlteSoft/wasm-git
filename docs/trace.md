@@ -111,5 +111,5 @@ Compact2 import 的共享类型可用 `import[0]/group[n]/shared_type` 选择；
 快照加载、输入图校验和起点路径解析也不计入输入字节比较预算。
 
 未知 opcode、未知 section、不透明 custom 和合法非规范 LEB 都按原始字节参与历史比较，
-不会要求函数分析或模块验证成功。Component Model 不在仓库接受范围内。
+不会要求函数分析或模块验证成功。Component Model 可保存并按外层 section 追踪原始字节；未知编码仅有 opaque 范围，不提供尚未理解的内部结构路径。
 公开 `wasm_git::trace` API 校验输入图的结构，仓库对象摘要认证由仓库读取层负责。

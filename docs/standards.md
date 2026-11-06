@@ -1,5 +1,8 @@
 # 标准配置与二进制审计
 
+社区阶段与实现能力分别维护；通过 `wasm-git features --json` 查看。
+已实现编码只增不减，弃用只加 `deprecated` 提示，详见[特性生命周期与每周更新](feature-lifecycle.md)。
+
 ```sh
 wasm-git inspect module.wasm --standard core1 --json
 wasm-git diff old.wasm new.wasm --standard core3 --format json
@@ -9,7 +12,8 @@ wasm-git apply old.wasm change.uwgp --check --standard core2
 `core1`、`core2`、`core3` 选择所允许的 Core 特性。
 默认 `all-known` 保留旧接口行为，表示固定版本解码器认识的提案集合，不能称为官方 Core 3.0。
 例如 threads、旧版异常编码和其他未纳入 Core 3.0 的已知提案，在 `core3` 下仍需单独标明不支持。
-Component Model 仍不在范围内。
+Component Model 另有外层 section/原始字节视图，不套用这些 Core 标准配置；其 validation 明示未执行。
+未知版本或 layer 仅保留原始头和 opaque 后续字节，不猜测 section/指令边界。
 
 配置改变阅读与符合性报告，不改变存储对象或原始字节差异。
 解码器始终使用已知的完整编码语法；标准配置单独判断这些编码是否允许。
@@ -197,3 +201,45 @@ EOF 和越界偏移分别明确标记，原始报告偏移不被改写，字节�
 [指令编码](https://webassembly.github.io/spec/core/binary/instructions.html)和
 [历次标准变更](https://webassembly.github.io/spec/core/appendix/changes.html)。
 逐节审阅及参考 `uwvm2` parser 的记录。
+
+## 提案与函数 diff 的支持边界（2026-11-05 复核）
+
+不能将 `all-known` 理解为所有当前或未来提案均完整支持。生产解码器固定为
+wasmparser 0.249.0（含仓库内的边界读取修复）；官方提案可以先于该版本演进。
+[官方提案列表](https://github.com/WebAssembly/proposals/blob/main/README.md)仍将
+threads、compact imports、wide arithmetic 列在提案中；
+[Core 3.0 变更](https://webassembly.github.io/spec/core/appendix/changes.html)不包含 threads。
+
+需要分别判断原字节保留、已知语法读取/验证、函数操作数和结构对齐：
+
+- Core 1/2/3：对应配置、原始字段、指令与函数 diff。官方 Core 3.0 固定语料复核
+  包含有效/非法模块、特性证据、原字节 identity/patch；有效模块另逐函数检查 typed IR
+  不含未投影操作码/操作数。运行时断言未执行，函数匹配也不证明程序语义等价。
+- SIMD/relaxed SIMD、threads 原子内存指令：完整映射固定解码器的对应 opcode 集合，
+  保存 memory index、u64 offset、align、lane、shuffle 和 v128 位模式。
+  threads 包含 load/store/RMW/cmpxchg/wait/notify/fence；线程创建、调度和宿主 API
+  不属于此版本历史工具的实现范围。
+- shared-everything threads：固定版本已知的 global/table/struct/array 原子指令使用
+  独立类型化操作数，保留 SeqCst/AcqRel、目标索引和字段索引。此提案仍在演进；
+  这不表示已经支持其后续新增编码、TLS、waiter queue 或全部宿主集成。
+- wide arithmetic、memory control：已知指令参与类型化函数/块对齐。
+  compact imports、custom page sizes：已知节编码及特性边界保留，仍需验证具体输入。
+- stack switching、custom descriptors：当前解码器认识的语法和原始操作数可审计，
+  部分函数投影仍为未细分操作数；涉及这类未知结构的函数会明确标记结构对齐不完整。
+  不能据此宣称已经提供完整 continuation/descriptor 语义和控制流分析。
+- Component Model 支持原始存储、恢复和外层 section/custom 更新，不提供完整组件类型检查、嵌套 Core 的递归函数匹配或组件语义合并。FP16、flexible vectors、memory/control
+  提案的新修订及其他解码器未知编码没有完整指令级支持；JS/ESM/C API、WAT 语法建议
+  也不能等同于一个可由本工具实现的 Core opcode 集合。
+- custom sections：按社区约定尝试解释；不符合某个约定时保留 opaque payload、重复节、
+  顺序、位置和原字节编辑，不因此拒绝整个 Core 模块，见[custom sections](custom-sections.md)。
+
+函数对应综合类型、指令、调用关系、导出角色和唯一 name-section 符号。同名符号只提高
+排序权重，不是历史身份或安全性证明。重复候选、结构歧义、搜索预算和未支持控制语法
+必须在 JSON/文本报告中保留相应的未证明/不完整标记；未知指令不可猜测立即数长度。
+二进制 ByteEdit/patch 始终与原字节核对，格式化报告不作为版本历史的存储形式。
+
+新增回归覆盖 atomic 偏移/内存索引、wait/notify/cmpxchg、shared global 原子顺序、SIMD
+算术/lane、多内存、GC array.copy 双类型及 nullable ref.test/cast。每个 CLI 差异要求
+恰好一处指令替换、零误报插入/删除、结构对齐完整、单线程/默认全线程报告一致和 patch
+逐字节重建。宏枚举检查固定依赖的 344 个 SIMD/threads/shared atomics/wide/memory-control
+操作码，升级依赖时漏映射会编译或测试失败。

@@ -45,7 +45,7 @@ fn encode_note(note: &Note) -> RepositoryResult<Vec<u8>> {
         return Err("note text must be at most 1 MiB".into());
     }
     require_id(&note.target)?;
-    let payload = serde_json::to_vec(note).map_err(|error| error.to_string())?;
+    let payload = crate::binary::encode(note).map_err(|error| error.to_string())?;
     let mut custom = Vec::new();
     push_u32(14, &mut custom);
     custom.extend_from_slice(b"uwgit.notes.v1");
@@ -79,7 +79,7 @@ fn decode_note(bytes: &[u8]) -> RepositoryResult<Note> {
         }
     }
     let note: Note =
-        serde_json::from_slice(payload.ok_or("notes module has no annotation payload")?)
+        crate::binary::decode(payload.ok_or("notes module has no annotation payload")?)
             .map_err(|error| error.to_string())?;
     if encode_note(&note)? != bytes {
         return Err("non-canonical native notes module".into());

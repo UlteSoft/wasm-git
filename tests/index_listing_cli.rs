@@ -127,7 +127,7 @@ fn wasm(value: u32) -> Vec<u8> {
 }
 fn id(kind: u8, bytes: &[u8]) -> String {
     let mut hash = Sha256::new();
-    hash.update(b"UWGO\0\0\0\x01");
+    hash.update(b"UWGO\0\0\0\x02");
     hash.update([kind]);
     hash.update((bytes.len() as u64).to_be_bytes());
     hash.update(bytes);
@@ -371,8 +371,13 @@ fn abbreviations_extend_for_a_stored_native_tree_even_when_the_wasm_image_is_unp
     let mut trees = BTreeMap::new();
     for n in 0..2048 {
         let path = format!("candidate{n}.wasm");
-        let bytes = format!("{{\"format\":1,\"entries\":{{\"{path}\":\"{base}\"}}}}");
-        let full = id(3, bytes.as_bytes());
+        let bytes = wasm_git::repository::Tree {
+            format: 1,
+            entries: BTreeMap::from([(path.clone(), base.clone())]),
+        }
+        .to_bytes()
+        .unwrap();
+        let full = id(3, &bytes);
         trees.insert(full[..4].to_owned(), (path, full));
     }
     let (bytes, full, (path, tree_id)) = (0..65536)

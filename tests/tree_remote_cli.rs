@@ -1,5 +1,8 @@
+#![cfg(feature = "server")]
 //! Fixed multi-module repository workflows over the real HTTP service and the
 //! SSH client/stdio boundary. Tree metadata and every Wasm byte are preserved.
+#[path = "support/native.rs"]
+mod native;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -125,22 +128,14 @@ fn metadata(repository: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     result
 }
 fn rpc_packet(operation: &Value, payload: &[u8]) -> Vec<u8> {
-    let metadata =
-        serde_json::to_vec(&json!({"version":1,"repository":"project","operation":operation}))
-            .unwrap();
-    let mut packet = b"UWGRPC01".to_vec();
-    packet.extend_from_slice(&(metadata.len() as u32).to_be_bytes());
-    packet.extend_from_slice(&(payload.len() as u64).to_be_bytes());
-    packet.extend_from_slice(&metadata);
-    packet.extend_from_slice(payload);
-    packet
+    native::packet("project", operation.clone(), payload)
 }
 fn rpc_metadata(packet: &[u8]) -> Value {
-    assert_eq!(&packet[..8], b"UWGRPC01");
+    assert_eq!(&packet[..8], b"UWGRPC02");
     let length = u32::from_be_bytes(packet[8..12].try_into().unwrap()) as usize;
     assert_eq!(u64::from_be_bytes(packet[12..20].try_into().unwrap()), 0);
     assert_eq!(packet.len(), 20 + length);
-    serde_json::from_slice(&packet[20..]).unwrap()
+    native::response_value(&packet[20..])
 }
 fn stdio_rpc(root: &Path, operation: &Value, payload: &[u8]) -> Value {
     let mut child = command(&["server", "--stdio", "--root", path(root)])
@@ -415,7 +410,7 @@ fn http_bundle_preserves_legacy_parent_bytes_and_explicit_tree_anchor() {
 }
 
 fn object(kind: u8, payload: &[u8]) -> (String, Vec<u8>) {
-    let mut encoded = b"UWGO\0\0\0\x01".to_vec();
+    let mut encoded = b"UWGO\0\0\0\x02".to_vec();
     encoded.push(kind);
     encoded.extend_from_slice(&(payload.len() as u64).to_be_bytes());
     encoded.extend_from_slice(payload);
@@ -427,23 +422,42 @@ fn tree_bundle(
     blobs: &[(String, Vec<u8>)],
     corrupt_tree: bool,
 ) -> (String, Vec<u8>) {
-    let (tree_id, mut tree) = object(3, tree_json);
+    let tree = serde_json::from_slice::<wasm_git::repository::Tree>(tree_json)
+        .unwrap()
+        .to_bytes()
+        .unwrap();
+    let (tree_id, mut tree) = object(3, &tree);
     if corrupt_tree {
         *tree.last_mut().unwrap() ^= 1;
     }
-    let commit_json = format!("{{\"format\":2,\"parents\":[],\"message\":\"fixed tree transfer\",\"tree\":\"{tree_id}\"}}");
-    let (commit_id, commit) = object(2, commit_json.as_bytes());
-    let manifest =
-        format!("{{\"format\":3,\"head\":\"main\",\"refs\":{{\"main\":\"{commit_id}\"}}}}");
+    let commit = wasm_git::repository::Commit {
+        shallow: false,
+        signature: None,
+        format: 2,
+        wasm: String::new(),
+        parents: vec![],
+        message: "fixed tree transfer".into(),
+        tree: Some(tree_id.clone()),
+        legacy_path: None,
+    }
+    .to_bytes()
+    .unwrap();
+    let (commit_id, commit) = object(2, &commit);
+    let manifest = native::manifest(
+        3,
+        "main",
+        &BTreeMap::from([("main".into(), commit_id.clone())]),
+        &BTreeMap::new(),
+    );
     let mut objects: BTreeMap<_, _> = blobs.iter().cloned().collect();
     objects.insert(tree_id, tree);
     objects.insert(commit_id.clone(), commit);
-    let mut bundle = b"UWGB\0\0\0\x01".to_vec();
+    let mut bundle = b"UWGB\0\0\0\x02".to_vec();
     bundle.extend_from_slice(&(manifest.len() as u64).to_be_bytes());
-    bundle.extend_from_slice(manifest.as_bytes());
+    bundle.extend_from_slice(&manifest);
     bundle.extend_from_slice(&(objects.len() as u64).to_be_bytes());
     for (id, bytes) in objects {
-        bundle.extend_from_slice(id.as_bytes());
+        bundle.extend(native::raw_oid(&id));
         bundle.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
         bundle.extend_from_slice(&bytes);
     }
@@ -457,7 +471,19 @@ fn invalid_tree_bundles_are_rejected_before_any_remote_object_or_ref_is_publishe
     let server = Server::start(&temp);
     let blob = object(1, &wasm(9));
     let missing = "0".repeat(64);
-    let (wrong_id, wrong) = object(2, format!("{{\"format\":1,\"wasm\":\"{}\",\"parents\":[],\"message\":\"a commit is not a Wasm blob\"}}", blob.0).as_bytes());
+    let wrong_commit = wasm_git::repository::Commit {
+        shallow: false,
+        signature: None,
+        format: 1,
+        wasm: blob.0.clone(),
+        parents: vec![],
+        message: "a commit is not a Wasm blob".into(),
+        tree: None,
+        legacy_path: None,
+    }
+    .to_bytes()
+    .unwrap();
+    let (wrong_id, wrong) = object(2, &wrong_commit);
     let cases = [
         (
             format!(

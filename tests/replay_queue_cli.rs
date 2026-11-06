@@ -1,4 +1,6 @@
 //! Native queue invariants and independent Git reference fixtures.
+#[path = "support/native.rs"]
+mod native;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
@@ -43,7 +45,7 @@ impl Temp {
         fs::read(self.0.join(".uwgit/index")).unwrap()
     }
     fn no_pending(&self) {
-        assert!(!self.0.join(".uwgit/pending.json").exists());
+        assert!(!self.0.join(".uwgit/pending.bin").exists());
     }
     fn assert_file(&self, path: &str, n: u8) {
         assert_eq!(fs::read(self.0.join(path)).unwrap(), wasm(n), "{path}");
@@ -415,7 +417,7 @@ fn skip_restores_the_original_sparse_omission_and_index_flags_after_conflict_exp
     fs::remove_file(t.0.join("a.wasm")).unwrap();
     let baseline = t.index();
     stop(&["cherry-pick", r, "--sequence", &first], "conflict");
-    let stopped: Value = serde_json::from_slice(&t.index()[9..]).unwrap();
+    let stopped: Value = native::index_value(&t.index());
     t.assert_file("a.wasm", 3);
     t.write("a.wasm", 9);
     ok(&["add", r, "a.wasm"]);
@@ -423,15 +425,12 @@ fn skip_restores_the_original_sparse_omission_and_index_flags_after_conflict_exp
     assert_eq!(t.head(), ours);
     // Skip restores every original image and sparse flag. The explicit add
     // also saved real conflict sides, which remain in the version 5 extension.
-    let mut expected: Value = serde_json::from_slice(&baseline[9..]).unwrap();
+    let mut expected: Value = native::index_value(&baseline);
     expected["format"] = serde_json::json!(5);
     expected["resolve_undo"] = stopped["conflicts"].clone();
     let raw = t.index();
-    assert!(raw.starts_with(b"UWGITIDX\x05"));
-    assert_eq!(
-        serde_json::from_slice::<Value>(&raw[9..]).unwrap(),
-        expected
-    );
+    assert!(raw.starts_with(b"UWGITIDX\x06"));
+    assert_eq!(native::index_value(&raw), expected);
     assert!(!t.0.join("a.wasm").exists());
     assert!(ok(&["ls-files", r, "-t"]).contains("S a.wasm"));
     t.no_pending();

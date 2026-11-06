@@ -3,7 +3,7 @@ use super::*;
 
 impl Repository {
     pub(super) fn checkout_history(&self) -> RepositoryResult<Vec<String>> {
-        let path = self.metadata.join("checkouts.json");
+        let path = self.metadata.join("checkouts.bin");
         let metadata = match fs::symlink_metadata(&path) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(error.to_string()),
@@ -17,9 +17,9 @@ impl Repository {
         }
         let bytes = read_regular(&path)?;
         let values: Vec<String> =
-            serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+            crate::binary::decode(&bytes).map_err(|error| error.to_string())?;
         if values.len() > 4096
-            || serde_json::to_vec(&values).map_err(|error| error.to_string())? != bytes
+            || crate::binary::encode(&values).map_err(|error| error.to_string())? != bytes
         {
             return Err("noncanonical or oversized checkout history".into());
         }
@@ -36,7 +36,7 @@ impl Repository {
         let mut values: Vec<_> = previous.iter().rev().take(4095).cloned().collect();
         values.reverse();
         values.push(branch.into());
-        self.atomic_write(&self.metadata.join("checkouts.json"), &serde_json::to_vec(&values).map_err(|error| error.to_string())?)
+        self.atomic_write(&self.metadata.join("checkouts.bin"), &crate::binary::encode(&values).map_err(|error| error.to_string())?)
             .map_err(|error| format!("HEAD switch was published, but its local checkout history may be incomplete: {error}"))
     }
     pub fn previous_checkout_branch(&self, number: usize) -> RepositoryResult<String> {

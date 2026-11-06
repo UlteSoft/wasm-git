@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+"""Refresh source metadata, never parser switches or uwgit repository objects.
+
+The official JSON is consumed in memory. The checked-in result is Rust source,
+compiled into the client/server library. No runtime network access or JSON cache.
+An upstream disappearance retains the old record with a `missing` review marker.
+"""
+import argparse
+import difflib
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+import urllib.request
+
+ROOT = Path(__file__).resolve().parents[1]
+SNAPSHOT = ROOT / "src/feature_upstream.rs"
+REPO = "https://github.com/WebAssembly/proposals.git"
+MAX_INPUT = 2 * 1024 * 1024
+
+
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate upstream key: {key}")
+        result[key] = value
+    return result
+
+
+def string(value, label, allow_empty=False):
+    if not isinstance(value, str) or (not value and not allow_empty):
+        raise ValueError(f"invalid {label}")
+    # JSON and Rust share the escapes needed for this printable subset.
+    if any(ord(c) < 32 or 0xD800 <= ord(c) <= 0xDFFF or ord(c) == 127 for c in value):
+        raise ValueError(f"control/surrogate in {label}")
+    return value
+
+
+def parse_upstream(raw):
+    if len(raw) > MAX_INPUT:
+        raise ValueError("upstream inventory too large")
+    document = json.loads(raw, object_pairs_hook=unique_object)
+    if not isinstance(document, dict) or set(document) != {"$schema", "proposals"}:
+        raise ValueError("upstream envelope changed; review schema")
+    entries = document["proposals"]
+    if not isinstance(entries, dict) or not entries:
+        raise ValueError("empty/invalid upstream proposals")
+    rows = {}
+    for key, item in entries.items():
+        if not re.fullmatch(r"[a-zA-Z0-9_-]+", key) or not isinstance(item, dict):
+            raise ValueError("invalid proposal id/record")
+        phase = item.get("phase")
+        if not (type(phase) is int and 1 <= phase <= 5) and phase not in ("finished", "inactive"):
+            raise ValueError(f"unknown phase for {key}: {phase!r}")
+        allowed = {"name", "url", "phase", "champions"}
+        if phase == "finished":
+            allowed |= {"meeting_notes", "affected_specs", "spec_version"}
+        elif phase == "inactive":
+            allowed |= {"rationale"}
+        if set(item) != allowed:
+            raise ValueError(f"upstream schema changed for {key}")
+        url = string(item["url"], "url")
+        if not url.startswith("https://"):
+            raise ValueError("expected HTTPS proposal URL")
+        version = item.get("spec_version", "")
+        specs = item.get("affected_specs", [])
+        if phase == "finished":
+            if not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+", version):
+                raise ValueError(f"invalid spec version for {key}")
+            if not isinstance(specs, list) or not specs or any(s not in ("core", "js-api", "web-api") for s in specs):
+                raise ValueError(f"invalid affected specs for {key}")
+        rows[key] = [key, string(item["name"], "name"), str(phase), version,
+                     ",".join(specs), url, string(item.get("rationale", ""), "rationale", True)]
+    # Missing baseline entries in a broken/partial response must not mass-deprecate.
+    if not {"mvp"} <= rows.keys():
+        raise ValueError("upstream completeness anchors missing; review inventory manually")
+    return rows
+
+
+def read_snapshot(text):
+    rows = {}
+    for line in text.splitlines():
+        if line.strip().startswith("proposal!("):
+            match = re.fullmatch(r"\s*proposal!\((.*)\),", line)
+            if not match:
+                raise ValueError("unrecognized generated row")
+            row = json.loads("[" + match[1] + "]")
+            if len(row) != 7 or not all(isinstance(x, str) for x in row) or row[0] in rows:
+                raise ValueError("invalid/duplicate generated row")
+            rows[row[0]] = row
+    if text and not rows:
+        raise ValueError("snapshot has no proposal records")
+    return rows
+
+
+def reconcile(previous, current):
+    last_present = {key for key, row in previous.items() if row[2] != "missing"}
+    if len(last_present) >= 20 and len(last_present & current.keys()) * 2 < len(last_present):
+        raise ValueError("more than half the inventory disappeared; review partial input/schema before updating")
+    result = dict(current)
+    for key, old in previous.items():
+        if key not in current:
+            kept = list(old)
+            kept[2] = "missing"
+            # A missing entry can be a rename, not an official rejection.
+            kept[6] = "Absent from upstream inventory; retained pending rename/removal review."
+            result[key] = kept
+    return result
+
+
+def render(rows, revision, digest):
+    lines = ["// Generated by tools/update-wasm-features.py; metadata only.",
+             "// Never remove a record or derive decoder switches from upstream status.",
+             f'pub const UPSTREAM_REVISION: &str = "{revision}";',
+             f'pub const UPSTREAM_SHA256: &str = "{digest}";',
+             "#[rustfmt::skip]", "pub static UPSTREAM: &[UpstreamFeature] = &["]
+    for row in sorted(rows.values()):
+        lines.append("    proposal!(" + ", ".join(json.dumps(s, ensure_ascii=False) for s in row) + "),")
+    return "\n".join(lines + ["];", ""])
+
+
+def fetch(revision):
+    if revision is None:
+        response = subprocess.check_output(
+            ["git", "ls-remote", REPO, "refs/heads/main"], text=True, timeout=60)
+        fields = response.split()
+        if len(fields) != 2 or fields[1] != "refs/heads/main":
+            raise ValueError("official main branch was not resolved; review upstream source")
+        revision = fields[0]
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise ValueError("revision must be an immutable 40-hex commit")
+    url = f"https://raw.githubusercontent.com/WebAssembly/proposals/{revision}/proposals.json"
+    with urllib.request.urlopen(url, timeout=45) as response:
+        raw = response.read(MAX_INPUT + 1)
+    return raw, revision
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--check", action="store_true", help="fail on changed metadata; never write")
+    mode.add_argument("--update", action="store_true", help="refresh Rust metadata; preserve all old IDs")
+    parser.add_argument("--revision", help="pin official input to a commit")
+    parser.add_argument("--input", type=Path, help="offline official proposals.json (requires --revision)")
+    parser.add_argument("--snapshot", type=Path, default=SNAPSHOT)
+    parser.add_argument("--output", type=Path, help="write proposed update here instead of the snapshot")
+    args = parser.parse_args()
+    if args.output and not args.update:
+        parser.error("--output requires --update")
+    if args.input:
+        if not args.revision or not re.fullmatch(r"[0-9a-f]{40}", args.revision):
+            parser.error("--input requires a 40-hex --revision")
+        with args.input.open("rb") as file:
+            raw = file.read(MAX_INPUT + 1)
+        revision = args.revision
+    else:
+        raw, revision = fetch(args.revision)
+    current = parse_upstream(raw)
+    old_text = args.snapshot.read_text() if args.snapshot.exists() else ""
+    previous = read_snapshot(old_text)
+    rows = reconcile(previous, current)
+    updated = render(rows, revision, hashlib.sha256(raw).hexdigest())
+    changed = previous != rows
+    # Ignore champion-only edits and unchanged branch heads for the weekly alert.
+    print(f"Official proposals {revision}: {len(current)} present, {len(rows) - len(current)} retained missing; metadata_changed={changed}")
+    if changed:
+        for line in difflib.unified_diff(old_text.splitlines(), updated.splitlines(),
+                                         fromfile=str(args.snapshot), tofile="proposed snapshot", lineterm=""):
+            print(line)
+    if args.update:
+        destination = args.output or args.snapshot
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=destination.parent, delete=False) as file:
+                temporary = Path(file.name)
+                file.write(updated)
+            os.chmod(temporary, 0o644)
+            temporary.replace(destination)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+    return int(changed and args.check)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (ValueError, OSError, subprocess.SubprocessError) as error:
+        print(f"feature update failed (no changes applied): {error}", file=sys.stderr)
+        sys.exit(2)

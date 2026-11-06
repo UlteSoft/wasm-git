@@ -14,7 +14,8 @@ use crate::ir::{
     NormalizedModule, ParsedOperator, TypeIr, TypeRefIr,
 };
 use crate::matcher::{
-    match_functions, unmatched_new_function_ids, unmatched_old_function_ids, FunctionMatch,
+    match_functions, match_functions_with_status, unmatched_new_function_ids,
+    unmatched_old_function_ids, FunctionMatch,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -22,11 +23,21 @@ pub struct DiffReport {
     pub old: String,
     pub new: String,
     pub summary: DiffSummary,
+    pub function_matching: FunctionMatchingStatus,
     pub function_matches: Vec<FunctionMatch>,
     pub changes: Vec<DiffChange>,
     pub call_binding_notes: Vec<FunctionBindingNotes>,
     pub export_binding_notes: Vec<ExportBindingDelta>,
     pub export_dependency_graph: DependencyGraph,
+    pub debug_context: [crate::debug_info::Summary; 2],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FunctionMatchingStatus {
+    pub similarity_search_complete: bool,
+    pub similarity_pair_limit: usize,
+    pub unclassified_old_function_indices: Vec<u32>,
+    pub unclassified_new_function_indices: Vec<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -43,6 +54,7 @@ pub struct DiffSummary {
     pub operator_replacements: usize,
     pub operator_insertions: usize,
     pub operator_deletions: usize,
+    pub control_region_moves: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -56,18 +68,39 @@ pub enum DiffChange {
     ExportRemoved { id: String },
     FunctionAdded { id: String },
     FunctionRemoved { id: String },
-    FunctionChanged { function: FunctionDelta },
+    FunctionChanged { function: Box<FunctionDelta> },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct FunctionDelta {
     pub old_id: String,
     pub new_id: String,
+    pub old_source_index: u32,
+    pub new_source_index: u32,
+    /// Untrusted custom symbols for review, never source identity proofs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub old_symbol: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_symbol: Option<String>,
+    pub symbol_sources: [Option<&'static str>; 2],
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub source_annotations: Vec<crate::debug_info::InstructionChange>,
+    /// Classifies the retained raw operand edits; counters still include them.
+    pub change_kind: FunctionChangeKind,
     pub type_changed: bool,
     pub locals_changed: bool,
     pub direct_calls_changed: bool,
     pub call_bindings: Vec<CallBindingDelta>,
     pub operators: Vec<OperatorDelta>,
+    pub instruction_alignment: crate::structured_diff::AlignmentReport,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FunctionChangeKind {
+    BodyOrInterfaceChange,
+    ConfirmedReferenceRelocation,
+    UnresolvedReferenceChange,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -84,6 +117,7 @@ pub struct TargetMatchEvidence {
     pub old_source_index: u32,
     pub new_source_index: u32,
     pub reason: crate::matcher::MatchReason,
+    #[serde(serialize_with = "crate::matcher::serialize_score")]
     pub confidence: f32,
     pub ambiguous: bool,
     pub reference_context_complete: bool,
@@ -160,6 +194,7 @@ pub struct ExportBindingDelta {
 pub enum OperatorDelta {
     Replace {
         index: usize,
+        new_index: usize,
         old: OperatorRecord,
         new: OperatorRecord,
     },
@@ -186,7 +221,44 @@ pub fn diff_modules(
     new_name: &str,
     new: &NormalizedModule,
 ) -> DiffReport {
-    let function_matches = match_functions(old, new);
+    let same_module = old.module.same_function_projection(&new.module);
+    let export_dependency_graph = if same_module {
+        DependencyGraph::empty()
+    } else {
+        DependencyGraph::build(old, new)
+    };
+    let (role_matches, similarity_search_complete) = match_functions_with_status(old, new);
+    let function_matches = implementation_matches(old, new, role_matches, &export_dependency_graph);
+    let used_old: std::collections::BTreeSet<_> = function_matches
+        .iter()
+        .map(|m| m.old_source_index)
+        .collect();
+    let used_new: std::collections::BTreeSet<_> = function_matches
+        .iter()
+        .map(|m| m.new_source_index)
+        .collect();
+    let function_matching = FunctionMatchingStatus {
+        similarity_search_complete,
+        similarity_pair_limit: crate::matcher::SIMILARITY_PAIR_LIMIT,
+        unclassified_old_function_indices: if similarity_search_complete {
+            Vec::new()
+        } else {
+            old.functions
+                .iter()
+                .filter(|f| !used_old.contains(&f.source_index))
+                .map(|f| f.source_index)
+                .collect()
+        },
+        unclassified_new_function_indices: if similarity_search_complete {
+            Vec::new()
+        } else {
+            new.functions
+                .iter()
+                .filter(|f| !used_new.contains(&f.source_index))
+                .map(|f| f.source_index)
+                .collect()
+        },
+    };
     let mut changes = Vec::new();
     let mut call_binding_notes = Vec::new();
 
@@ -212,11 +284,13 @@ pub fn diff_modules(
         &mut changes,
     );
 
-    for id in unmatched_old_function_ids(old, &function_matches) {
-        changes.push(DiffChange::FunctionRemoved { id });
-    }
-    for id in unmatched_new_function_ids(new, &function_matches) {
-        changes.push(DiffChange::FunctionAdded { id });
+    if similarity_search_complete {
+        for id in unmatched_old_function_ids(old, &function_matches) {
+            changes.push(DiffChange::FunctionRemoved { id });
+        }
+        for id in unmatched_new_function_ids(new, &function_matches) {
+            changes.push(DiffChange::FunctionAdded { id });
+        }
     }
 
     let old_functions = old
@@ -230,42 +304,73 @@ pub fn diff_modules(
         .map(|function| (function.source_index, function))
         .collect::<BTreeMap<_, _>>();
 
-    let same_module = old.module == new.module;
-    // This graph also serves callers in modules without exports. Caller
-    // alignment still follows the ordinary matcher; callee conclusions must
-    // not use its export roles or consume duplicate candidates.
-    let export_dependency_graph = if same_module {
-        DependencyGraph::empty()
-    } else {
-        DependencyGraph::build(old, new)
-    };
     let context = BindingContext::new(old, new, &export_dependency_graph, same_module);
-    for function_match in &function_matches {
+    let function_deltas = crate::parallel::map(function_matches.len(), |index| {
         if same_module {
-            continue;
+            return (None, None);
         }
+        let function_match = &function_matches[index];
         let old_function = old_functions[&function_match.old_source_index];
         let new_function = new_functions[&function_match.new_source_index];
-        let mut bindings = diff_call_bindings(old_function, new_function, old, new, &context);
-        if let Some(function_delta) = diff_function(old_function, new_function, &mut bindings) {
+        let alignment =
+            crate::structured_diff::align(&old_function.operators, &new_function.operators);
+        let mut bindings =
+            diff_call_bindings(old_function, new_function, old, new, &context, &alignment);
+        let mut delta = diff_function(
+            old_function,
+            new_function,
+            &mut bindings,
+            alignment,
+            [
+                old.function_names
+                    .get(&old_function.source_index)
+                    .map(String::as_str),
+                new.function_names
+                    .get(&new_function.source_index)
+                    .map(String::as_str),
+            ],
+        );
+        if let Some(delta) = &mut delta {
+            delta.symbol_sources = [
+                old.function_symbol_sources
+                    .get(&old_function.source_index)
+                    .copied(),
+                new.function_symbol_sources
+                    .get(&new_function.source_index)
+                    .copied(),
+            ];
+            delta.source_annotations = crate::debug_info::annotate_changes(
+                &old.debug_info,
+                &new.debug_info,
+                &delta.operators,
+            );
+        }
+        let notes = (delta.is_none() && !bindings.is_empty()).then(|| FunctionBindingNotes {
+            old_id: old_function.id.clone(),
+            new_id: new_function.id.clone(),
+            call_bindings: bindings,
+        });
+        (delta, notes)
+    });
+    for (delta, notes) in function_deltas {
+        if let Some(function) = delta {
             changes.push(DiffChange::FunctionChanged {
-                function: function_delta,
+                function: Box::new(function),
             });
-        } else if !bindings.is_empty() {
-            call_binding_notes.push(FunctionBindingNotes {
-                old_id: old_function.id.clone(),
-                new_id: new_function.id.clone(),
-                call_bindings: bindings,
-            });
+        }
+        if let Some(notes) = notes {
+            call_binding_notes.push(notes);
         }
     }
 
     let summary = summarize(&changes);
     let export_binding_notes = diff_export_bindings(old, new, &context);
     DiffReport {
+        debug_context: [old.debug_info.summary(), new.debug_info.summary()],
         old: old_name.to_owned(),
         new: new_name.to_owned(),
         summary,
+        function_matching,
         function_matches,
         changes,
         call_binding_notes,
@@ -274,20 +379,152 @@ pub fn diff_modules(
     }
 }
 
+fn implementation_matches(
+    old: &NormalizedModule,
+    new: &NormalizedModule,
+    mut matches: Vec<FunctionMatch>,
+    graph: &DependencyGraph,
+) -> Vec<FunctionMatch> {
+    let forward: BTreeMap<_, _> = matches
+        .iter()
+        .map(|m| (m.old_source_index, m.new_source_index))
+        .collect();
+    let reverse: BTreeMap<_, _> = matches
+        .iter()
+        .map(|m| (m.new_source_index, m.old_source_index))
+        .collect();
+    let replacements: Vec<_> = graph
+        .nodes
+        .iter()
+        .filter(|node| {
+            forward
+                .get(&node.old_source_index)
+                .is_some_and(|n| *n != node.new_source_index)
+                || reverse
+                    .get(&node.new_source_index)
+                    .is_some_and(|n| *n != node.old_source_index)
+        })
+        .collect();
+    let old_replaced: std::collections::BTreeSet<_> =
+        replacements.iter().map(|n| n.old_source_index).collect();
+    let new_replaced: std::collections::BTreeSet<_> =
+        replacements.iter().map(|n| n.new_source_index).collect();
+    matches.retain(|m| {
+        !old_replaced.contains(&m.old_source_index) && !new_replaced.contains(&m.new_source_index)
+    });
+    for node in replacements {
+        let a = &old.functions[node.old_source_index as usize];
+        let b = &new.functions[node.new_source_index as usize];
+        matches.push(FunctionMatch {
+            old_id: a.id.clone(),
+            new_id: b.id.clone(),
+            old_source_index: a.source_index,
+            new_source_index: b.source_index,
+            confidence: 1.0,
+            similarity: 1.0,
+            reason: crate::matcher::MatchReason::SameMatchedReferenceBody,
+            reference_context_complete: true,
+            ambiguous: false,
+            symbol_hint: None,
+        });
+    }
+    // A unique exported role may evolve its signature. This is explicitly a
+    // role correspondence, not a proof of historical implementation identity.
+    let mut old_roles = BTreeMap::<_, Vec<_>>::new();
+    let mut new_roles = BTreeMap::<_, Vec<_>>::new();
+    for (module, roles) in [(old, &mut old_roles), (new, &mut new_roles)] {
+        for f in &module.functions {
+            if !f.export_names.is_empty() {
+                roles.entry(f.export_names.clone()).or_default().push(f);
+            }
+        }
+    }
+    for (role, old_group) in old_roles {
+        let Some(new_group) = new_roles.get(&role) else {
+            continue;
+        };
+        let ([a], [b]) = (&old_group[..], &new_group[..]) else {
+            continue;
+        };
+        if a.type_id == b.type_id
+            || matches.iter().any(|m| {
+                m.old_source_index == a.source_index || m.new_source_index == b.source_index
+            })
+        {
+            continue;
+        }
+        matches.push(FunctionMatch {
+            old_id: a.id.clone(),
+            new_id: b.id.clone(),
+            old_source_index: a.source_index,
+            new_source_index: b.source_index,
+            confidence: 0.75,
+            similarity: 0.0,
+            reason: crate::matcher::MatchReason::SameExportRole,
+            reference_context_complete: a
+                .fingerprint
+                .as_ref()
+                .is_some_and(|f| f.reference_context_complete)
+                && b.fingerprint
+                    .as_ref()
+                    .is_some_and(|f| f.reference_context_complete),
+            ambiguous: true,
+            symbol_hint: None,
+        });
+    }
+    matches.sort_by(|a, b| {
+        a.old_id
+            .cmp(&b.old_id)
+            .then(a.new_id.cmp(&b.new_id))
+            .then(a.old_source_index.cmp(&b.old_source_index))
+    });
+    matches
+}
+
+fn locals_equivalent(old: &[crate::ir::LocalIr], new: &[crate::ir::LocalIr]) -> bool {
+    let mut a = 0;
+    let mut b = 0;
+    let mut x = 0;
+    let mut y = 0;
+    loop {
+        while x == 0 && a < old.len() {
+            x = old[a].count;
+            a += 1;
+        }
+        while y == 0 && b < new.len() {
+            y = new[b].count;
+            b += 1;
+        }
+        if x == 0 || y == 0 {
+            return x == 0 && y == 0;
+        }
+        if old[a - 1].value_type != new[b - 1].value_type {
+            return false;
+        }
+        let shared = x.min(y);
+        x -= shared;
+        y -= shared;
+    }
+}
+
 fn diff_function(
     old: &FunctionIr,
     new: &FunctionIr,
     call_bindings: &mut Vec<CallBindingDelta>,
+    alignment: crate::structured_diff::Alignment,
+    symbols: [Option<&str>; 2],
 ) -> Option<FunctionDelta> {
     let type_changed = old.type_id != new.type_id;
-    let locals_changed = old.locals != new.locals;
+    let locals_changed = !locals_equivalent(&old.locals, &new.locals);
     let direct_calls_changed = old.direct_calls != new.direct_calls;
-    let operators = diff_operators(&old.operators, &new.operators);
+    let operators = diff_aligned_operators(&old.operators, &new.operators, &alignment);
 
     if !type_changed
         && !locals_changed
         && !direct_calls_changed
         && operators.is_empty()
+        && alignment.report.regions.is_empty()
+        && alignment.report.branch_targets.is_empty()
         && !call_bindings
             .iter()
             .any(|binding| binding.target_changed == Some(true))
@@ -295,14 +532,72 @@ fn diff_function(
         return None;
     }
 
+    let reference_only = !type_changed
+        && !locals_changed
+        && alignment.report.complete
+        && alignment
+            .report
+            .regions
+            .iter()
+            .all(|region| region.relation == "modified" && !region.ambiguous)
+        && alignment.report.branch_targets.is_empty()
+        && !operators.is_empty()
+        && operators.iter().all(|delta| match delta {
+            OperatorDelta::Replace {
+                index, new_index, ..
+            } => {
+                old.operators[*index].opcode == new.operators[*new_index].opcode
+                    && matches!(
+                        (
+                            &old.operators[*index].immediate,
+                            &new.operators[*new_index].immediate
+                        ),
+                        (Immediate::Call(_), Immediate::Call(_))
+                            | (Immediate::RefFunc(_), Immediate::RefFunc(_))
+                    )
+            }
+            _ => false,
+        });
+    let change_kind = if reference_only
+        && !call_bindings.iter().any(|b| b.target_changed == Some(true))
+    {
+        let relocated: std::collections::BTreeSet<_> = call_bindings
+            .iter()
+            .filter(|b| {
+                b.relation == "same_target_index_relocated" && b.target_changed == Some(false)
+            })
+            .filter_map(|b| {
+                Some((
+                    b.old.as_ref()?.operator_index,
+                    b.new.as_ref()?.operator_index,
+                ))
+            })
+            .collect();
+        if call_bindings.iter().all(|b| b.target_changed == Some(false))
+            && operators.iter().all(|d| matches!(d, OperatorDelta::Replace {index,new_index,..} if relocated.contains(&(*index,*new_index)))) {
+            FunctionChangeKind::ConfirmedReferenceRelocation
+        } else {
+            FunctionChangeKind::UnresolvedReferenceChange
+        }
+    } else {
+        FunctionChangeKind::BodyOrInterfaceChange
+    };
     Some(FunctionDelta {
         old_id: old.id.clone(),
         new_id: new.id.clone(),
+        old_source_index: old.source_index,
+        new_source_index: new.source_index,
+        old_symbol: symbols[0].map(str::to_owned),
+        new_symbol: symbols[1].map(str::to_owned),
+        symbol_sources: [None, None],
+        source_annotations: Vec::new(),
+        change_kind,
         type_changed,
         locals_changed,
         direct_calls_changed,
         call_bindings: std::mem::take(call_bindings),
         operators,
+        instruction_alignment: alignment.report,
     })
 }
 
@@ -391,6 +686,7 @@ fn export_site(module: &ModuleIr, export: &ExportIr) -> ExportBindingSite {
 fn export_neutral(module: &NormalizedModule) -> NormalizedModule {
     let mut neutral = module.module.clone();
     neutral.exports.clear();
+    neutral.function_names.clear();
     let imports: Vec<_> = module
         .imports
         .iter()
@@ -412,7 +708,12 @@ fn export_neutral(module: &NormalizedModule) -> NormalizedModule {
             if let Some(Some(binding)) = imports.get(function.source_index as usize) {
                 // Import strings may themselves contain identity delimiters.
                 // This independent view uses an unambiguous structural key.
-                function.id = serde_json::to_string(&binding).expect("import binding serializes");
+                function.id = crate::binary::text_key([
+                    binding.module.as_str(),
+                    binding.name.as_str(),
+                    binding.type_id.as_str(),
+                    if binding.exact { "1" } else { "0" },
+                ]);
             }
         }
     }
@@ -452,7 +753,7 @@ fn reference_free(module: &ModuleIr, index: u32) -> bool {
     })
 }
 
-fn import_counts(module: &ModuleIr) -> BTreeMap<String, usize> {
+fn import_counts(module: &ModuleIr) -> BTreeMap<Vec<u8>, usize> {
     let mut counts = BTreeMap::new();
     for import in &module.imports {
         if let TypeRefIr::Func { type_id, exact, .. } = &import.type_ref {
@@ -463,7 +764,7 @@ fn import_counts(module: &ModuleIr) -> BTreeMap<String, usize> {
                 exact: *exact,
             };
             *counts
-                .entry(serde_json::to_string(&binding).expect("binding serializes"))
+                .entry(crate::binary::encode(&binding).expect("binding serializes"))
                 .or_default() += 1;
         }
     }
@@ -473,8 +774,8 @@ fn import_counts(module: &ModuleIr) -> BTreeMap<String, usize> {
 struct BindingContext<'a> {
     proofs: &'a DependencyGraph,
     ambiguous_candidates: BTreeMap<u32, TargetMatchEvidence>,
-    old_imports: BTreeMap<String, usize>,
-    new_imports: BTreeMap<String, usize>,
+    old_imports: BTreeMap<Vec<u8>, usize>,
+    new_imports: BTreeMap<Vec<u8>, usize>,
 }
 
 impl<'a> BindingContext<'a> {
@@ -503,11 +804,11 @@ impl<'a> BindingContext<'a> {
 
     fn unique_imports(&self, old: &ImportBindingEvidence, new: &ImportBindingEvidence) -> bool {
         self.old_imports
-            .get(&serde_json::to_string(old).expect("binding serializes"))
+            .get(&crate::binary::encode(old).expect("binding serializes"))
             == Some(&1)
             && self
                 .new_imports
-                .get(&serde_json::to_string(new).expect("binding serializes"))
+                .get(&crate::binary::encode(new).expect("binding serializes"))
                 == Some(&1)
     }
 
@@ -550,7 +851,10 @@ fn diff_export_bindings(
     new: &NormalizedModule,
     context: &BindingContext<'_>,
 ) -> Vec<ExportBindingDelta> {
-    if old.module == new.module || old.exports.is_empty() || new.exports.is_empty() {
+    if old.module.same_function_projection(&new.module)
+        || old.exports.is_empty()
+        || new.exports.is_empty()
+    {
         return Vec::new();
     }
     let old_groups = export_groups(old);
@@ -666,44 +970,22 @@ fn diff_call_bindings(
     old_module: &ModuleIr,
     new_module: &ModuleIr,
     context: &BindingContext<'_>,
+    alignment: &crate::structured_diff::Alignment,
 ) -> Vec<CallBindingDelta> {
     let mut bindings = Vec::new();
-    let key = |operator: &ParsedOperator| match &operator.immediate {
-        Immediate::Call(_) | Immediate::RefFunc(_) => {
-            format!("{}:<function-reference>", operator.opcode.as_str())
-        }
-        _ => operator.display_text(),
-    };
-    let old_keys = old.operators.iter().map(key).collect::<Vec<_>>();
-    let new_keys = new.operators.iter().map(key).collect::<Vec<_>>();
-    let alignment = similar::capture_diff_slices(similar::Algorithm::Myers, &old_keys, &new_keys);
-    let mut positions = Vec::new();
-    for operation in alignment {
-        match operation {
-            similar::DiffOp::Equal {
-                old_index,
-                new_index,
-                len,
-            } => positions.extend((0..len).map(|i| (Some(old_index + i), Some(new_index + i)))),
-            similar::DiffOp::Replace {
-                old_index,
-                old_len,
-                new_index,
-                new_len,
-            } => {
-                let shared = old_len.min(new_len);
-                positions.extend((0..shared).map(|i| (Some(old_index + i), Some(new_index + i))));
-                positions.extend((shared..old_len).map(|i| (Some(old_index + i), None)));
-                positions.extend((shared..new_len).map(|i| (None, Some(new_index + i))));
-            }
-            similar::DiffOp::Delete {
-                old_index, old_len, ..
-            } => positions.extend((0..old_len).map(|i| (Some(old_index + i), None))),
-            similar::DiffOp::Insert {
-                new_index, new_len, ..
-            } => positions.extend((0..new_len).map(|i| (None, Some(new_index + i)))),
-        }
-    }
+    let positions = alignment
+        .old_to_new
+        .iter()
+        .enumerate()
+        .map(|(i, mapped)| (Some(i), *mapped))
+        .chain(
+            alignment
+                .new_used
+                .iter()
+                .enumerate()
+                .filter(|(_, used)| !**used)
+                .map(|(i, _)| (None, Some(i))),
+        );
     for (old_index, new_index) in positions {
         let old_site =
             old_index.and_then(|index| binding_site(old_module, index, &old.operators[index]));
@@ -717,6 +999,9 @@ fn diff_call_bindings(
             .map(|site| context.candidate(old_module, site.function_index, true))
             .unwrap_or((None, None));
         let (relation, target_changed) = match (&old_site, &new_site) {
+            (Some(_), Some(_)) if old_index.is_some_and(|i| alignment.ambiguous_old[i]) => {
+                ("ambiguous_site", None)
+            }
             (Some(a), Some(b)) => match (&a.target, &b.target) {
                 (Some(old_target), Some(new_target)) => {
                     if old_target.kind == "imported" && new_target.kind == "imported" {
@@ -751,12 +1036,11 @@ fn diff_call_bindings(
                     {
                         ("ambiguous_target", None)
                     } else {
-                        // Equal physical indices with only a changed callee
-                        // implementation are not a new binding event. Its
-                        // body bytes remain in the ordinary complete audit.
-                        if a.function_index == b.function_index {
-                            continue;
-                        }
+                        // Equal indices alone do not establish continuity:
+                        // removing a callee can reuse its slot for a different
+                        // implementation. Without a body/dependency witness,
+                        // retain an informational note even at the same index;
+                        // this does not assert a caller instruction change.
                         ("unresolved_target", None)
                     }
                 }
@@ -767,7 +1051,7 @@ fn diff_call_bindings(
             (None, None) => unreachable!(),
         };
         bindings.push(CallBindingDelta {
-            pairing: "opcode_alignment".into(),
+            pairing: "wasm_region_instruction_alignment".into(),
             relation: relation.into(),
             target_changed,
             identity_unproven: true,
@@ -781,72 +1065,35 @@ fn diff_call_bindings(
     bindings
 }
 
-fn diff_operators(old: &[ParsedOperator], new: &[ParsedOperator]) -> Vec<OperatorDelta> {
-    let old_keys: Vec<(&str, String)> = old
-        .iter()
-        .map(|op| (op.opcode.as_str(), op.display_text()))
-        .collect();
-    let new_keys: Vec<(&str, String)> = new
-        .iter()
-        .map(|op| (op.opcode.as_str(), op.display_text()))
-        .collect();
-
-    let old_cmp: Vec<(&str, &str)> = old_keys.iter().map(|(k, t)| (*k, t.as_str())).collect();
-    let new_cmp: Vec<(&str, &str)> = new_keys.iter().map(|(k, t)| (*k, t.as_str())).collect();
-
-    let ops = similar::capture_diff_slices(similar::Algorithm::Myers, &old_cmp, &new_cmp);
-
+fn diff_aligned_operators(
+    old: &[ParsedOperator],
+    new: &[ParsedOperator],
+    alignment: &crate::structured_diff::Alignment,
+) -> Vec<OperatorDelta> {
     let mut deltas = Vec::new();
-    for op in ops {
-        match op {
-            similar::DiffOp::Equal { .. } => {}
-            similar::DiffOp::Delete {
-                old_index, old_len, ..
-            } => {
-                for (i, operator) in old.iter().enumerate().skip(old_index).take(old_len) {
-                    deltas.push(OperatorDelta::Delete {
-                        index: i,
-                        operator: operator_record(operator),
-                    });
-                }
+    for (i, mapped) in alignment.old_to_new.iter().enumerate() {
+        match mapped {
+            Some(j) if old[i].opcode != new[*j].opcode || old[i].immediate != new[*j].immediate => {
+                deltas.push(OperatorDelta::Replace {
+                    index: i,
+                    new_index: *j,
+                    old: operator_record(&old[i]),
+                    new: operator_record(&new[*j]),
+                });
             }
-            similar::DiffOp::Insert {
-                new_index, new_len, ..
-            } => {
-                for (i, operator) in new.iter().enumerate().skip(new_index).take(new_len) {
-                    deltas.push(OperatorDelta::Insert {
-                        index: i,
-                        operator: operator_record(operator),
-                    });
-                }
-            }
-            similar::DiffOp::Replace {
-                old_index,
-                new_index,
-                old_len,
-                new_len,
-            } => {
-                let shared = old_len.min(new_len);
-                for offset in 0..shared {
-                    deltas.push(OperatorDelta::Replace {
-                        index: old_index + offset,
-                        old: operator_record(&old[old_index + offset]),
-                        new: operator_record(&new[new_index + offset]),
-                    });
-                }
-                for offset in shared..old_len {
-                    deltas.push(OperatorDelta::Delete {
-                        index: old_index + offset,
-                        operator: operator_record(&old[old_index + offset]),
-                    });
-                }
-                for offset in shared..new_len {
-                    deltas.push(OperatorDelta::Insert {
-                        index: new_index + offset,
-                        operator: operator_record(&new[new_index + offset]),
-                    });
-                }
-            }
+            Some(_) => {}
+            None => deltas.push(OperatorDelta::Delete {
+                index: i,
+                operator: operator_record(&old[i]),
+            }),
+        }
+    }
+    for (i, used) in alignment.new_used.iter().enumerate() {
+        if !used {
+            deltas.push(OperatorDelta::Insert {
+                index: i,
+                operator: operator_record(&new[i]),
+            });
         }
     }
     deltas
@@ -924,6 +1171,7 @@ fn summarize(changes: &[DiffChange]) -> DiffSummary {
         operator_replacements: 0,
         operator_insertions: 0,
         operator_deletions: 0,
+        control_region_moves: 0,
     };
 
     for change in changes {
@@ -938,6 +1186,12 @@ fn summarize(changes: &[DiffChange]) -> DiffSummary {
             DiffChange::FunctionRemoved { .. } => summary.functions_removed += 1,
             DiffChange::FunctionChanged { function } => {
                 summary.functions_changed += 1;
+                summary.control_region_moves += function
+                    .instruction_alignment
+                    .regions
+                    .iter()
+                    .filter(|r| r.relation == "moved")
+                    .count();
                 for operator in &function.operators {
                     match operator {
                         OperatorDelta::Replace { .. } => summary.operator_replacements += 1,
@@ -1045,7 +1299,10 @@ mod tests {
         assert!(!function.direct_calls_changed);
         assert_eq!(function.operators.len(), 1);
 
-        let OperatorDelta::Replace { index, old, new } = &function.operators[0] else {
+        let OperatorDelta::Replace {
+            index, old, new, ..
+        } = &function.operators[0]
+        else {
             panic!("expected replacement");
         };
         assert_eq!(*index, 1);

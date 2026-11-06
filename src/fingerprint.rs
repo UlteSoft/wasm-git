@@ -7,7 +7,6 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde::Serialize;
-use serde_json::json;
 
 use crate::ir::{FunctionIr, FunctionKindIr, Immediate, ModuleIr, ParsedOperator, ResolvedModule};
 
@@ -206,7 +205,11 @@ fn stable_function_id_for_hash(
                 function.type_id,
                 canonical_body_hash.hex()
             ),
-            export_names => format!("func:exports:{}:{}", json!(export_names), function.type_id),
+            export_names => format!(
+                "func:exports:{}:{}",
+                crate::binary::text_key(export_names.iter().map(String::as_str)),
+                function.type_id
+            ),
         },
     }
 }
@@ -427,7 +430,7 @@ mod tests {
         assert_eq!(module.functions[0].export_names, ["a", "b"]);
         assert_eq!(
             module.functions[0].id,
-            r#"func:exports:["a","b"]:type:i32,i32->i32"#
+            "func:exports:1:a1:b:type:i32,i32->i32"
         );
     }
 

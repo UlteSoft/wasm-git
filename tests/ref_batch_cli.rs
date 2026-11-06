@@ -1,3 +1,4 @@
+#![cfg(feature = "server")]
 use serde_json::Value;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};

@@ -28,7 +28,7 @@ fn ancestor_union(
             let Some(Object::Commit(commit)) = snapshot.objects.get(&id) else {
                 return Err(format!("missing native commit {id} in reference query"));
             };
-            pending.extend(commit.parents.iter().cloned());
+            pending.extend(commit.history_parents().iter().cloned());
         }
     }
     Ok(seen)

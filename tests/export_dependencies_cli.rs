@@ -792,7 +792,9 @@ fn dependency_proofs_leave_raw_edits_patches_profiles_and_physical_history_uncha
             let applied = pair.temp.path(&format!("{label}.wasm"));
             run_json(&["patch", old_path, new_path, "--output", &patch]);
             let raw = std::fs::read(&patch).unwrap();
-            let encoded: Value = serde_json::from_slice(&raw).unwrap();
+            let encoded: Value =
+                serde_json::to_value(wasm_git::patch::BytePatch::from_bytes(&raw).unwrap())
+                    .unwrap();
             replay(old, new, &encoded["edits"]);
             assert_eq!(
                 BytePatch::from_bytes(&raw).unwrap().apply(old).unwrap(),

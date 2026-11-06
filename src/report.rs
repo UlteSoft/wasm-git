@@ -12,6 +12,7 @@ use crate::matcher::MatchReason;
 struct InspectOutput<'a> {
     module: &'a ModuleIr,
     summary: ModuleSummary,
+    debug_info: &'a crate::debug_info::DebugInfo,
 }
 
 #[derive(Serialize)]
@@ -24,7 +25,7 @@ struct ModuleSummary {
     imported_functions: usize,
 }
 
-pub fn inspect_json(module: &ModuleIr) -> String {
+pub fn inspect_value(module: &ModuleIr) -> serde_json::Value {
     let defined_functions = module
         .functions
         .iter()
@@ -38,6 +39,7 @@ pub fn inspect_json(module: &ModuleIr) -> String {
 
     let output = InspectOutput {
         module,
+        debug_info: &module.debug_info,
         summary: ModuleSummary {
             types: module.types.len(),
             imports: module.imports.len(),
@@ -48,9 +50,10 @@ pub fn inspect_json(module: &ModuleIr) -> String {
         },
     };
 
-    serde_json::to_string_pretty(&output).expect("serialization should not fail")
+    serde_json::to_value(&output).expect("serialization should not fail")
 }
 
+#[cfg(test)]
 pub fn diff_json(report: &DiffReport) -> String {
     serde_json::to_string_pretty(report).expect("serialization should not fail")
 }
@@ -82,6 +85,16 @@ pub fn diff_text(report: &DiffReport) -> String {
                 function_match.new_source_index
                 ,function_match.ambiguous
             ));
+            if let Some(name) = &function_match.symbol_hint {
+                let use_kind = if function_match.reason == MatchReason::SimilarityFallback {
+                    "ranking bonus=0.03"
+                } else {
+                    "equal-body candidate tie-break"
+                };
+                lines.push(format!(
+                    "    untrusted custom symbol hint={name:?}; {use_kind}; not identity evidence"
+                ));
+            }
         }
     }
 
@@ -145,6 +158,32 @@ pub fn diff_text(report: &DiffReport) -> String {
     lines.join("\n")
 }
 
+pub fn diff_compact(report: &DiffReport) -> String {
+    let mut lines = vec![format!(
+        "Diff: {} -> {}",
+        safe_text(&report.old),
+        safe_text(&report.new)
+    )];
+    push_summary_lines(report, &mut lines);
+    for change in &report.changes {
+        push_change_text(change, &mut lines);
+    }
+    for note in &report.call_binding_notes {
+        push_binding_text(&note.call_bindings, &mut lines);
+    }
+    for note in &report.export_binding_notes {
+        lines.push(format!(
+            "  export {} ({}) target {} -> {}: {} (identity unproven)",
+            safe_text(&note.old.name),
+            note.old.kind,
+            note.old.item_index,
+            note.new.item_index,
+            note.relation
+        ));
+    }
+    lines.join("\n")
+}
+
 pub fn diff_short(report: &DiffReport) -> String {
     let mut lines = Vec::new();
     lines.push(format!(
@@ -196,7 +235,24 @@ pub fn diff_short(report: &DiffReport) -> String {
 }
 
 fn push_summary_lines(report: &DiffReport, lines: &mut Vec<String>) {
+    for (side, debug) in ["old", "new"].into_iter().zip(&report.debug_context) {
+        if debug.status != "absent" || !debug.diagnostics.is_empty() {
+            lines.push(format!("  debug {side}: {} symbols={} source_ranges={} (advisory; source identity and intent unproven)", debug.status, debug.symbols, debug.source_ranges));
+            for note in &debug.diagnostics {
+                lines.push(format!("    debug {side} note: {}", safe_text(note)));
+            }
+        }
+    }
+    if !report.function_matching.similarity_search_complete {
+        lines.push(format!("  similarity search reached its {}-pair budget; {} old / {} new unmatched functions remain unclassified; complete byte audit is retained",report.function_matching.similarity_pair_limit,report.function_matching.unclassified_old_function_indices.len(),report.function_matching.unclassified_new_function_indices.len()));
+    }
     lines.push(format!("{}", "Summary:".bold()));
+    if report.summary.control_region_moves != 0 {
+        lines.push(format!(
+            "  control regions: {} moved",
+            report.summary.control_region_moves
+        ));
+    }
     lines.push(format!(
         "  functions: {} {}, {} {}, {} {}, {} {}",
         report.function_matches.len().to_string().bright_black(),
@@ -405,6 +461,30 @@ fn push_change_text(change: &DiffChange, lines: &mut Vec<String>) {
             format!("- function {}", safe_text(id)).red()
         )),
         DiffChange::FunctionChanged { function } => {
+            if function.old_symbol.is_some() || function.new_symbol.is_some() {
+                lines.push(format!(
+                    "  untrusted symbols: old[{}]={:?} -> new[{}]={:?}{}",
+                    function.old_source_index,
+                    function.old_symbol,
+                    function.new_source_index,
+                    function.new_symbol,
+                    if function.old_symbol.is_some()
+                        && function.new_symbol.is_some()
+                        && function.old_symbol != function.new_symbol
+                    {
+                        " (names differ; body correspondence is not a source rename proof)"
+                    } else {
+                        " (identity unproven)"
+                    }
+                ));
+            }
+            match function.change_kind {
+                crate::diff::FunctionChangeKind::ConfirmedReferenceRelocation => lines.push(
+                    "  only function-reference index relocation (static correspondence proved; raw edits retained; no runtime equivalence claim)".into()),
+                crate::diff::FunctionChangeKind::UnresolvedReferenceChange => lines.push(
+                    "  only function-reference indices changed; relocation versus retargeting is unresolved".into()),
+                crate::diff::FunctionChangeKind::BodyOrInterfaceChange => {}
+            }
             lines.push(format!(
                 "  {} {} -> {}",
                 "~".yellow(),
@@ -423,13 +503,97 @@ fn push_change_text(change: &DiffChange, lines: &mut Vec<String>) {
                     "~".yellow()
                 ));
             }
+            for annotation in &function.source_annotations {
+                for (side, point) in [("old", &annotation.old), ("new", &annotation.new)] {
+                    if let Some(point) = point {
+                        for source in &point.sources {
+                            lines.push(format!("    debug {side} edit[{}] @{} source={:?}:{:?}:{:?} discriminator={} (compiler claim)", annotation.change_index, point.file_offset, source.location.file, source.location.line, source.location.column, source.discriminator));
+                        }
+                        for symbol in point
+                            .symbols
+                            .iter()
+                            .filter(|s| s.kind == "inlined_subroutine")
+                        {
+                            lines.push(format!(
+                                "    debug {side} inline={:?} linkage={:?} call={:?}",
+                                symbol.name, symbol.linkage_name, symbol.call_site
+                            ));
+                        }
+                    }
+                }
+            }
+            let alignment = &function.instruction_alignment;
+            if !alignment.complete {
+                lines.push(format!(
+                    "    alignment incomplete: {}",
+                    alignment.fallback_reason.unwrap_or("unknown")
+                ));
+            }
+            for region in &alignment.regions {
+                let site = |r: &Option<crate::structured_diff::RegionSite>| {
+                    r.as_ref().map_or_else(
+                        || "none".into(),
+                        |r| {
+                            format!(
+                                "{} {} ops[{}..{})",
+                                r.parent_arm, r.kind, r.start_operator_index, r.end_operator_index
+                            )
+                        },
+                    )
+                };
+                lines.push(format!(
+                    "    region {}: {} -> {} [{}{}]",
+                    region.relation,
+                    site(&region.old),
+                    site(&region.new),
+                    region.matching,
+                    if region.ambiguous { "; ambiguous" } else { "" }
+                ));
+            }
+            for block in &alignment.basic_blocks {
+                let ranges = |spans: &[[usize; 2]]| {
+                    spans
+                        .iter()
+                        .map(|s| format!("{}..{}", s[0], s[1]))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                };
+                lines.push(format!(
+                    "    {} basic block ops[{}] -> ops[{}]{}",
+                    block.arm,
+                    ranges(&block.old_ranges),
+                    ranges(&block.new_ranges),
+                    if block.ambiguous { " [ambiguous]" } else { "" }
+                ));
+            }
+            for branch in &alignment.branch_targets {
+                lines.push(format!(
+                    "    branch op[{} -> {}] {} edge {}: depth {} -> {} ({})",
+                    branch.old_operator_index,
+                    branch.new_operator_index,
+                    branch.edge_role,
+                    branch.edge,
+                    branch.old_depth,
+                    branch.new_depth,
+                    branch.relation
+                ));
+            }
             push_binding_text(&function.call_bindings, lines);
             for operator in &function.operators {
                 match operator {
-                    OperatorDelta::Replace { index, old, new } => lines.push(format!(
+                    OperatorDelta::Replace {
+                        index,
+                        new_index,
+                        old,
+                        new,
+                    } => lines.push(format!(
                         "    {} op[{}]: {} -> {}",
                         "~".yellow(),
-                        index,
+                        if index == new_index {
+                            index.to_string()
+                        } else {
+                            format!("{index} -> {new_index}")
+                        },
                         old.text.as_str().red(),
                         new.text.as_str().green()
                     )),

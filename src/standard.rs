@@ -213,9 +213,38 @@ pub struct StandardReport {
     pub validator_error: Option<StandardValidationError>,
     pub interpretation: String,
     pub evidence: Vec<FeatureEvidence>,
+    /// Lifecycle is independent of validity. Deprecated readers stay enabled.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub deprecated_features: Vec<crate::features::DeprecationNotice>,
 }
 
 impl StandardReport {
+    pub(crate) fn refresh_deprecations(&mut self) {
+        self.deprecated_features = crate::features::deprecated_used(&self.evidence);
+    }
+
+    pub(crate) fn omit_supported_evidence(&mut self) {
+        self.evidence.retain(|e| {
+            e.status != "supported"
+                || self
+                    .deprecated_features
+                    .iter()
+                    .any(|notice| notice.feature == e.feature)
+        });
+    }
+
+    pub(crate) fn deprecations_text(&self, out: &mut String, side: &str) {
+        for notice in &self.deprecated_features {
+            let _ = writeln!(
+                out,
+                "{side}feature={} deprecated; decoder_retained=true; {} ({})",
+                notice.feature,
+                notice.reason.escape_debug(),
+                notice.source
+            );
+        }
+    }
+
     pub(crate) fn pending(selected_standard: Standard) -> Self {
         Self {
             selected_standard,
@@ -226,6 +255,7 @@ impl StandardReport {
             validator_error: None,
             interpretation: "not_classified".into(),
             evidence: Vec::new(),
+            deprecated_features: Vec::new(),
         }
     }
 }
@@ -555,6 +585,7 @@ pub(crate) fn classify(
         validator_valid,
         validator_error,
         interpretation: "All regions use all-known grammar recognition. standard_support and evidence describe compatibility with the selected release, never standalone typing proofs. Disabled instructions and invalid encodings/semantics are binary data in the profile view; their recognized names only explain those bytes. invalid_encoding applies to every standard, including all-known; invalid_semantics is a rule of the selected standard. Neither denotes a disabled proposal. Custom payload conventions do not imply Core features. validator_valid refers to the disclosed validator_input; custom-name projections require independently valid original framing and UTF-8, and all raw evidence remains original.".into(),
+        deprecated_features: crate::features::deprecated_used(&collector.evidence),
         evidence: collector.evidence,
     };
     annotate(sections, &report.evidence);

@@ -369,7 +369,11 @@ fn malformed_outer_names_unknown_sections_and_components_are_never_repaired() {
     custom(&mut component, 0, &"c".repeat(100_001), &[1]);
     assert_eq!(&*audit::core_reader_bytes(&component), component);
     for standard in PROFILES {
-        assert!(audit::inspect_with_standard(&component, standard).is_err());
+        let view = audit::inspect_with_standard(&component, standard).unwrap();
+        assert_eq!(view.validation, "not_validated");
+        assert_eq!(view.standard.validator_input.kind, "original_bytes");
+        assert!(view.sections[0].kind.ends_with(&"c".repeat(100_001)));
+        raw_spans(&component, &view);
     }
 }
 

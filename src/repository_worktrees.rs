@@ -16,7 +16,7 @@ struct WorktreeRecord {
 }
 
 fn registry_image(common: &Path) -> RepositoryResult<Option<Vec<u8>>> {
-    let path = common.join("worktrees.json");
+    let path = common.join("worktrees.bin");
     let bytes = match fs::symlink_metadata(&path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.to_string()),
@@ -42,8 +42,9 @@ fn decode_registry(bytes: Option<&[u8]>) -> RepositoryResult<Worktrees> {
     if bytes.len() > 4 * 1024 * 1024 {
         return Err("worktree registry exceeds 4 MiB".into());
     }
-    let value: Worktrees = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
-    if value.version != 1 || serde_json::to_vec(&value).map_err(|error| error.to_string())? != bytes
+    let value: Worktrees = crate::binary::decode(bytes).map_err(|error| error.to_string())?;
+    if value.version != 1
+        || crate::binary::encode(&value).map_err(|error| error.to_string())? != bytes
     {
         return Err("invalid, duplicate-key, or non-canonical worktree registry".into());
     }
@@ -87,14 +88,16 @@ fn marker(path: &Path) -> RepositoryResult<String> {
     if bytes.len() > 8192 {
         return Err("worktree path marker is too large".into());
     }
-    let text = std::str::from_utf8(&bytes).map_err(|_| "worktree marker is not UTF-8")?;
-    let value = text
-        .strip_suffix('\n')
-        .ok_or("worktree marker requires one final newline")?;
+    let value: String = if path.file_name().is_some_and(|name| name == "worktree-id") {
+        decode_reference(&bytes, true)?
+    } else {
+        crate::binary::decode(&bytes)?
+    };
+
     if value.is_empty() || value.chars().any(char::is_control) {
         return Err("invalid worktree marker".into());
     }
-    Ok(value.into())
+    Ok(value)
 }
 fn destination(path: &Path) -> RepositoryResult<PathBuf> {
     let name = path
@@ -201,11 +204,11 @@ impl Repository {
     }
 
     fn write_worktrees(&self, records: &Worktrees) -> RepositoryResult<()> {
-        let bytes = serde_json::to_vec(records).map_err(|error| error.to_string())?;
+        let bytes = crate::binary::encode(records).map_err(|error| error.to_string())?;
         if bytes.len() > 4 * 1024 * 1024 {
             return Err("worktree registry exceeds 4 MiB".into());
         }
-        self.atomic_write(&self.common_metadata.join("worktrees.json"), &bytes)
+        self.atomic_write(&self.common_metadata.join("worktrees.bin"), &bytes)
             .map_err(|error| format!("worktree registry publication may have occurred: {error}; inspect worktree list before retrying"))
     }
 
@@ -335,7 +338,7 @@ impl Repository {
             let metadata = target.join(".uwgit");
             fs::create_dir(&metadata).map_err(|error| error.to_string())?;
             fs::create_dir(metadata.join("tmp")).map_err(|error| error.to_string())?;
-            write_new_file(&metadata.join("HEAD"), format!("{branch}\n").as_bytes())?;
+            write_new_file(&metadata.join("HEAD"), &encode_reference(branch, false)?)?;
             let head_log = vec![ReflogEntry {
                 sequence: 1,
                 reference: "HEAD".into(),
@@ -344,20 +347,16 @@ impl Repository {
                 operation: "worktree-add".into(),
             }];
             write_new_file(
-                &metadata.join("head-reflog.json"),
-                &serde_json::to_vec(&head_log).map_err(|error| error.to_string())?,
+                &metadata.join("head-reflog.bin"),
+                &crate::binary::encode(&head_log).map_err(|error| error.to_string())?,
             )?;
             write_new_file(
                 &metadata.join("commondir"),
-                format!(
-                    "{}\n",
-                    common.to_str().ok_or("common directory is not UTF-8")?
-                )
-                .as_bytes(),
+                &crate::binary::encode(common.to_str().ok_or("common directory is not UTF-8")?)?,
             )?;
             write_new_file(
                 &metadata.join("worktree-id"),
-                format!("{worktree_id}\n").as_bytes(),
+                &encode_reference(&worktree_id, true)?,
             )?;
             write_new_file(&metadata.join("index"), &index)?;
             for (path, bytes) in &files {
@@ -443,7 +442,7 @@ impl Repository {
             != canonical(&self.common_metadata)?
                 .to_str()
                 .ok_or("non-UTF-8 common path")?
-            || read_regular(&metadata.join("format"))? != FORMAT
+            || !pack_storage::supported_format(&read_regular(&metadata.join("format"))?)
         {
             return Err("repair target belongs to a different or incomplete repository".into());
         }
@@ -620,7 +619,7 @@ pub(super) fn reference_head_origin(
     let metadata = root.join(".uwgit");
     require_directory(&metadata)?;
     require_directory(&metadata.join("tmp"))?;
-    if read_regular(&metadata.join("format"))? != FORMAT {
+    if !pack_storage::supported_format(&read_regular(&metadata.join("format"))?) {
         return Err("invalid HEAD transaction repository format".into());
     }
     if let Some(id) = id {
@@ -664,7 +663,7 @@ pub(super) fn reference_registry_after(
         return Ok(image.map(<[u8]>::to_vec));
     }
     record.branch = after.into();
-    let bytes = serde_json::to_vec(&records).map_err(|error| error.to_string())?;
+    let bytes = crate::binary::encode(&records).map_err(|error| error.to_string())?;
     if bytes.len() > 4 * 1024 * 1024 {
         return Err("worktree registry exceeds 4 MiB".into());
     }

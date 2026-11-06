@@ -5,6 +5,9 @@
 //! replacing the old string-based OperatorIr. Phase 2 keeps parsing free of
 //! stable-ID and fingerprint refresh; those now live in resolve/normalize.
 
+#[path = "parse_extensions.rs"]
+mod extensions;
+
 use std::{error::Error, fmt};
 
 use wasmparser::{
@@ -352,6 +355,21 @@ pub fn parse_module(bytes: &[u8]) -> Result<ParsedModule, ParseError> {
         )));
     }
 
+    module.function_names = crate::audit::function_names(bytes);
+    module
+        .function_names
+        .retain(|i, _| (*i as usize) < module.functions.len());
+    module.function_symbol_sources = module.function_names.keys().map(|i| (*i, "name")).collect();
+    let debug = crate::debug_info::read_for_module(bytes, &module.functions);
+    for (index, name) in debug.function_hints() {
+        if let std::collections::btree_map::Entry::Vacant(entry) =
+            module.function_names.entry(index)
+        {
+            entry.insert(name);
+            module.function_symbol_sources.insert(index, "debug_symbol");
+        }
+    }
+    module.debug_info = std::sync::Arc::new(debug);
     Ok(ParsedModule { module })
 }
 
@@ -379,6 +397,7 @@ fn convert_operator<'a>(
 
 /// Map wasmparser::Operator variants to (Opcode, Immediate).
 #[allow(clippy::too_many_lines)]
+#[rustfmt::skip]
 fn operator_to_opcode_immediate<'a>(op: Operator<'a>) -> Result<(Opcode, Immediate), ParseError> {
     use Opcode as Oc;
     use Operator::*;
@@ -985,10 +1004,11 @@ fn operator_to_opcode_immediate<'a>(op: Operator<'a>) -> Result<(Opcode, Immedia
             array_type_index_src,
         } => Ok((
             Oc::ArrayCopy,
-            Immediate::Unrecognized(format!(
-                "ArrayCopy {{ array_type_index_dst: {array_type_index_dst}, array_type_index_src: {array_type_index_src} }}"
-            )),
-        ),),
+            Immediate::ArrayCopy {
+                dst_type: array_type_index_dst,
+                src_type: array_type_index_src,
+            },
+        )),
         ArrayInitData {
             array_type_index,
             array_data_index,
@@ -1009,22 +1029,14 @@ fn operator_to_opcode_immediate<'a>(op: Operator<'a>) -> Result<(Opcode, Immedia
                 elem_index: array_elem_index,
             },
         ),),
-        RefTestNonNull { hty } => Ok((
-            Oc::RefTestRef,
-            Immediate::Unrecognized(format!("RefTestNonNull {{ hty: {hty:?} }}")),
-        ),),
-        RefTestNullable { hty } => Ok((
-            Oc::Unrecognized("RefTestNullable".to_owned()),
-            Immediate::Unrecognized(format!("RefTestNullable {{ hty: {hty:?} }}")),
-        ),),
-        RefCastNonNull { hty } => Ok((
-            Oc::RefCastRef,
-            Immediate::Unrecognized(format!("RefCastNonNull {{ hty: {hty:?} }}")),
-        ),),
-        RefCastNullable { hty } => Ok((
-            Oc::Unrecognized("RefCastNullable".to_owned()),
-            Immediate::Unrecognized(format!("RefCastNullable {{ hty: {hty:?} }}")),
-        ),),
+        RefTestNonNull { hty } => Ok((Oc::RefTestRef, Immediate::HeapType(format!("{hty:?}")))),
+        RefTestNullable { hty } => {
+            Ok((Oc::RefTestNullable, Immediate::HeapType(format!("{hty:?}"))))
+        }
+        RefCastNonNull { hty } => Ok((Oc::RefCastRef, Immediate::HeapType(format!("{hty:?}")))),
+        RefCastNullable { hty } => {
+            Ok((Oc::RefCastNullable, Immediate::HeapType(format!("{hty:?}"))))
+        }
         BrOnCast {
             relative_depth,
             from_ref_type,
@@ -1193,6 +1205,9 @@ fn operator_to_opcode_immediate<'a>(op: Operator<'a>) -> Result<(Opcode, Immedia
 
         // ── Catch-all for unrecognized opcodes ──
         unknown => {
+            if let Some(typed) = extensions::convert(unknown.clone()) {
+                return Ok(typed);
+            }
             let name = extract_operator_name(&unknown);
             let operands = format!("{unknown:?}");
             Ok((Opcode::Unrecognized(name), Immediate::Unrecognized(operands)))
@@ -1337,22 +1352,17 @@ fn type_id(params: &[String], results: &[String]) -> String {
 fn import_id(module: &str, name: &str, kind: ExternalKindIr, type_ref: &TypeRefIr) -> String {
     // Module and field names are arbitrary UTF-8, including ':'. Encode the
     // complete tuple so different host bindings cannot collide at delimiters.
+    let reference = match type_ref {
+        TypeRefIr::Func {
+            type_id,
+            exact: true,
+            ..
+        } => format!("exact:{type_id}"),
+        _ => type_ref_id(type_ref).to_owned(),
+    };
     format!(
         "import:{}",
-        serde_json::to_string(&(
-            module,
-            name,
-            kind.as_str(),
-            match type_ref {
-                TypeRefIr::Func {
-                    type_id,
-                    exact: true,
-                    ..
-                } => format!("exact:{type_id}"),
-                _ => type_ref_id(type_ref).to_owned(),
-            }
-        ))
-        .expect("import identity is serializable")
+        crate::binary::text_key([module, name, kind.as_str(), &reference])
     )
 }
 
@@ -1634,7 +1644,7 @@ mod tests {
     }
 
     #[test]
-    fn fallback_operators_keep_every_immediate() {
+    fn simd_lanes_keep_distinct_typed_immediates() {
         let (_, first) =
             operator_to_opcode_immediate(wasmparser::Operator::I8x16ExtractLaneS { lane: 3 })
                 .unwrap();
@@ -1642,8 +1652,8 @@ mod tests {
             operator_to_opcode_immediate(wasmparser::Operator::I8x16ExtractLaneS { lane: 4 })
                 .unwrap();
         assert_ne!(first, second);
-        assert!(first.as_hash_text().contains("lane: 3"));
-        assert!(second.as_hash_text().contains("lane: 4"));
+        assert_eq!(first, Immediate::Lane(3));
+        assert_eq!(second, Immediate::Lane(4));
     }
 
     #[test]

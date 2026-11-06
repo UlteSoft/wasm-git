@@ -1,0 +1,42 @@
+name: WebAssembly community feature refresh
+
+on:
+  schedule:
+    # Monday 09:23 Asia/Shanghai (01:23 UTC).
+    - cron: '23 1 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  community:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: WebAssembly/proposals
+          ref: main
+          path: .tmp/community-proposals
+          persist-credentials: false
+      - name: Generate a reviewable update from one immutable upstream revision
+        run: |
+          mkdir -p .tmp/community
+          revision=$(git -C .tmp/community-proposals rev-parse HEAD)
+          python3 tools/update-wasm-features.py --update \
+            --input .tmp/community-proposals/proposals.json --revision "$revision" \
+            --output ".tmp/community/feature_upstream.rs"
+      - name: Check lifecycle changes (never delete or disable decoder code)
+        run: |
+          revision=$(git -C .tmp/community-proposals rev-parse HEAD)
+          python3 tools/update-wasm-features.py --check \
+            --input .tmp/community-proposals/proposals.json --revision "$revision"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: proposed-wasm-feature-metadata
+          path: .tmp/community/feature_upstream.rs
+          if-no-files-found: ignore
+          retention-days: 30

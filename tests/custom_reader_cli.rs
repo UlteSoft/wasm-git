@@ -615,7 +615,11 @@ fn invalid_outer_names_framing_unknown_sections_and_components_are_never_repaire
         .any(|entry| entry["code"] == "unknown_section"));
     check_raw(&result, &unknown);
     let component = tmp.write("component.wasm", b"\0asm\x0d\0\x01\0");
-    let rejected = invoke(&["inspect", &component, "--json"]);
-    assert!(!rejected.status.success());
-    assert!(String::from_utf8_lossy(&rejected.stderr).contains("Component Model excluded"));
+    let result = inspect(&component, "all-known");
+    assert_eq!(result["function_analysis"]["available"], false);
+    assert_eq!(result["audit"]["validation"], "not_validated");
+    assert!(result["audit"]["format"]
+        .as_str()
+        .unwrap()
+        .contains("component"));
 }

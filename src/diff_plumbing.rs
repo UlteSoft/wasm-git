@@ -27,6 +27,9 @@ struct Options {
     format: crate::DiffFormat,
     #[arg(long)]
     short: bool,
+    /// Focus the detailed audit on selected Wasm sections (repeatable).
+    #[arg(long = "section", conflicts_with_all = ["name_only", "name_status", "quiet", "exit_code"])]
+    sections: Vec<crate::audit::section::Selector>,
     #[arg(long, default_value = "all-known")]
     standard: Standard,
     #[arg(last = true)]
@@ -168,6 +171,8 @@ pub fn run(args: &[String]) -> RepositoryResult<QueryOutput> {
             new_path: "worktree".into(),
             format: options.format,
             short: options.short,
+            compact: false,
+            sections: options.sections,
             repo: None,
             file: None,
             standard: options.standard,

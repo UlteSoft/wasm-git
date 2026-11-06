@@ -7,9 +7,9 @@
 //! Mutations and consistent snapshots use `.uwgit/write.lock`; a crashed writer's
 //! lock requires manual inspection and removal before another writer proceeds.
 //!
-//! The object format has no signatures or pack compression. Explicit GC
-//! preserves recovery roots and only prunes after a verified full-store plan.
-//! Network authentication belongs to the separate transport layer.
+//! Immutable packs compress original envelopes without changing object IDs.
+//! Explicit GC preserves recovery roots after a verified full-store plan.
+//! Author signatures cover canonical commit payloads independently of transport authentication.
 //! Object verification currently reads the
 //! complete store into memory. Hashes establish integrity, not an author's identity.
 
@@ -24,8 +24,25 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 #[path = "repository_worktrees.rs"]
 mod linked_worktrees;
+#[path = "repository_network.rs"]
+mod network_storage;
+#[path = "repository_partial.rs"]
+mod partial_storage;
+#[path = "repository_pool.rs"]
+mod pool_storage;
+pub use pool_storage::PoolConfig;
+#[path = "repository_signing.rs"]
+mod signing_storage;
+pub use partial_storage::{CloneFilter, PromiseSource, SelectOptions};
+pub use signing_storage::cli as signing_cli;
+pub use signing_storage::{AuthorSignature, SigningIdentity};
 #[path = "repository_notes.rs"]
 mod notes_storage;
+#[path = "repository_pack.rs"]
+mod pack_storage;
+pub use network_storage::FetchOptions;
+#[path = "repository_transfer.rs"]
+mod transfer_storage;
 pub use notes_storage::NotesRequest;
 #[path = "repository_history_tools.rs"]
 mod history_tools;
@@ -51,6 +68,12 @@ use head_storage::{check_pending_head, head_tip};
 mod sequencer_storage;
 pub use sequencer_storage::{
     ReplayCheckpoint, ReplayImages, ReplayJournal, ReplayOptions, ReplayRequest,
+};
+
+#[path = "repository_binary.rs"]
+mod binary_objects;
+use binary_objects::{
+    decode_commit, decode_manifest, decode_tree, encode_commit, encode_manifest, encode_tree,
 };
 
 pub type RepositoryResult<T> = Result<T, String>;
@@ -89,9 +112,7 @@ pub struct PendingOperation {
     pub baseline_index: Option<Vec<u8>>,
     pub legacy_path: Option<String>,
     pub prepared: Option<PendingPrepared>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rebase: Option<PendingRebase>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replay: Option<ReplayJournal>,
 }
 
@@ -218,6 +239,17 @@ pub fn read_file_revisions(
     repo_dir: &Path,
     references: &[&str],
 ) -> RepositoryResult<Vec<RevisionFiles>> {
+    read_selected_file_revisions(repo_dir, references, None)
+}
+
+pub fn read_selected_file_revisions(
+    repo_dir: &Path,
+    references: &[&str],
+    file: Option<&str>,
+) -> RepositoryResult<Vec<RevisionFiles>> {
+    if let Some(path) = file {
+        validate_tree_path(path)?;
+    }
     let repository = Repository::open(repo_dir)?;
     let _lock = repository.lock()?;
     let snapshot = repository.snapshot()?;
@@ -225,7 +257,7 @@ pub fn read_file_revisions(
         .iter()
         .map(|revision| {
             let id = snapshot_revision(&snapshot, revision)?;
-            snapshot_files(&snapshot, &id)
+            snapshot_files_selected(&snapshot, &id, file)
         })
         .collect()
 }
@@ -254,20 +286,15 @@ pub fn read_history(
         require_legacy_commit(commit)?;
         if let std::collections::btree_map::Entry::Vacant(entry) = blobs.entry(commit.wasm.clone())
         {
-            let Some(Object::Wasm(bytes)) = snapshot.objects.get(&commit.wasm) else {
-                return Err(format!(
-                    "history commit {id} has a missing or non-Wasm blob"
-                ));
-            };
-            entry.insert(bytes.clone());
+            entry.insert(partial_storage::blob(&snapshot, &commit.wasm)?.to_vec());
         }
-        pending.extend(commit.parents.iter().cloned());
+        pending.extend(commit.history_parents().iter().cloned());
         commits.insert(
             id.clone(),
             wasm_git::trace::HistoryCommit {
                 id,
                 wasm: commit.wasm.clone(),
-                parents: commit.parents.clone(),
+                parents: commit.history_parents().to_vec(),
                 message: commit.message.clone(),
             },
         );
@@ -323,10 +350,8 @@ pub fn read_file_history(
             Some(commit.wasm.clone())
         };
         let wasm = if let Some(blob) = blob {
-            let Some(Object::Wasm(bytes)) = snapshot.objects.get(&blob) else {
-                return Err("missing history Wasm".into());
-            };
-            blobs.entry(blob.clone()).or_insert_with(|| bytes.clone());
+            let bytes = partial_storage::blob(&snapshot, &blob)?;
+            blobs.entry(blob.clone()).or_insert_with(|| bytes.to_vec());
             blob
         } else {
             if id == tip {
@@ -335,13 +360,13 @@ pub fn read_file_history(
             absent.insert(id.clone());
             String::new()
         };
-        pending.extend(commit.parents.iter().cloned());
+        pending.extend(commit.history_parents().iter().cloned());
         commits.insert(
             id.clone(),
             wasm_git::trace::HistoryCommit {
                 id,
                 wasm,
-                parents: commit.parents.clone(),
+                parents: commit.history_parents().to_vec(),
                 message: commit.message.clone(),
             },
         );
@@ -358,9 +383,13 @@ pub fn read_file_history(
     })
 }
 
-const FORMAT: &[u8] = b"uwgit-repository-v1\n";
-const OBJECT_MAGIC: &[u8; 8] = b"UWGO\0\0\0\x01";
-const BUNDLE_MAGIC: &[u8; 8] = b"UWGB\0\0\0\x01";
+#[path = "repository_control.rs"]
+mod control;
+use control::{decode_reference, encode_reference};
+
+const FORMAT: &[u8] = b"UWGRPO\0\x02";
+const OBJECT_MAGIC: &[u8; 8] = b"UWGO\0\0\0\x02";
+const BUNDLE_MAGIC: &[u8; 8] = b"UWGB\0\0\0\x02";
 const WASM_HEADER: &[u8; 8] = b"\0asm\x01\0\0\0";
 const OBJECT_HEADER_LENGTH: usize = 17;
 const MAX_UPSTREAM_BYTES: u64 = 1024 * 1024;
@@ -370,7 +399,7 @@ const MAX_BISECT_MARKS: usize = 4096;
 const WASM_KIND: u8 = 1;
 const COMMIT_KIND: u8 = 2;
 const TREE_KIND: u8 = 3;
-const REPOSITORY_USAGE: &str = "repository commands: init <DIR>; commit <DIR> <WASM> -m <MESSAGE>; merge <DIR> <REF_OR_ID> -m <MESSAGE>; merge <DIR> <REF_OR_ID> [-m <MESSAGE>] --ff-only; merge <DIR> <TARGET_ID> -m <MESSAGE> --resolved <WASM> --expect-head <HEAD_ID>; merge <DIR> <TARGET_ID> -m <MESSAGE> --resolved-index --expect-head <HEAD_ID> [--expect-branch <BRANCH>]; merge-base <DIR> <LEFT> <RIGHT>; log <DIR> [REF_OR_ID]; show <DIR> <REF_OR_ID> [--output <NEW_FILE>]; checkout <DIR> <REF_OR_ID> <NEW_FILE>; branch <DIR> [NAME [REF_OR_ID]]; switch <DIR> <BRANCH>; clone <SOURCE_DIR> <NEW_DIR>; bundle <DIR> <NEW_BUNDLE_FILE>; unbundle <DIR> <BUNDLE> <BRANCH>; fsck <DIR>";
+const REPOSITORY_USAGE: &str = "repository commands: init <DIR>; commit <DIR> <WASM> -m <MESSAGE>; merge <DIR> <REF_OR_ID> -m <MESSAGE>; merge <DIR> <REF_OR_ID> [-m <MESSAGE>] --ff-only; merge <DIR> <TARGET_ID> -m <MESSAGE> --resolved <WASM> --expect-head <HEAD_ID>; merge <DIR> <TARGET_ID> -m <MESSAGE> --resolved-index --expect-head <HEAD_ID> [--expect-branch <BRANCH>]; merge-base <DIR> <LEFT> <RIGHT>; log <DIR> [REF_OR_ID]; show <DIR> <REF_OR_ID> [--output <NEW_FILE>]; checkout <DIR> <REF_OR_ID> <NEW_FILE>; branch <DIR> [NAME [REF_OR_ID]]; switch <DIR> <BRANCH>; clone <SOURCE> <NEW_DIR> [--depth N] [--branch NAME] [--filter all|blob:none|blob:limit=N|path:PATH]; bundle <DIR> <NEW_BUNDLE_FILE>; unbundle <DIR> <BUNDLE> <BRANCH>; fsck <DIR>";
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone)]
@@ -380,18 +409,19 @@ pub struct Repository {
     common_metadata: PathBuf,
 }
 
-/// Field order is part of the version-one canonical commit encoding.
+/// In-memory commit view; the native payload has an explicit binary layout.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Commit {
+    /// Local history boundary; original parent IDs remain in `parents`.
+    #[serde(default)]
+    pub shallow: bool,
+    pub signature: Option<AuthorSignature>,
     pub format: u32,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub wasm: String,
     pub parents: Vec<String>,
     pub message: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tree: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legacy_path: Option<String>,
 }
 
@@ -404,6 +434,33 @@ pub struct Tree {
     pub entries: BTreeMap<String, String>,
 }
 
+impl Commit {
+    pub fn history_parents(&self) -> &[String] {
+        if self.shallow {
+            &[]
+        } else {
+            &self.parents
+        }
+    }
+
+    /// Encode the native binary payload. Repository installation additionally
+    /// validates object references and the complete parent graph.
+    pub fn to_bytes(&self) -> RepositoryResult<Vec<u8>> {
+        encode_commit(self)
+    }
+    pub fn from_bytes(bytes: &[u8]) -> RepositoryResult<Self> {
+        decode_commit(bytes)
+    }
+}
+impl Tree {
+    pub fn to_bytes(&self) -> RepositoryResult<Vec<u8>> {
+        encode_tree(self)
+    }
+    pub fn from_bytes(bytes: &[u8]) -> RepositoryResult<Self> {
+        decode_tree(bytes)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CommitInfo {
     pub id: String,
@@ -413,6 +470,8 @@ pub struct CommitInfo {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FsckReport {
+    pub shallow_commits: usize,
+    pub promised_wasm_blobs: usize,
     pub format: u32,
     pub objects: usize,
     pub commits: usize,
@@ -731,21 +790,19 @@ pub struct ManualTreeFileDelta {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Manifest {
+    shallow: BTreeSet<String>,
+    promised: BTreeSet<String>,
     format: u32,
     head: String,
     #[serde(deserialize_with = "deserialize_unique_refs")]
     refs: BTreeMap<String, String>,
-    // Empty tags must retain the byte-exact original version-one encoding.
-    #[serde(
-        default,
-        skip_serializing_if = "BTreeMap::is_empty",
-        deserialize_with = "deserialize_unique_refs"
-    )]
+    #[serde(deserialize_with = "deserialize_unique_refs")]
     tags: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
 enum Object {
+    Promised(std::sync::Arc<partial_storage::PromisedWasm>),
     Wasm(Vec<u8>),
     Commit(Commit),
     Tree(Tree),
@@ -777,6 +834,11 @@ impl Drop for WriteLock {
 }
 
 impl Repository {
+    #[cfg(feature = "server")]
+    pub(crate) fn root_path(&self) -> &Path {
+        &self.root
+    }
+
     pub fn init(root: impl AsRef<Path>) -> RepositoryResult<Self> {
         let root = root.as_ref().to_path_buf();
         fs::create_dir_all(&root).map_err(|e| io_error("create repository directory", &root, e))?;
@@ -788,7 +850,7 @@ impl Repository {
             let path = metadata.join(child);
             fs::create_dir(&path).map_err(|e| io_error("create repository directory", &path, e))?;
         }
-        write_new_file(&metadata.join("HEAD"), b"main\n")?;
+        write_new_file(&metadata.join("HEAD"), &encode_reference("main", false)?)?;
         // Write the format marker last; incomplete initialization cannot be opened.
         write_new_file(&metadata.join("format"), FORMAT)?;
         sync_directory(&metadata)?;
@@ -809,8 +871,8 @@ impl Repository {
             require_directory(&common_metadata.join(child))?;
         }
         require_directory(&metadata.join("tmp"))?;
-        if read_regular(&metadata.join("format"))? != FORMAT
-            || read_regular(&common_metadata.join("format"))? != FORMAT
+        if !pack_storage::supported_format(&read_regular(&metadata.join("format"))?)
+            || !pack_storage::supported_format(&read_regular(&common_metadata.join("format"))?)
         {
             return Err("unsupported or incomplete uwgit repository format".into());
         }
@@ -851,6 +913,8 @@ impl Repository {
         let branch = snapshot.manifest.head;
         let wasm = self.store_object(WASM_KIND, bytes)?;
         let commit = Commit {
+            shallow: false,
+            signature: None,
             format: 1,
             tree: None,
             legacy_path: None,
@@ -1052,6 +1116,8 @@ impl Repository {
                 )?;
                 let wasm = self.store_object(WASM_KIND, &bytes)?;
                 let commit = Commit {
+                    shallow: false,
+                    signature: None,
                     format: 1,
                     tree: None,
                     legacy_path: None,
@@ -1146,6 +1212,8 @@ impl Repository {
             diagnostic_count: audit.diagnostics.len(),
         };
         let commit = Commit {
+            shallow: false,
+            signature: None,
             format: 1,
             tree: None,
             legacy_path: None,
@@ -1349,6 +1417,7 @@ impl Repository {
     /// Dependencies must remain complete after every successful publication,
     /// so an interrupted import can be inspected and retried safely.
     fn install_snapshot_objects(&self, snapshot: &Snapshot) -> RepositoryResult<()> {
+        self.install_partial_state(&snapshot.manifest)?;
         let commits = validated_commit_order(&snapshot.objects)?;
         self.install_tree_objects(&snapshot.encoded, &commits)
     }
@@ -1384,7 +1453,7 @@ impl Repository {
         require_legacy_commit(&info.commit)?;
         let bytes = match self.read_object(&info.commit.wasm)? {
             Object::Wasm(bytes) => bytes,
-            Object::Commit(_) | Object::Tree(_) => {
+            Object::Commit(_) | Object::Tree(_) | Object::Promised(_) => {
                 return Err("commit references a non-Wasm object".into())
             }
         };
@@ -1403,7 +1472,6 @@ impl Repository {
                 None => return Ok(Vec::new()),
             },
         };
-        self.verify_history(&id)?;
         let mut commits = BTreeMap::new();
         let mut pending = vec![id];
         let mut children = BTreeMap::<String, usize>::new();
@@ -1413,7 +1481,7 @@ impl Repository {
             }
             let commit = self.read_commit_id(&id)?;
             children.entry(id.clone()).or_default();
-            for parent in &commit.parents {
+            for parent in commit.history_parents() {
                 *children.entry(parent.clone()).or_default() += 1;
                 pending.push(parent.clone());
             }
@@ -1427,7 +1495,7 @@ impl Repository {
         let mut result = Vec::with_capacity(commits.len());
         while let Some(id) = ready.pop_first() {
             let commit = commits.remove(&id).ok_or("invalid log graph")?;
-            for parent in &commit.parents {
+            for parent in commit.history_parents() {
                 let count = children.get_mut(parent).ok_or("invalid log parent")?;
                 *count -= 1;
                 if *count == 0 {
@@ -1467,7 +1535,7 @@ impl Repository {
         let old = snapshot.manifest.tip().cloned();
         self.assert_branch_available(name)?;
         self.register_selected_branch(name)?;
-        self.atomic_write(&self.metadata.join("HEAD"), format!("{name}\n").as_bytes())?;
+        self.atomic_write(&self.metadata.join("HEAD"), &encode_reference(name, false)?)?;
         self.record_reflog(
             "HEAD",
             old.clone(),
@@ -1488,6 +1556,12 @@ impl Repository {
             .filter(|object| matches!(object, Object::Commit(_)))
             .count();
         Ok(FsckReport {
+            shallow_commits: snapshot.manifest.shallow.len(),
+            promised_wasm_blobs: snapshot
+                .objects
+                .values()
+                .filter(|o| matches!(o, Object::Promised(_)))
+                .count(),
             format: 1,
             objects: snapshot.objects.len(),
             commits,
@@ -1567,19 +1641,95 @@ impl Repository {
         source: impl AsRef<Path>,
         destination: impl AsRef<Path>,
     ) -> RepositoryResult<Self> {
+        Self::clone_local_mode(source, destination, false)
+    }
+
+    /// Independent references and recovery metadata, with shared immutable
+    /// object inodes. Unlike alternates, source pruning cannot break the fork.
+    pub fn fork_local(
+        source: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+    ) -> RepositoryResult<Self> {
+        Self::clone_local_mode(source, destination, true)
+    }
+
+    fn clone_local_mode(
+        source: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        require_shared: bool,
+    ) -> RepositoryResult<Self> {
         let source = Self::open(source)?;
-        let snapshot = {
-            let _lock = source.lock()?;
-            source.snapshot()?
-        };
+        let _source_lock = source.lock()?;
+        // The writer guard prevents attach from changing this decision. The
+        // pool gate is nonblocking, so an in-flight release fails this fork
+        // before creating its destination instead of inverting lock waits.
+        let _pool_lock = source
+            .common_metadata
+            .join("pool.bin")
+            .exists()
+            .then(|| source.pool_lock())
+            .transpose()?;
+        let snapshot = source.snapshot()?;
         let destination = destination.as_ref();
+        let parent = destination
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let parent = fs::canonicalize(parent)
+            .map_err(|e| io_error("resolve clone destination parent", parent, e))?;
+        let common = fs::canonicalize(&source.common_metadata).map_err(|e| e.to_string())?;
+        let local = fs::canonicalize(&source.metadata).map_err(|e| e.to_string())?;
+        if parent.starts_with(common) || parent.starts_with(local) {
+            return Err("clone/fork destination must be outside repository metadata".into());
+        }
         // Requiring a new directory avoids overlaying any existing user files.
         fs::create_dir(destination)
             .map_err(|e| io_error("create clone destination", destination, e))?;
         let repo = Self::init(destination)?;
+        if require_shared
+            && fs::read_dir(source.common_metadata.join("objects"))
+                .map_err(|e| e.to_string())?
+                .next()
+                .is_some()
+        {
+            // Freeze loose history into an immutable shared base before forking.
+            // Otherwise each fork's first GC would independently recompress it.
+            pack_storage::repack(
+                &source,
+                &snapshot,
+                &snapshot.encoded.keys().cloned().collect(),
+            )?;
+        }
         {
             let _lock = repo.lock()?;
-            repo.install_snapshot_objects(&snapshot)?;
+            let source_partial = source.partial_state()?;
+            if !source_partial.shallow.is_empty() || !source_partial.promised.is_empty() {
+                repo.atomic_write(
+                    &repo.common_metadata.join("partial.bin"),
+                    &crate::binary::encode(&source_partial)?,
+                )?;
+            }
+            let packed = pack_storage::link_packs(&source, &repo, require_shared)?;
+            let commits = validated_commit_order(&snapshot.objects)?;
+            install_dependency_ordered(&snapshot.encoded, &commits, |id, bytes| {
+                if packed.contains(id) {
+                    return Ok(());
+                }
+                let from = source.common_metadata.join("objects").join(id);
+                let to = repo.common_metadata.join("objects").join(id);
+                match fs::hard_link(&from, &to) {
+                    Ok(()) => {
+                        if read_regular(&to)? != bytes {
+                            return Err("source object changed during fork".into());
+                        }
+                        sync_directory(&repo.common_metadata.join("objects"))
+                    }
+                    Err(error) if require_shared => Err(format!(
+                        "fork requires shared object storage on one filesystem: {error}"
+                    )),
+                    Err(_) => repo.install_encoded_object(id, bytes),
+                }
+            })?;
             for (name, id) in &snapshot.manifest.refs {
                 repo.write_ref(name, id)?;
             }
@@ -1589,7 +1739,7 @@ impl Repository {
             if snapshot.manifest.head != "main" {
                 repo.atomic_write(
                     &repo.metadata.join("HEAD"),
-                    format!("{}\n", snapshot.manifest.head).as_bytes(),
+                    &encode_reference(&snapshot.manifest.head, false)?,
                 )?;
                 repo.record_reflog(
                     "HEAD",
@@ -1604,6 +1754,9 @@ impl Repository {
                 )?;
             }
         }
+        if source.common_metadata.join("pool.bin").exists() {
+            crate::remote::fork_pool_pins(&source, &repo)?;
+        }
         Ok(repo)
     }
 
@@ -1617,7 +1770,7 @@ impl Repository {
     pub fn bisect(&self, request: BisectRequest) -> RepositoryResult<BisectReport> {
         let _lock = self.lock()?;
         if matches!(&request, BisectRequest::Reset) {
-            let path = self.metadata.join("bisect.json");
+            let path = self.metadata.join("bisect.bin");
             let changed = match fs::symlink_metadata(&path) {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
                 Err(error) => return Err(io_error("inspect bisect metadata", &path, error)),
@@ -1773,16 +1926,15 @@ impl Repository {
                 let selected = snapshot_query_tree(&snapshot, revision)?;
                 let mut files = BTreeMap::new();
                 for entry in selected.entries {
-                    let Some(Object::Wasm(bytes)) = snapshot.objects.get(&entry.object_id) else {
-                        return Err(format!("missing archive Wasm object {}", entry.object_id));
-                    };
-                    files.insert(entry.path, bytes.clone());
+                    files.insert(
+                        entry.path,
+                        partial_storage::blob(&snapshot, &entry.object_id)?.to_vec(),
+                    );
                 }
                 let legacy = selected
                     .legacy
-                    .map(|object| match snapshot.objects.get(&object.object_id) {
-                        Some(Object::Wasm(bytes)) => Ok(bytes.clone()),
-                        _ => Err("missing archive legacy Wasm object".to_owned()),
+                    .map(|object| {
+                        partial_storage::blob(&snapshot, &object.object_id).map(<[u8]>::to_vec)
                     })
                     .transpose()?;
                 Ok(ArchiveSnapshot {
@@ -2765,7 +2917,7 @@ impl Repository {
         }
         if !copy && snapshot.manifest.head == old {
             self.register_selected_branch(new)?;
-            self.atomic_write(&self.metadata.join("HEAD"), format!("{new}\n").as_bytes())
+            self.atomic_write(&self.metadata.join("HEAD"), &encode_reference(new,false)?)
                 .map_err(|error| format!("rename branch {old} -> {new}: replacement branch and any upstream move were published, but HEAD publication is uncertain; the original branch has not been removed: {error}"))?;
             self.record_reflog(
                 "HEAD",
@@ -2879,6 +3031,8 @@ impl Repository {
         }
         let wasm = self.store_object(WASM_KIND, bytes)?;
         let commit = Commit {
+            shallow: false,
+            signature: None,
             format: 1,
             tree: None,
             legacy_path: None,
@@ -2939,6 +3093,8 @@ impl Repository {
             let wasm = object_id(&blob);
             encoded.insert(wasm.clone(), blob);
             let commit = Commit {
+                shallow: false,
+                signature: None,
                 format: 1,
                 tree: None,
                 legacy_path: None,
@@ -3191,7 +3347,7 @@ impl Repository {
             if snapshot.manifest.head != "main" {
                 repo.atomic_write(
                     &repo.metadata.join("HEAD"),
-                    format!("{}\n", snapshot.manifest.head).as_bytes(),
+                    &encode_reference(&snapshot.manifest.head, false)?,
                 )?;
                 repo.record_reflog(
                     "HEAD",
@@ -3237,7 +3393,14 @@ impl Repository {
                 }
             })?;
         let mut lock = WriteLock { path, _file: file };
-        writeln!(lock._file, "{}", std::process::id())
+        lock._file
+            .write_all(
+                &[
+                    b"UWGLCK\0\x01".as_slice(),
+                    &std::process::id().to_be_bytes(),
+                ]
+                .concat(),
+            )
             .map_err(|e| format!("write repository lock: {e}"))?;
         lock._file
             .sync_all()
@@ -3251,17 +3414,20 @@ impl Repository {
         let _lock = self.lock()?;
         let snapshot = self.snapshot()?;
         let kind = match snapshot.objects.get(id) {
-            Some(Object::Wasm(_)) => "wasm",
+            Some(Object::Wasm(_) | Object::Promised(_)) => "wasm",
             Some(Object::Commit(_)) => "commit",
             Some(Object::Tree(_)) => "tree",
             None => return Err(format!("unknown object: {id}")),
         };
+        if kind == "wasm" {
+            return Ok((kind.into(), partial_storage::blob(&snapshot, id)?.to_vec()));
+        }
         let encoded = snapshot.encoded.get(id).ok_or("missing encoded object")?;
         Ok((kind.into(), encoded[OBJECT_HEADER_LENGTH..].to_vec()))
     }
 
     fn read_bisect(&self) -> RepositoryResult<Option<BisectState>> {
-        let path = self.metadata.join("bisect.json");
+        let path = self.metadata.join("bisect.bin");
         let metadata = match fs::symlink_metadata(&path) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(io_error("inspect bisect metadata", &path, error)),
@@ -3289,7 +3455,7 @@ impl Repository {
         if bytes.len() as u64 > MAX_BISECT_BYTES {
             return Err("bisect journal exceeds the 1 MiB encoded limit".into());
         }
-        let state: BisectState = serde_json::from_slice(&bytes)
+        let state: BisectState = crate::binary::decode(&bytes)
             .map_err(|error| format!("invalid bisect journal: {error}"))?;
         if encode_bisect(&state)? != bytes {
             return Err("non-canonical or duplicate-key bisect journal".into());
@@ -3301,12 +3467,12 @@ impl Repository {
         if bytes.len() as u64 > MAX_BISECT_BYTES {
             return Err("bisect journal exceeds the 1 MiB encoded limit".into());
         }
-        self.atomic_write(&self.metadata.join("bisect.json"), bytes)
+        self.atomic_write(&self.metadata.join("bisect.bin"), bytes)
             .map_err(|error| format!("bisect metadata may already have been published: {error}; inspect bisect status before retrying"))
     }
 
     fn read_pending(&self) -> RepositoryResult<Option<PendingOperation>> {
-        let path = self.metadata.join("pending.json");
+        let path = self.metadata.join("pending.bin");
         let metadata = match fs::symlink_metadata(&path) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(io_error("inspect pending operation", &path, error)),
@@ -3334,7 +3500,7 @@ impl Repository {
         if bytes.len() as u64 > MAX_PENDING_BYTES {
             return Err("pending operation exceeds the 64 MiB encoded journal limit".into());
         }
-        let pending: PendingOperation = serde_json::from_slice(&bytes)
+        let pending: PendingOperation = crate::binary::decode(&bytes)
             .map_err(|error| format!("invalid pending operation: {error}"))?;
         if encode_pending(&pending)? != bytes {
             return Err("non-canonical or duplicate-key pending operation".into());
@@ -3360,7 +3526,7 @@ impl Repository {
     }
 
     fn publish_pending(&self, bytes: &[u8], operation: &str) -> RepositoryResult<()> {
-        self.atomic_write(&self.metadata.join("pending.json"), bytes)
+        self.atomic_write(&self.metadata.join("pending.bin"), bytes)
             .map_err(|error| format!("{operation}: pending metadata may already have been published: {error}; inspect status before retrying"))
     }
 
@@ -3368,7 +3534,7 @@ impl Repository {
         if self.read_pending()?.as_ref() != Some(expected) {
             return Err("pending operation changed before removal; no state removed".into());
         }
-        let path = self.metadata.join("pending.json");
+        let path = self.metadata.join("pending.bin");
         fs::remove_file(&path)
             .map_err(|error| io_error("remove pending operation", &path, error))?;
         sync_directory(&self.metadata)
@@ -3416,7 +3582,7 @@ impl Repository {
         &self,
         branches: &BTreeMap<String, String>,
     ) -> RepositoryResult<BTreeMap<String, Upstream>> {
-        let path = self.common_metadata.join("upstreams.json");
+        let path = self.common_metadata.join("upstreams.bin");
         let metadata = match fs::symlink_metadata(&path) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(BTreeMap::new());
@@ -3455,15 +3621,15 @@ impl Repository {
     /// A failed atomic write can have reached rename or directory sync. Never
     /// describe such an I/O outcome as a rolled-back association change.
     fn publish_upstreams(&self, bytes: &[u8], operation: &str) -> RepositoryResult<()> {
-        self.atomic_write(&self.common_metadata.join("upstreams.json"), bytes)
-            .map_err(|error| format!("{operation}: upstream metadata publication may have occurred: {error}; inspect .uwgit/upstreams.json before retrying"))
+        self.atomic_write(&self.common_metadata.join("upstreams.bin"), bytes)
+            .map_err(|error| format!("{operation}: upstream metadata publication may have occurred: {error}; inspect .uwgit/upstreams.bin before retrying"))
     }
 
     fn read_tracking(
         &self,
         objects: &BTreeMap<String, Object>,
     ) -> RepositoryResult<BTreeMap<String, String>> {
-        #[derive(Deserialize)]
+        #[derive(Serialize, Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Tracking {
             version: u32,
@@ -3484,11 +3650,11 @@ impl Repository {
                 .file_name()
                 .into_string()
                 .map_err(|_| "non-UTF-8 remote tracking filename".to_string())?;
-            let Some(name) = filename.strip_suffix(".tracking.json") else {
+            let Some(name) = filename.strip_suffix(".tracking.bin") else {
                 continue;
             };
             validate_ref_name(name)?;
-            let record: Tracking = serde_json::from_slice(&read_regular(&entry.path())?)
+            let record: Tracking = crate::binary::decode(&read_regular(&entry.path())?)
                 .map_err(|e| format!("invalid remote tracking {name}: {e}"))?;
             if record.version != 1
                 || record.remote != name
@@ -3630,7 +3796,7 @@ impl Repository {
         if old.as_deref() == Some(id) {
             return Ok(());
         }
-        self.atomic_write(&path, format!("{id}\n").as_bytes())?;
+        self.atomic_write(&path, &encode_reference(id, false)?)?;
         let reference = format!(
             "refs/{}/{name}",
             if namespace == "tags" { "tags" } else { "heads" }
@@ -3740,12 +3906,7 @@ impl Repository {
                 new,
                 operation: operation.into(),
             });
-            let mut bytes = Vec::new();
-            for entry in entries {
-                serde_json::to_writer(&mut bytes, &entry)
-                    .map_err(|e| format!("encode reflog entry: {e}"))?;
-                bytes.push(b'\n');
-            }
+            let bytes = crate::binary::encode(&entries)?;
             self.atomic_write(&self.common_metadata.join("reflog"), &bytes)
         })();
         result.map_err(|error| format!("reference {reference} was published, but reflog recording failed: {error}; inspect the ref before retrying"))
@@ -3796,6 +3957,12 @@ impl Repository {
         require_id(id)?;
         decode_object(id, bytes)?;
         let destination = self.common_metadata.join("objects").join(id);
+        if let Some(packed) = pack_storage::read_object(self, id)? {
+            if packed != bytes {
+                return Err(format!("packed object collision or corruption at {id}"));
+            }
+            return Ok(());
+        }
         match fs::symlink_metadata(&destination) {
             Ok(_) => {
                 if read_regular(&destination)? != bytes {
@@ -3828,39 +3995,24 @@ impl Repository {
 
     fn read_object(&self, id: &str) -> RepositoryResult<Object> {
         require_id(id)?;
-        let bytes = read_regular(&self.common_metadata.join("objects").join(id))?;
-        decode_object(id, &bytes)
+        let bytes = self.read_encoded_object(id)?;
+        let mut object = decode_object(id, &bytes)?;
+        if let Object::Commit(commit) = &mut object {
+            commit.shallow = self.partial_state()?.shallow.contains(id);
+        }
+        Ok(object)
     }
 
     fn read_commit_id(&self, id: &str) -> RepositoryResult<Commit> {
         match self.read_object(id)? {
-            Object::Commit(commit) => Ok(commit),
-            Object::Wasm(_) | Object::Tree(_) => Err(format!("revision {id} is not a commit")),
-        }
-    }
-
-    fn verify_history(&self, tip: &str) -> RepositoryResult<()> {
-        let mut pending = vec![tip.to_owned()];
-        let mut objects = BTreeMap::new();
-        while let Some(id) = pending.pop() {
-            if objects.contains_key(&id) {
-                continue;
+            Object::Commit(mut commit) => {
+                commit.shallow = self.partial_state()?.shallow.contains(id);
+                Ok(commit)
             }
-            let object = self.read_object(&id)?;
-            if let Object::Commit(commit) = &object {
-                pending.push(commit.tree.as_ref().unwrap_or(&commit.wasm).clone());
-                pending.extend(commit.parents.iter().cloned());
+            Object::Wasm(_) | Object::Tree(_) | Object::Promised(_) => {
+                Err(format!("revision {id} is not a commit"))
             }
-            if let Object::Tree(tree) = &object {
-                pending.extend(tree.entries.values().cloned());
-            }
-            objects.insert(id, object);
         }
-        validate_object_graph(&objects)?;
-        if !matches!(objects.get(tip), Some(Object::Commit(_))) {
-            return Err(format!("revision {tip} is not a commit"));
-        }
-        Ok(())
     }
 
     fn snapshot(&self) -> RepositoryResult<Snapshot> {
@@ -3878,6 +4030,8 @@ impl Repository {
             self.read_named_refs("tags", true)?
         };
         let manifest = Manifest {
+            shallow: BTreeSet::new(),
+            promised: BTreeSet::new(),
             format: if tags.is_empty() { 1 } else { 2 },
             head: if let Some((identity, _)) = head_image {
                 identity.into()
@@ -3891,9 +4045,17 @@ impl Repository {
             },
             tags,
         };
-        let mut encoded = BTreeMap::new();
+        let mut encoded = pack_storage::load_all(self)?;
         let mut objects = BTreeMap::new();
+        let packed = crate::parallel::map_owned(encoded.iter().collect(), |(id, bytes)| {
+            decode_object(id, bytes).map(|object| (id.clone(), object))
+        });
+        for item in packed {
+            let (id, object) = item?;
+            objects.insert(id, object);
+        }
         let path = self.common_metadata.join("objects");
+        let mut loose = Vec::new();
         for entry in fs::read_dir(&path).map_err(|e| io_error("list objects", &path, e))? {
             let entry = entry.map_err(|e| format!("read object entry: {e}"))?;
             let id = entry
@@ -3901,15 +4063,35 @@ impl Repository {
                 .into_string()
                 .map_err(|_| "non-UTF-8 object filename".to_string())?;
             require_id(&id)?;
-            let bytes = read_regular(&entry.path())?;
-            objects.insert(id.clone(), decode_object(&id, &bytes)?);
+            loose.push((id, entry.path()));
+        }
+        let decoded = crate::parallel::map_owned(loose, |(id, path)| {
+            let bytes = read_regular(&path)?;
+            let object = decode_object(&id, &bytes)?;
+            Ok::<_, String>((id, bytes, object))
+        });
+        for item in decoded {
+            let (id, bytes, object) = item?;
+            objects.insert(id.clone(), object);
+            if encoded.get(&id).is_some_and(|previous| previous != &bytes) {
+                return Err("loose/packed object collision".into());
+            }
             encoded.insert(id, bytes);
         }
         let mut manifest = manifest;
         manifest.format = manifest_format(&manifest.head, &manifest.tags, &objects);
+        let partial = self.partial_state()?;
+        manifest.shallow = partial.shallow;
+        manifest.promised = partial.promised;
+        partial_storage::apply(&manifest, &mut objects, Some(self))?;
         validate_snapshot(&manifest, &objects)?;
         let reflog = if let Some(state) = state {
-            decode_reflog(state.reflog.as_deref().unwrap_or_default())?
+            state
+                .reflog
+                .as_deref()
+                .map(decode_reflog)
+                .transpose()?
+                .unwrap_or_default()
         } else {
             self.read_reflog()?
         };
@@ -3950,10 +4132,7 @@ impl Repository {
 }
 
 fn validate_wasm_header(bytes: &[u8]) -> RepositoryResult<()> {
-    if !bytes.starts_with(WASM_HEADER) {
-        return Err("expected the WebAssembly core-module magic and version-1 header; component binaries are outside this repository format".into());
-    }
-    Ok(())
+    wasm_git::audit::section::check_header(bytes)
 }
 
 fn object_id(bytes: &[u8]) -> String {
@@ -4080,9 +4259,8 @@ fn encode_pending(pending: &PendingOperation) -> RepositoryResult<Vec<u8>> {
     {
         return Err("pending baseline index exceeds the 64 MiB encoded journal limit".into());
     }
-    let mut bytes = serde_json::to_vec(pending)
+    let bytes = crate::binary::encode(pending)
         .map_err(|error| format!("encode pending operation: {error}"))?;
-    bytes.push(b'\n');
     if bytes.len() as u64 > MAX_PENDING_BYTES {
         return Err("pending operation exceeds the 64 MiB encoded journal limit".into());
     }
@@ -4121,11 +4299,11 @@ fn pending_identity(
     if !matches!(operation, "cherry-pick" | "revert") {
         return Err("unsupported pending operation kind".into());
     }
-    let parent = match (selected.parents.len(), mainline) {
+    let parent = match (selected.history_parents().len(), mainline) {
         (0, None) => None,
-        (1, None) => selected.parents.first().cloned(),
+        (1, None) => selected.history_parents().first().cloned(),
         (count, Some(parent)) if parent > 0 && parent <= count => {
-            selected.parents.get(parent - 1).cloned()
+            selected.history_parents().get(parent - 1).cloned()
         }
         (_, Some(_)) => return Err("pending mainline parent number is out of range".into()),
         _ => return Err("pending replay of a merge commit requires --mainline N".into()),
@@ -4260,10 +4438,10 @@ fn rebase_source_parent(snapshot: &Snapshot, source: &str) -> RepositoryResult<S
     let Some(Object::Commit(commit)) = snapshot.objects.get(source) else {
         return Err("rebase source is not an exact stored commit".into());
     };
-    if commit.parents.len() != 1 {
+    if commit.history_parents().len() != 1 {
         return Err("linear rebase cannot replay a root or merge commit".into());
     }
-    Ok(commit.parents[0].clone())
+    Ok(commit.history_parents()[0].clone())
 }
 
 fn rebase_queue(
@@ -4601,7 +4779,7 @@ fn rebase_pending_report(
         .prepared
         .as_ref()
         .map(|prepared| match snapshot.objects.get(&prepared.commit) {
-            Some(Object::Commit(commit)) => Ok(commit.parents.clone()),
+            Some(Object::Commit(commit)) => Ok(commit.history_parents().to_vec()),
             _ => Err("final rebase result is not a stored commit".to_owned()),
         })
         .transpose()?;
@@ -4664,8 +4842,8 @@ fn decode_upstreams(
     if bytes.len() as u64 > MAX_UPSTREAM_BYTES {
         return Err("upstream configuration exceeds the 1 MiB limit".into());
     }
-    let record: UpstreamFile = serde_json::from_slice(bytes)
-        .map_err(|e| format!("invalid upstream configuration: {e}"))?;
+    let record: UpstreamFile =
+        crate::binary::decode(bytes).map_err(|e| format!("invalid upstream configuration: {e}"))?;
     if record.version != 1 {
         return Err("unsupported upstream configuration version".into());
     }
@@ -4683,20 +4861,12 @@ fn decode_upstreams(
 }
 
 fn decode_reflog(bytes: &[u8]) -> RepositoryResult<Vec<ReflogEntry>> {
-    if bytes.is_empty() {
-        return Ok(Vec::new());
+    let entries: Vec<ReflogEntry> = crate::binary::decode(bytes)?;
+    if crate::binary::encode(&entries)? != bytes {
+        return Err("noncanonical binary reflog".into());
     }
-    let body = bytes
-        .strip_suffix(b"\n")
-        .ok_or("reflog has an incomplete trailing entry")?;
-    let mut entries = Vec::new();
-    for line in body.split(|byte| *byte == b'\n') {
-        let entry: ReflogEntry =
-            serde_json::from_slice(line).map_err(|e| format!("invalid reflog entry: {e}"))?;
-        if serde_json::to_vec(&entry).map_err(|e| format!("encode reflog entry: {e}"))? != line {
-            return Err("non-canonical or duplicate-key reflog entry".into());
-        }
-        let sequence = u64::try_from(entries.len())
+    for (position, entry) in entries.iter().enumerate() {
+        let sequence = u64::try_from(position)
             .ok()
             .and_then(|n| n.checked_add(1))
             .ok_or("reflog sequence overflow")?;
@@ -4714,7 +4884,6 @@ fn decode_reflog(bytes: &[u8]) -> RepositoryResult<Vec<ReflogEntry>> {
         for id in entry.old.iter().chain(entry.new.iter()) {
             require_id(id)?;
         }
-        entries.push(entry);
     }
     Ok(entries)
 }
@@ -4725,7 +4894,7 @@ fn encode_upstreams(branches: &BTreeMap<String, Upstream>) -> RepositoryResult<V
         validate_upstream_remote_name(&upstream.remote)?;
         validate_ref_name(&upstream.branch)?;
     }
-    let bytes = serde_json::to_vec(&UpstreamFile {
+    let bytes = crate::binary::encode(&UpstreamFile {
         version: 1,
         branches: branches.clone(),
     })
@@ -4758,16 +4927,7 @@ pub(crate) fn validate_ref_name(name: &str) -> RepositoryResult<()> {
 }
 
 fn parse_ref_file(bytes: &[u8], object: bool) -> RepositoryResult<String> {
-    let text = std::str::from_utf8(bytes).map_err(|_| "non-UTF-8 reference".to_string())?;
-    let value = text
-        .strip_suffix('\n')
-        .ok_or("reference must end with exactly one newline")?;
-    if object {
-        require_id(value)?;
-    } else {
-        validate_head_identity(value)?;
-    }
-    Ok(value.to_owned())
+    decode_reference(bytes, object)
 }
 
 /// Validate a portable repository-relative UTF-8 path. File/directory prefix
@@ -4953,9 +5113,11 @@ fn prepare_tree_commit(
         );
     }
     let tree = Tree { format: 1, entries };
-    let payload = serde_json::to_vec(&tree).map_err(|e| format!("encode tree: {e}"))?;
+    let payload = encode_tree(&tree).map_err(|e| format!("encode tree: {e}"))?;
     let tree = stage_tree_object(TREE_KIND, &payload, current, staged)?;
     let commit = Commit {
+        shallow: false,
+        signature: None,
         format: 2,
         wasm: String::new(),
         parents: parents.to_vec(),
@@ -5188,6 +5350,14 @@ fn merge_file_revisions(
 }
 
 fn snapshot_files(snapshot: &Snapshot, id: &str) -> RepositoryResult<RevisionFiles> {
+    snapshot_files_selected(snapshot, id, None)
+}
+
+fn snapshot_files_selected(
+    snapshot: &Snapshot,
+    id: &str,
+    selected: Option<&str>,
+) -> RepositoryResult<RevisionFiles> {
     let Some(Object::Commit(commit)) = snapshot.objects.get(id) else {
         return Err(format!("missing commit {id}"));
     };
@@ -5209,11 +5379,12 @@ fn snapshot_files(snapshot: &Snapshot, id: &str) -> RepositoryResult<RevisionFil
     let files = tree
         .entries
         .iter()
+        .filter(|(path, _)| selected.is_none_or(|selected| selected == path.as_str()))
         .map(|(path, blob)| {
-            let Some(Object::Wasm(bytes)) = snapshot.objects.get(blob) else {
-                return Err(format!("missing Wasm for tree path {path:?}"));
-            };
-            Ok((path.clone(), bytes.clone()))
+            Ok((
+                path.clone(),
+                partial_storage::blob(snapshot, blob)?.to_vec(),
+            ))
         })
         .collect::<RepositoryResult<BTreeMap<_, _>>>()?;
     Ok(RevisionFiles {
@@ -5228,7 +5399,7 @@ fn snapshot_query_tree(snapshot: &Snapshot, revision: &str) -> RepositoryResult<
     let id = if valid_id(revision) {
         match snapshot.objects.get(revision) {
                 Some(Object::Tree(_)) | Some(Object::Commit(_)) => revision.to_owned(),
-                Some(Object::Wasm(_)) => return Err("a Wasm blob has no named tree; query a commit revision or a complete tree object ID".into()),
+                Some(Object::Wasm(_) | Object::Promised(_)) => return Err("a Wasm blob has no named tree; query a commit revision or a complete tree object ID".into()),
                 None => return Err(format!("unknown object: {revision}")),
             }
     } else {
@@ -5278,13 +5449,18 @@ fn query_object(snapshot: &Snapshot, id: &str) -> RepositoryResult<QueryObject> 
     let kind = match snapshot.objects.get(id) {
         Some(Object::Commit(_)) => "commit",
         Some(Object::Tree(_)) => "tree",
-        Some(Object::Wasm(_)) => "wasm",
+        Some(Object::Wasm(_) | Object::Promised(_)) => "wasm",
         None => return Err(format!("unknown stored object: {id}")),
     };
-    let encoded = snapshot
-        .encoded
-        .get(id)
-        .ok_or("stored object has no encoded bytes")?;
+    let materialized;
+    let encoded = if let Some(bytes) = snapshot.encoded.get(id) {
+        bytes
+    } else if kind == "wasm" {
+        materialized = encode_object(WASM_KIND, partial_storage::blob(snapshot, id)?)?;
+        &materialized
+    } else {
+        return Err("stored object has no encoded bytes".into());
+    };
     let payload_len = encoded
         .len()
         .checked_sub(OBJECT_HEADER_LENGTH)
@@ -5328,10 +5504,6 @@ fn add_query_bytes(total: &mut u64, value: u64) -> RepositoryResult<()> {
     Ok(())
 }
 
-fn encode_commit(commit: &Commit) -> RepositoryResult<Vec<u8>> {
-    serde_json::to_vec(commit).map_err(|e| format!("encode commit: {e}"))
-}
-
 fn encode_object(kind: u8, payload: &[u8]) -> RepositoryResult<Vec<u8>> {
     if ![WASM_KIND, COMMIT_KIND, TREE_KIND].contains(&kind) {
         return Err(format!("unsupported object type {kind}"));
@@ -5345,7 +5517,7 @@ fn encode_object(kind: u8, payload: &[u8]) -> RepositoryResult<Vec<u8>> {
     Ok(bytes)
 }
 
-fn decode_object(id: &str, bytes: &[u8]) -> RepositoryResult<Object> {
+fn verified_object_payload<'a>(id: &str, bytes: &'a [u8]) -> RepositoryResult<(u8, &'a [u8])> {
     require_id(id)?;
     if object_id(bytes) != id {
         return Err(format!("object hash mismatch: {id}"));
@@ -5362,14 +5534,19 @@ fn decode_object(id: &str, bytes: &[u8]) -> RepositoryResult<Object> {
     if usize::try_from(length).ok() != Some(payload.len()) {
         return Err(format!("object payload length mismatch: {id}"));
     }
-    match bytes[8] {
+    Ok((bytes[8], payload))
+}
+
+fn decode_object(id: &str, bytes: &[u8]) -> RepositoryResult<Object> {
+    let (kind, payload) = verified_object_payload(id, bytes)?;
+    match kind {
         WASM_KIND => {
             validate_wasm_header(payload)?;
             Ok(Object::Wasm(payload.to_vec()))
         }
         COMMIT_KIND => {
             let commit: Commit =
-                serde_json::from_slice(payload).map_err(|e| format!("invalid commit {id}: {e}"))?;
+                decode_commit(payload).map_err(|e| format!("invalid commit {id}: {e}"))?;
             if encode_commit(&commit)? != payload {
                 return Err(format!("non-canonical commit: {id}"));
             }
@@ -5386,19 +5563,19 @@ fn decode_object(id: &str, bytes: &[u8]) -> RepositoryResult<Object> {
                 _ => return Err(format!("unsupported or inconsistent commit format: {id}")),
             }
             let mut parents = BTreeSet::new();
-            for parent in &commit.parents {
+            for parent in commit.history_parents() {
                 require_id(parent)?;
                 if !parents.insert(parent) {
                     return Err(format!("duplicate parent in commit {id}"));
                 }
             }
+            signing_storage::validate(&commit)?;
             Ok(Object::Commit(commit))
         }
         TREE_KIND => {
-            let tree: Tree =
-                serde_json::from_slice(payload).map_err(|e| format!("invalid tree {id}: {e}"))?;
+            let tree: Tree = decode_tree(payload).map_err(|e| format!("invalid tree {id}: {e}"))?;
             if tree.format != 1
-                || serde_json::to_vec(&tree).map_err(|e| format!("encode tree: {e}"))? != payload
+                || encode_tree(&tree).map_err(|e| format!("encode tree: {e}"))? != payload
             {
                 return Err(format!("unsupported or non-canonical tree: {id}"));
             }
@@ -5427,14 +5604,17 @@ fn validated_commit_order(objects: &BTreeMap<String, Object>) -> RepositoryResul
                         "commit {id} has a missing or non-tree object {tree}"
                     ));
                 }
-            } else if !matches!(objects.get(&commit.wasm), Some(Object::Wasm(_))) {
+            } else if !matches!(
+                objects.get(&commit.wasm),
+                Some(Object::Wasm(_) | Object::Promised(_))
+            ) {
                 return Err(format!(
                     "commit {id} has a missing or non-Wasm blob {}",
                     commit.wasm
                 ));
             }
-            remaining.insert(id.clone(), commit.parents.len());
-            for parent in &commit.parents {
+            remaining.insert(id.clone(), commit.history_parents().len());
+            for parent in commit.history_parents() {
                 if !matches!(objects.get(parent), Some(Object::Commit(_))) {
                     return Err(format!(
                         "commit {id} has a missing or non-commit parent {parent}"
@@ -5465,7 +5645,10 @@ fn validated_commit_order(objects: &BTreeMap<String, Object>) -> RepositoryResul
         }
         if let Object::Tree(tree) = object {
             for (path, blob) in &tree.entries {
-                if !matches!(objects.get(blob), Some(Object::Wasm(_))) {
+                if !matches!(
+                    objects.get(blob),
+                    Some(Object::Wasm(_) | Object::Promised(_))
+                ) {
                     return Err(format!(
                         "tree {id} path {path:?} has a missing or non-Wasm blob {blob}"
                     ));
@@ -5557,10 +5740,10 @@ fn reachable_from_roots(
         match objects.get(&id) {
             Some(Object::Commit(commit)) => {
                 pending.push(commit.tree.as_ref().unwrap_or(&commit.wasm).clone());
-                pending.extend(commit.parents.iter().cloned());
+                pending.extend(commit.history_parents().iter().cloned());
             }
             Some(Object::Tree(tree)) => pending.extend(tree.entries.values().cloned()),
-            Some(Object::Wasm(_)) => {}
+            Some(Object::Wasm(_) | Object::Promised(_)) => {}
             None => return Err(format!("missing reachable object {id}")),
         }
     }
@@ -5582,7 +5765,9 @@ fn is_ancestor(
             return Ok(true);
         }
         match objects.get(&id) {
-            Some(Object::Commit(commit)) => pending.extend(commit.parents.iter().cloned()),
+            Some(Object::Commit(commit)) => {
+                pending.extend(commit.history_parents().iter().cloned())
+            }
             _ => return Err(format!("missing commit {id} during ancestry check")),
         }
     }
@@ -5658,7 +5843,25 @@ fn check_expected(current: Option<&String>, expected: Option<&str>) -> Repositor
 }
 
 fn check_collisions(current: &Snapshot, incoming: &Snapshot) -> RepositoryResult<()> {
+    for id in &incoming.manifest.promised {
+        if current
+            .objects
+            .get(id)
+            .is_some_and(|o| !matches!(o, Object::Wasm(_) | Object::Promised(_)))
+        {
+            return Err(format!(
+                "promised Wasm type conflicts with stored object {id}"
+            ));
+        }
+    }
     for (id, encoded) in &incoming.encoded {
+        if matches!(current.objects.get(id), Some(Object::Promised(_)))
+            && !matches!(incoming.objects.get(id), Some(Object::Wasm(_)))
+        {
+            return Err(format!(
+                "received object conflicts with promised Wasm type {id}"
+            ));
+        }
         if current
             .encoded
             .get(id)
@@ -5712,7 +5915,7 @@ fn snapshot_revision(snapshot: &Snapshot, revision: &str) -> RepositoryResult<St
                 return Err(format!("missing commit {id}"));
             };
             id = commit
-                .parents
+                .history_parents()
                 .get(count - 1)
                 .cloned()
                 .ok_or_else(|| format!("revision {revision:?} has no parent {count}"))?;
@@ -5723,7 +5926,7 @@ fn snapshot_revision(snapshot: &Snapshot, revision: &str) -> RepositoryResult<St
                 let Some(Object::Commit(commit)) = snapshot.objects.get(&id) else {
                     return Err(format!("missing commit {id}"));
                 };
-                id = commit.parents.first().cloned().ok_or_else(|| {
+                id = commit.history_parents().first().cloned().ok_or_else(|| {
                     format!("revision {revision:?} reaches a root before its requested ancestor")
                 })?;
             }
@@ -5852,12 +6055,7 @@ fn snapshot_wasm<'a>(snapshot: &'a Snapshot, commit_id: &str) -> RepositoryResul
         return Err(format!("missing merge commit {commit_id}"));
     };
     require_legacy_commit(commit)?;
-    match snapshot.objects.get(&commit.wasm) {
-        Some(Object::Wasm(bytes)) => Ok(bytes),
-        _ => Err(format!(
-            "merge commit {commit_id} has a missing or non-Wasm blob"
-        )),
-    }
+    partial_storage::blob(snapshot, &commit.wasm)
 }
 
 fn ancestors(tip: &str, objects: &BTreeMap<String, Object>) -> RepositoryResult<BTreeSet<String>> {
@@ -5868,7 +6066,9 @@ fn ancestors(tip: &str, objects: &BTreeMap<String, Object>) -> RepositoryResult<
             continue;
         }
         match objects.get(&id) {
-            Some(Object::Commit(commit)) => pending.extend(commit.parents.iter().cloned()),
+            Some(Object::Commit(commit)) => {
+                pending.extend(commit.history_parents().iter().cloned())
+            }
             _ => return Err(format!("missing commit {id} during merge-base traversal")),
         }
     }
@@ -5933,10 +6133,7 @@ fn encode_bisect(state: &BisectState) -> RepositoryResult<Vec<u8>> {
         }
     }
     let mut output = BoundedJournal(Vec::new());
-    serde_json::to_writer(&mut output, state)
-        .map_err(|error| format!("encode bisect journal: {error}"))?;
-    output
-        .write_all(b"\n")
+    crate::binary::write(&mut output, state)
         .map_err(|error| format!("encode bisect journal: {error}"))?;
     if output.0.len() as u64 > MAX_BISECT_BYTES {
         return Err("bisect journal exceeds the 1 MiB encoded limit".into());
@@ -6160,9 +6357,9 @@ fn describe_ancestors(
             return Err(format!("missing commit {id} during ancestry traversal"));
         };
         if first_parent {
-            pending.extend(commit.parents.first().cloned());
+            pending.extend(commit.history_parents().first().cloned());
         } else {
-            pending.extend(commit.parents.iter().cloned());
+            pending.extend(commit.history_parents().iter().cloned());
         }
     }
     Ok(seen)
@@ -6212,7 +6409,7 @@ fn best_merge_bases(
         let Some(Object::Commit(commit)) = objects.get(id) else {
             return Err(format!("missing common ancestor {id}"));
         };
-        dominated.extend(commit.parents.iter().cloned());
+        dominated.extend(commit.history_parents().iter().cloned());
     }
     Ok(common.difference(&dominated).cloned().collect())
 }
@@ -6234,16 +6431,15 @@ fn unique_merge_base(
 }
 
 fn encode_bundle(snapshot: &Snapshot) -> RepositoryResult<Vec<u8>> {
-    let manifest = serde_json::to_vec(&snapshot.manifest)
-        .map_err(|e| format!("encode bundle manifest: {e}"))?;
+    let manifest =
+        encode_manifest(&snapshot.manifest).map_err(|e| format!("encode bundle manifest: {e}"))?;
     let mut bytes = Vec::new();
     bytes.extend_from_slice(BUNDLE_MAGIC);
     bytes.extend_from_slice(&(manifest.len() as u64).to_be_bytes());
     bytes.extend_from_slice(&manifest);
     bytes.extend_from_slice(&(snapshot.encoded.len() as u64).to_be_bytes());
     for (id, encoded) in &snapshot.encoded {
-        // ASCII hex is deliberately retained for straightforward offline auditing.
-        bytes.extend_from_slice(id.as_bytes());
+        bytes.extend_from_slice(&crate::binary::oid(id)?);
         bytes.extend_from_slice(&(encoded.len() as u64).to_be_bytes());
         bytes.extend_from_slice(encoded);
     }
@@ -6280,29 +6476,30 @@ impl<'a> Cursor<'a> {
 }
 
 fn decode_bundle(bytes: &[u8]) -> RepositoryResult<Snapshot> {
+    decode_bundle_with_base(bytes, None)
+}
+
+fn decode_bundle_with_base(bytes: &[u8], base: Option<&Snapshot>) -> RepositoryResult<Snapshot> {
     let mut cursor = Cursor { bytes, position: 0 };
     if cursor.take(8)? != BUNDLE_MAGIC {
         return Err("unsupported bundle format".into());
     }
     let manifest_length = cursor.number()?;
     let manifest_bytes = cursor.take(manifest_length)?;
-    let manifest: Manifest = serde_json::from_slice(manifest_bytes)
-        .map_err(|e| format!("invalid bundle manifest: {e}"))?;
-    if serde_json::to_vec(&manifest).map_err(|e| format!("encode manifest: {e}"))? != manifest_bytes
-    {
+    let mut manifest: Manifest =
+        decode_manifest(manifest_bytes).map_err(|e| format!("invalid bundle manifest: {e}"))?;
+    if encode_manifest(&manifest).map_err(|e| format!("encode manifest: {e}"))? != manifest_bytes {
         return Err("non-canonical or duplicate-key bundle manifest".into());
     }
     let count = cursor.number()?;
-    if count > bytes.len().saturating_sub(cursor.position) / (64 + 8 + OBJECT_HEADER_LENGTH) {
+    if count > bytes.len().saturating_sub(cursor.position) / (32 + 8 + OBJECT_HEADER_LENGTH) {
         return Err("bundle object count exceeds available bytes".into());
     }
     let mut encoded = BTreeMap::new();
     let mut objects = BTreeMap::new();
     let mut previous: Option<String> = None;
     for _ in 0..count {
-        let id = std::str::from_utf8(cursor.take(64)?)
-            .map_err(|_| "non-ASCII bundle object ID".to_string())?
-            .to_owned();
+        let id = crate::binary::hex(cursor.take(32)?);
         require_id(&id)?;
         if previous.as_ref().is_some_and(|value| value >= &id) {
             return Err("bundle object IDs are duplicated or out of canonical order".into());
@@ -6317,6 +6514,64 @@ fn decode_bundle(bytes: &[u8]) -> RepositoryResult<Snapshot> {
     if cursor.position != bytes.len() {
         return Err("unexpected trailing bytes in bundle".into());
     }
+    if let Some(base) = base {
+        let mut pending: Vec<_> = manifest
+            .refs
+            .values()
+            .chain(manifest.tags.values())
+            .cloned()
+            .collect();
+        if valid_id(&manifest.head) {
+            pending.push(manifest.head.clone());
+        }
+        pending.extend(objects.keys().cloned());
+        let mut visited = BTreeSet::new();
+        while let Some(id) = pending.pop() {
+            if !visited.insert(id.clone()) {
+                continue;
+            }
+            if !objects.contains_key(&id) {
+                let Some(bytes) = base.encoded.get(&id) else {
+                    if manifest.promised.contains(&id) {
+                        continue;
+                    }
+                    return Err(format!(
+                        "missing negotiated base object {id}; retry a full fetch"
+                    ));
+                };
+                objects.insert(id.clone(), decode_object(&id, bytes)?);
+                encoded.insert(id.clone(), bytes.clone());
+            } else if base
+                .encoded
+                .get(&id)
+                .is_some_and(|b| Some(b) != encoded.get(&id))
+            {
+                return Err(format!("object collision at {id}"));
+            }
+            match &objects[&id] {
+                Object::Commit(c) => {
+                    if manifest.shallow.contains(&id) {
+                        if c.parents
+                            .iter()
+                            .all(|p| encoded.contains_key(p) || base.encoded.contains_key(p))
+                        {
+                            manifest.shallow.remove(&id);
+                        }
+                    } else if base.manifest.shallow.contains(&id) {
+                        manifest.shallow.insert(id.clone());
+                    }
+                    if !manifest.shallow.contains(&id) {
+                        pending.extend(c.parents.iter().cloned());
+                    }
+                    pending.push(c.tree.as_ref().unwrap_or(&c.wasm).clone());
+                }
+                Object::Tree(t) => pending.extend(t.entries.values().cloned()),
+                _ => (),
+            }
+        }
+    }
+    manifest.promised.retain(|id| !encoded.contains_key(id));
+    partial_storage::apply(&manifest, &mut objects, None)?;
     validate_snapshot(&manifest, &objects)?;
     Ok(Snapshot {
         manifest,
@@ -6513,6 +6768,10 @@ pub fn run(args: &[String]) -> RepositoryResult<String> {
             Repository::open(&args[1])?.switch_branch(&args[2])?;
             Ok(format!("HEAD -> {}", args[2]))
         }
+        "fork" if args.len() == 3 => {
+            let repo = Repository::fork_local(&args[1], &args[2])?;
+            Ok(format!("forked {} into {} using shared immutable objects", args[1], repo.root.display()))
+        }
         "clone" if args.len() == 3 => {
             let repo = Repository::clone_local(&args[1], &args[2])?;
             Ok(format!("cloned {} into {}", args[1], repo.root.display()))
@@ -6594,24 +6853,7 @@ mod tests {
     }
 
     fn pending_index_bytes(files: &BTreeMap<String, Vec<u8>>, anchor: Option<&str>) -> Vec<u8> {
-        #[derive(Serialize)]
-        struct TestIndex<'a> {
-            format: u32,
-            files: &'a BTreeMap<String, Vec<u8>>,
-            legacy_path: Option<&'a str>,
-        }
-        let mut raw = b"UWGITIDX\x02".to_vec();
-        serde_json::to_writer(
-            &mut raw,
-            &TestIndex {
-                format: 2,
-                files,
-                legacy_path: anchor,
-            },
-        )
-        .unwrap();
-        raw.push(b'\n');
-        raw
+        crate::porcelain::fixture_index(files, anchor, &BTreeMap::new())
     }
 
     fn pending_fixture(temp: &TempDirectory, name: &str) -> (Repository, String, String) {
@@ -6687,7 +6929,7 @@ mod tests {
             index_sha256: format!("{:x}", Sha256::digest(raw)),
         });
         fs::write(
-            repo.metadata.join("pending.json"),
+            repo.metadata.join("pending.bin"),
             encode_pending(&prepared).unwrap(),
         )
         .unwrap();
@@ -6709,8 +6951,12 @@ mod tests {
         let objects = repo.snapshot().unwrap().encoded;
         // Simulate interruption immediately after the true HEAD file was
         // published, before either completion log or journal cleanup.
-        fs::write(repo.metadata.join("HEAD"), format!("{commit}\n")).unwrap();
-        fs::remove_file(repo.metadata.join("head-reflog.json")).unwrap();
+        fs::write(
+            repo.metadata.join("HEAD"),
+            encode_reference(&commit, false).unwrap(),
+        )
+        .unwrap();
+        fs::remove_file(repo.metadata.join("head-reflog.bin")).unwrap();
         let old_log = repo.reflog().unwrap().len();
         let outcome = repo.continue_pending(&prepared, None).unwrap();
         assert!(outcome.already_published && outcome.resumed_prepared);
@@ -6724,7 +6970,7 @@ mod tests {
         assert_eq!(local_log[0].old.as_ref(), Some(&head));
         assert_eq!(local_log[0].new.as_ref(), Some(&commit));
         fs::write(
-            repo.metadata.join("pending.json"),
+            repo.metadata.join("pending.bin"),
             encode_pending(&prepared).unwrap(),
         )
         .unwrap();
@@ -6751,7 +6997,7 @@ mod tests {
         require_id(&pending.id).unwrap();
         assert_eq!(repo.pending().unwrap(), Some(pending.clone()));
         assert_eq!(
-            fs::read(repo.metadata.join("pending.json")).unwrap(),
+            fs::read(repo.metadata.join("pending.bin")).unwrap(),
             encode_pending(&pending).unwrap()
         );
         assert_eq!(stored_state(&repo), before);
@@ -6874,7 +7120,7 @@ mod tests {
         mismatched.prepared.as_mut().unwrap().index_sha256 =
             format!("{:x}", Sha256::digest(&wrong_raw));
         fs::write(
-            repo.metadata.join("pending.json"),
+            repo.metadata.join("pending.bin"),
             encode_pending(&mismatched).unwrap(),
         )
         .unwrap();
@@ -6891,7 +7137,7 @@ mod tests {
             .contains("prepared result differs"));
         assert_eq!(stored_state(&repo), before);
         fs::write(
-            repo.metadata.join("pending.json"),
+            repo.metadata.join("pending.bin"),
             encode_pending(&prepared).unwrap(),
         )
         .unwrap();
@@ -6927,7 +7173,7 @@ mod tests {
         // Fixed interrupted state: ref rename completed, reflog not recorded.
         repo.atomic_write(
             &repo.metadata.join("refs/main"),
-            format!("{commit}\n").as_bytes(),
+            &encode_reference(&commit, false).unwrap(),
         )
         .unwrap();
         let outcome = repo.continue_pending(&prepared, None).unwrap();
@@ -6946,7 +7192,7 @@ mod tests {
         );
         // Recovered old journal after cleanup must only clean it again.
         fs::write(
-            repo.metadata.join("pending.json"),
+            repo.metadata.join("pending.bin"),
             encode_pending(&prepared).unwrap(),
         )
         .unwrap();
@@ -7104,11 +7350,11 @@ mod tests {
             encode_pending(&wrong_base).unwrap(),
             encode_pending(&wrong_result).unwrap(),
         ] {
-            fs::write(repo.metadata.join("pending.json"), bytes).unwrap();
+            fs::write(repo.metadata.join("pending.bin"), bytes).unwrap();
             assert!(repo.pending().is_err());
             assert_eq!(stored_state(&repo), before);
         }
-        fs::write(repo.metadata.join("pending.json"), &original).unwrap();
+        fs::write(repo.metadata.join("pending.bin"), &original).unwrap();
         assert_eq!(repo.pending().unwrap(), Some(pending));
     }
 
@@ -7116,7 +7362,7 @@ mod tests {
     fn pending_journal_limit_and_nonregular_files_fail_without_unbounded_read() {
         let temp = TempDirectory::new();
         let (repo, head, target) = pending_fixture(&temp, "bounds");
-        let path = repo.metadata.join("pending.json");
+        let path = repo.metadata.join("pending.bin");
         let file = File::create(&path).unwrap();
         file.set_len(MAX_PENDING_BYTES + 1).unwrap();
         drop(file);
@@ -7205,13 +7451,7 @@ mod tests {
         repo.switch_branch("main").unwrap();
         let head = repo.commit(&wasm(&[0, 2, 0, 30]), "ours").unwrap();
         let old_index = |bytes: &[u8]| {
-            let path = b"old.wasm";
-            let mut raw = b"UWGITIDX\x01".to_vec();
-            raw.extend_from_slice(&(path.len() as u64).to_le_bytes());
-            raw.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
-            raw.extend_from_slice(path);
-            raw.extend_from_slice(bytes);
-            raw
+            pending_index_bytes(&files(&[("old.wasm", bytes.to_vec())]), Some("old.wasm"))
         };
         let baseline = old_index(&repo.wasm_bytes(&head).unwrap());
         let request = || PendingRequest {
@@ -7556,7 +7796,7 @@ mod tests {
         let commit = &prepared.prepared.as_ref().unwrap().commit;
         repo.atomic_write(
             &repo.metadata.join("refs/main"),
-            format!("{commit}\n").as_bytes(),
+            &encode_reference(commit, false).unwrap(),
         )
         .unwrap();
         let before = repo.snapshot().unwrap().encoded;
@@ -7571,7 +7811,7 @@ mod tests {
         assert_eq!(result["manual_resolutions"].as_array().unwrap().len(), 2);
         assert_eq!(repo.reflog().unwrap().len(), logs + 1);
         fs::write(
-            repo.metadata.join("pending.json"),
+            repo.metadata.join("pending.bin"),
             encode_pending(&prepared).unwrap(),
         )
         .unwrap();
@@ -7611,7 +7851,7 @@ mod tests {
             .unwrap();
         let bytes = encode_pending(&pending).unwrap();
         assert!(!String::from_utf8_lossy(&bytes).contains("\"rebase\""));
-        let old: PendingOperation = serde_json::from_slice(&bytes).unwrap();
+        let old: PendingOperation = crate::binary::decode(&bytes).unwrap();
         assert!(old.rebase.is_none());
         assert_eq!(encode_pending(&old).unwrap(), bytes);
     }
@@ -7638,7 +7878,7 @@ mod tests {
         let before = stored_state(&repo);
         for wrong in forgeries {
             fs::write(
-                repo.metadata.join("pending.json"),
+                repo.metadata.join("pending.bin"),
                 encode_pending(&wrong).unwrap(),
             )
             .unwrap();
@@ -7647,7 +7887,7 @@ mod tests {
             assert_eq!(stored_state(&repo), before);
         }
         fs::write(
-            repo.metadata.join("pending.json"),
+            repo.metadata.join("pending.bin"),
             encode_pending(&second).unwrap(),
         )
         .unwrap();
@@ -7688,7 +7928,7 @@ mod tests {
         // automatic result, before its reference/reflog publication.
         repo.atomic_write(
             &repo.metadata.join("refs/main"),
-            format!("{head}\n").as_bytes(),
+            &encode_reference(&head, false).unwrap(),
         )
         .unwrap();
         fs::write(repo.metadata.join("reflog"), log).unwrap();
@@ -7722,7 +7962,7 @@ mod tests {
             }),
         };
         fs::write(
-            repo.metadata.join("pending.json"),
+            repo.metadata.join("pending.bin"),
             encode_pending(&prepared).unwrap(),
         )
         .unwrap();
@@ -7745,7 +7985,7 @@ mod tests {
         skipped.prepared.as_mut().unwrap().commit = upstream;
         for forged in [manual, skipped] {
             fs::write(
-                repo.metadata.join("pending.json"),
+                repo.metadata.join("pending.bin"),
                 encode_pending(&forged).unwrap(),
             )
             .unwrap();
@@ -7753,7 +7993,7 @@ mod tests {
             assert_eq!(stored_state(&repo), before);
         }
         fs::write(
-            repo.metadata.join("pending.json"),
+            repo.metadata.join("pending.bin"),
             encode_pending(&prepared).unwrap(),
         )
         .unwrap();
@@ -7873,7 +8113,7 @@ mod tests {
         let merge = store_history_commit(&repo, &blob, &[left3, side.clone()], "merge");
         repo.atomic_write(
             &repo.metadata.join("refs/main"),
-            format!("{merge}\n").as_bytes(),
+            &encode_reference(&merge, false).unwrap(),
         )
         .unwrap();
         (repo, [root, left2, side, merge])
@@ -8097,7 +8337,7 @@ mod tests {
             .commit(&wasm(&[255, 1, 254]), "unknown original bytes")
             .unwrap();
         fs::write(repo.metadata.join("index"), b"bad index\0").unwrap();
-        fs::write(repo.metadata.join("pending.json"), b"bad pending\xff").unwrap();
+        fs::write(repo.metadata.join("pending.bin"), b"bad pending\xff").unwrap();
         fs::write(repo.root.join("unfinished.txt"), b"unfinished user bytes").unwrap();
         let before = stored_state(&repo);
         assert_eq!(
@@ -8111,7 +8351,7 @@ mod tests {
             b"bad index\0"
         );
         assert_eq!(
-            fs::read(repo.metadata.join("pending.json")).unwrap(),
+            fs::read(repo.metadata.join("pending.bin")).unwrap(),
             b"bad pending\xff"
         );
         assert_eq!(
@@ -8148,7 +8388,7 @@ mod tests {
         let tree = repo.read_commit("HEAD").unwrap().commit.tree.unwrap();
         commit_tree(&repo, &BTreeMap::new(), "empty tree", Some("one.wasm"));
         fs::write(repo.metadata.join("index"), b"unrelated bad index").unwrap();
-        fs::write(repo.metadata.join("pending.json"), b"unrelated bad pending").unwrap();
+        fs::write(repo.metadata.join("pending.bin"), b"unrelated bad pending").unwrap();
         fs::write(repo.root.join("one.wasm"), b"unfinished bytes").unwrap();
         let before = stored_state(&repo);
         let snapshot = repo.archive_files("HEAD^").unwrap();
@@ -8174,7 +8414,7 @@ mod tests {
             b"unrelated bad index"
         );
         assert_eq!(
-            fs::read(repo.metadata.join("pending.json")).unwrap(),
+            fs::read(repo.metadata.join("pending.bin")).unwrap(),
             b"unrelated bad pending"
         );
         assert_eq!(
@@ -8332,11 +8572,27 @@ mod tests {
     ) {
         let path = repo.metadata.join("remotes");
         fs::create_dir_all(&path).unwrap();
-        let value = json!({"version":1,"remote":remote,"url":"local-query-fixture",
-            "state":{"format":1,"head":"main","branches":branches,"tags":tags}});
+        #[derive(Serialize)]
+        struct Tracking<'a> {
+            version: u32,
+            remote: &'a str,
+            url: &'a str,
+            state: RepositoryState,
+        }
+        let value = Tracking {
+            version: 1,
+            remote,
+            url: "local-query-fixture",
+            state: RepositoryState {
+                format: 1,
+                head: "main".into(),
+                branches,
+                tags,
+            },
+        };
         fs::write(
-            path.join(format!("{remote}.tracking.json")),
-            serde_json::to_vec(&value).unwrap(),
+            path.join(format!("{remote}.tracking.bin")),
+            crate::binary::encode(&value).unwrap(),
         )
         .unwrap();
     }
@@ -8348,7 +8604,7 @@ mod tests {
         let pending = b"not a pending journal\0";
         let index = b"not an index\xff";
         let work = b"unfinished text, not a Wasm module";
-        fs::write(repo.metadata.join("pending.json"), pending).unwrap();
+        fs::write(repo.metadata.join("pending.bin"), pending).unwrap();
         fs::write(repo.metadata.join("index"), index).unwrap();
         fs::write(repo.root.join("editor.txt"), work).unwrap();
         let before = stored_state(&repo);
@@ -8375,7 +8631,7 @@ mod tests {
         assert!(repo.query_tree("HEAD").is_err());
         assert_eq!(stored_state(&repo), before);
         assert_eq!(
-            fs::read(repo.metadata.join("pending.json")).unwrap(),
+            fs::read(repo.metadata.join("pending.bin")).unwrap(),
             pending
         );
         assert_eq!(fs::read(repo.metadata.join("index")).unwrap(), index);
@@ -8526,7 +8782,7 @@ mod tests {
         let held = repo.commit(&wasm(&[99, 1, 1]), "held by reflog").unwrap();
         repo.atomic_write(
             &repo.metadata.join("refs/main"),
-            format!("{base}\n").as_bytes(),
+            &encode_reference(&base, false).unwrap(),
         )
         .unwrap();
         let mut isolated = Vec::new();
@@ -8540,7 +8796,7 @@ mod tests {
         }
         fs::write(
             repo.metadata.join("tags/kept"),
-            format!("{}\n", isolated[0]),
+            encode_reference(&isolated[0], true).unwrap(),
         )
         .unwrap();
         query_tracking(
@@ -8616,8 +8872,8 @@ mod tests {
             repo.query_objects().unwrap().root_commits,
             report.root_commits
         );
-        let head_log = fs::read(repo.metadata.join("head-reflog.json")).unwrap();
-        fs::remove_file(repo.metadata.join("head-reflog.json")).unwrap();
+        let head_log = fs::read(repo.metadata.join("head-reflog.bin")).unwrap();
+        fs::remove_file(repo.metadata.join("head-reflog.bin")).unwrap();
         let without_log = repo.query_objects().unwrap();
         assert_eq!(
             (without_log.root_commits, without_log.unreachable_objects),
@@ -8630,7 +8886,7 @@ mod tests {
             .iter()
             .any(|row| row.id == held));
         fs::write(repo.metadata.join("reflog"), log).unwrap();
-        fs::write(repo.metadata.join("head-reflog.json"), head_log).unwrap();
+        fs::write(repo.metadata.join("head-reflog.bin"), head_log).unwrap();
         let mut maximum = u64::MAX;
         assert!(add_query_bytes(&mut maximum, 1).is_err());
         assert_eq!(maximum, u64::MAX);
@@ -8691,7 +8947,7 @@ mod tests {
         assert_eq!(report.unreachable_objects, 3);
         let before = stored_state(&repo);
         let broken = b"broken pending journal ignored by read-only queries";
-        fs::write(repo.metadata.join("pending.json"), broken).unwrap();
+        fs::write(repo.metadata.join("pending.bin"), broken).unwrap();
         assert_eq!(repo.query_objects().unwrap(), report);
         assert_eq!(repo.query_tree("HEAD").unwrap().commit, Some(head));
         assert_eq!(
@@ -8699,10 +8955,7 @@ mod tests {
             Some(prepared.head.as_str())
         );
         assert_eq!(stored_state(&repo), before);
-        assert_eq!(
-            fs::read(repo.metadata.join("pending.json")).unwrap(),
-            broken
-        );
+        assert_eq!(fs::read(repo.metadata.join("pending.bin")).unwrap(), broken);
         assert_eq!(fs::read(repo.metadata.join("index")).unwrap(), raw);
     }
 
@@ -9015,7 +9268,7 @@ mod tests {
             BTreeMap::from([("../bad".into(), blob.clone())]),
             BTreeMap::from([("a".into(), blob.clone()), ("a/b".into(), blob.clone())]),
         ] {
-            let payload = serde_json::to_vec(&Tree { format: 1, entries }).unwrap();
+            let payload = encode_tree(&Tree { format: 1, entries }).unwrap();
             let encoded = encode_object(TREE_KIND, &payload).unwrap();
             assert!(decode_object(&object_id(&encoded), &encoded).is_err());
         }
@@ -9063,6 +9316,8 @@ mod tests {
         objects.insert(
             "f".repeat(64),
             Object::Commit(Commit {
+                shallow: false,
+                signature: None,
                 format: 1,
                 wasm: wasm_id,
                 parents: vec![root],
@@ -9681,7 +9936,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_empty_tags_keep_manifest_encoding_and_object_ids_unchanged() {
+    fn native_binary_manifest_and_single_module_objects_roundtrip_without_json() {
         let temp = TempDirectory::new();
         let repo = temp.repo("legacy");
         fs::remove_dir(repo.metadata.join("tags")).unwrap();
@@ -9695,24 +9950,21 @@ mod tests {
         let snapshot = decode_bundle(&bytes).unwrap();
         assert_eq!(snapshot.manifest.format, 1);
         assert_eq!(
-            serde_json::to_vec(&snapshot.manifest).unwrap(),
-            br#"{"format":1,"head":"main","refs":{}}"#
+            encode_manifest(&snapshot.manifest).unwrap(),
+            b"\x01\0\0\0\x04main\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
         );
         let id = reopened.commit(&wasm(&[]), "legacy root").unwrap();
         let commit = reopened.read_commit(&id).unwrap().commit;
-        let expected = format!(
-            r#"{{"format":1,"wasm":"{}","parents":[],"message":"legacy root"}}"#,
-            commit.wasm
-        );
+        let expected = encode_commit(&commit).unwrap();
         assert_eq!(
             reopened.cat_object(&id).unwrap(),
-            ("commit".into(), expected.as_bytes().to_vec())
+            ("commit".into(), expected.clone())
         );
         assert_eq!(
             reopened.cat_object(&commit.wasm).unwrap(),
             ("wasm".into(), wasm(&[]))
         );
-        let expected_object = encode_object(COMMIT_KIND, expected.as_bytes()).unwrap();
+        let expected_object = encode_object(COMMIT_KIND, &expected).unwrap();
         assert_eq!(id, object_id(&expected_object));
         assert!(!repo.metadata.join("tags").exists());
     }
@@ -10239,6 +10491,8 @@ mod tests {
             let wasm = object_id(&blob);
             encoded.insert(wasm.clone(), blob);
             let commit = Commit {
+                shallow: false,
+                signature: None,
                 format: 1,
                 wasm,
                 parents: vec![parent],
@@ -10251,13 +10505,12 @@ mod tests {
             encoded.insert(parent.clone(), commit);
             ids.push(parent.clone());
         }
-        // This fixed chain must expose the original bug: at least one prefix
-        // of plain hash order has an incomplete closure, despite valid inputs.
+        // A child-first installation is invalid, independent of the hash
+        // ordering produced by the current object encoding.
         let mut hash_prefix = fixture.snapshot().unwrap().objects;
-        assert!(encoded.iter().any(|(id, bytes)| {
-            hash_prefix.insert(id.clone(), decode_object(id, bytes).unwrap());
-            validate_object_graph(&hash_prefix).is_err()
-        }));
+        let last = ids.last().unwrap();
+        hash_prefix.insert(last.clone(), decode_object(last, &encoded[last]).unwrap());
+        assert!(validate_object_graph(&hash_prefix).is_err());
 
         // Interrupt each real-store installation boundary. Inspecting the full
         // verified snapshot, rather than checking an ordering list, proves
@@ -10451,8 +10704,8 @@ mod tests {
             }
         );
         assert_eq!(
-            fs::read(repo.metadata.join("upstreams.json")).unwrap(),
-            br#"{"version":1,"branches":{"main":{"remote":"origin","branch":"trunk"}}}"#
+            fs::read(repo.metadata.join("upstreams.bin")).unwrap(),
+            encode_upstreams(&BTreeMap::from([("main".into(), binding.clone())])).unwrap()
         );
         let (state, associations) = repo.state_with_upstreams().unwrap();
         assert_eq!(state.branches["main"], tip);
@@ -10468,7 +10721,7 @@ mod tests {
         for cloned in [&clone, &bundle_clone] {
             assert_eq!(cloned.resolve("HEAD").unwrap(), tip);
             assert!(cloned.upstreams().unwrap().is_empty());
-            assert!(!cloned.metadata.join("upstreams.json").exists());
+            assert!(!cloned.metadata.join("upstreams.bin").exists());
         }
         assert_eq!(
             repo.unset_upstream_checked("main", &tip, &binding).unwrap(),
@@ -10476,8 +10729,8 @@ mod tests {
         );
         assert!(repo.upstreams().unwrap().is_empty());
         assert_eq!(
-            fs::read(repo.metadata.join("upstreams.json")).unwrap(),
-            br#"{"version":1,"branches":{}}"#
+            fs::read(repo.metadata.join("upstreams.bin")).unwrap(),
+            encode_upstreams(&BTreeMap::new()).unwrap()
         );
         assert_eq!(repo.bundle_bytes(None).unwrap(), before_bundle);
     }
@@ -10569,7 +10822,7 @@ mod tests {
             .set_upstream_checked("main", "origin", "main", &root, None)
             .unwrap_err()
             .contains("locked"));
-        assert!(!repo.metadata.join("upstreams.json").exists());
+        assert!(!repo.metadata.join("upstreams.bin").exists());
     }
 
     #[test]
@@ -10674,7 +10927,7 @@ mod tests {
         let producer = temp.repo("upstream-producer");
         let incoming_tip = producer.commit(&wasm(&[0, 1, 0]), "incoming").unwrap();
         let incoming = producer.bundle_bytes(None).unwrap().1;
-        let path = repo.metadata.join("upstreams.json");
+        let path = repo.metadata.join("upstreams.bin");
         let cases = [
             br#"{"version":2,"branches":{}}"#.as_slice(),
             br#"{"version":1,"branches":{},"extra":true}"#.as_slice(),
@@ -10749,7 +11002,7 @@ mod tests {
         let temp = TempDirectory::new();
         let repo = temp.repo("upstream-nonregular");
         let root = repo.commit(&wasm(&[]), "root").unwrap();
-        let path = repo.metadata.join("upstreams.json");
+        let path = repo.metadata.join("upstreams.bin");
         fs::create_dir(&path).unwrap();
         let before = stored_state(&repo);
         assert!(repo
@@ -10759,9 +11012,9 @@ mod tests {
         assert_eq!(stored_state(&repo), before);
         assert!(path.is_dir());
         fs::remove_dir(&path).unwrap();
-        let outside = temp.path("private-upstreams.json");
-        let original = br#"{"version":1,"branches":{}}"#;
-        fs::write(&outside, original).unwrap();
+        let outside = temp.path("private-upstreams.bin");
+        let original = encode_upstreams(&BTreeMap::new()).unwrap();
+        fs::write(&outside, &original).unwrap();
         symlink(&outside, &path).unwrap();
         let before = stored_state(&repo);
         assert!(repo
@@ -10847,14 +11100,26 @@ mod tests {
         target.install_bundle_bytes(&bundle).unwrap();
         let directory = target.metadata.join("remotes");
         fs::create_dir(&directory).unwrap();
-        let tracking = directory.join("origin.tracking.json");
-        let valid = serde_json::json!({"version":1,"remote":"origin","url":"http://localhost:8080","state":state});
-        fs::write(&tracking, serde_json::to_vec(&valid).unwrap()).unwrap();
+        let tracking = directory.join("origin.tracking.bin");
+        #[derive(Clone, Serialize)]
+        struct Tracking {
+            version: u32,
+            remote: String,
+            url: String,
+            state: RepositoryState,
+        }
+        let valid = Tracking {
+            version: 1,
+            remote: "origin".into(),
+            url: "http://localhost:8080".into(),
+            state,
+        };
+        fs::write(&tracking, crate::binary::encode(&valid).unwrap()).unwrap();
         assert_eq!(target.resolve("origin/main").unwrap(), root);
         assert_eq!(target.resolve("refs/remotes/origin/main").unwrap(), root);
         let mut bad = valid.clone();
-        bad["state"]["branches"]["main"] = serde_json::Value::String("a".repeat(64));
-        fs::write(&tracking, serde_json::to_vec(&bad).unwrap()).unwrap();
+        bad.state.branches.insert("main".into(), "a".repeat(64));
+        fs::write(&tracking, crate::binary::encode(&bad).unwrap()).unwrap();
         let before = stored_state(&target);
         assert!(target
             .resolve("origin/main")
@@ -10871,16 +11136,21 @@ mod tests {
         assert!(target
             .resolve("origin/main")
             .unwrap_err()
-            .contains("duplicate reference"));
-        for (field, value) in [
-            ("version", serde_json::json!(2)),
-            ("remote", serde_json::json!("other")),
-            ("extra", serde_json::json!(true)),
-        ] {
+            .contains("binary record header"));
+        for damage in ["version", "remote", "trailing"] {
             let mut bad = valid.clone();
-            bad[field] = value;
-            fs::write(&tracking, serde_json::to_vec(&bad).unwrap()).unwrap();
-            assert!(target.resolve("origin/main").is_err());
+            if damage == "version" {
+                bad.version = 2;
+            }
+            if damage == "remote" {
+                bad.remote = "other".into();
+            }
+            let mut bytes = crate::binary::encode(&bad).unwrap();
+            if damage == "trailing" {
+                bytes.push(0);
+            }
+            fs::write(&tracking, bytes).unwrap();
+            assert!(target.fsck().is_err());
         }
     }
 
@@ -10904,7 +11174,7 @@ mod tests {
                     fs::create_dir(repo.metadata.join("remotes")).unwrap();
                     symlink(
                         &outside,
-                        repo.metadata.join("remotes").join("origin.tracking.json"),
+                        repo.metadata.join("remotes").join("origin.tracking.bin"),
                     )
                     .unwrap();
                 }
@@ -11216,7 +11486,7 @@ mod tests {
     }
 
     #[test]
-    fn deterministic_ids_and_component_rejection() {
+    fn deterministic_ids_and_component_storage_without_semantic_validation() {
         let temp = TempDirectory::new();
         let a = temp.repo("a");
         let b = temp.repo("b");
@@ -11225,9 +11495,11 @@ mod tests {
             a.commit(&bytes, "same").unwrap(),
             b.commit(&bytes, "same").unwrap()
         );
-        assert!(a.commit(b"\0asm\x0d\0\x01\0", "component").is_err());
+        let component = b"\0asm\x0d\0\x01\0";
+        let revision = a.commit(component, "component").unwrap();
+        assert_eq!(a.wasm_bytes(&revision).unwrap(), component);
         assert!(a.commit(b"\0asm", "truncated").is_err());
-        assert_eq!(a.fsck().unwrap().commits, 1);
+        assert_eq!(a.fsck().unwrap().commits, 2);
     }
 
     #[test]
@@ -11259,6 +11531,8 @@ mod tests {
             .store_object(
                 COMMIT_KIND,
                 &encode_commit(&Commit {
+                    shallow: false,
+                    signature: None,
                     format: 1,
                     tree: None,
                     legacy_path: None,
@@ -11273,6 +11547,8 @@ mod tests {
             .store_object(
                 COMMIT_KIND,
                 &encode_commit(&Commit {
+                    shallow: false,
+                    signature: None,
                     format: 1,
                     tree: None,
                     legacy_path: None,
@@ -11431,6 +11707,8 @@ mod tests {
         repo.store_object(
             COMMIT_KIND,
             &encode_commit(&Commit {
+                shallow: false,
+                signature: None,
                 format: 1,
                 tree: None,
                 legacy_path: None,
@@ -11481,7 +11759,7 @@ mod tests {
                 BTreeMap::new()
             },
             reflog: fs::read(repo.metadata.join("reflog")).ok(),
-            upstreams: fs::read(repo.metadata.join("upstreams.json")).ok(),
+            upstreams: fs::read(repo.metadata.join("upstreams.bin")).ok(),
             head: fs::read(repo.metadata.join("HEAD")).unwrap(),
         }
     }
@@ -11947,7 +12225,7 @@ mod tests {
         let (repo, ids) = bisect_linear_fixture(&temp, "bisect-linear", 7);
         fs::write(repo.metadata.join("index"), b"intentionally invalid index").unwrap();
         fs::write(
-            repo.metadata.join("pending.json"),
+            repo.metadata.join("pending.bin"),
             b"intentionally invalid pending",
         )
         .unwrap();
@@ -11970,7 +12248,7 @@ mod tests {
         );
         assert_eq!(start.object_verification, "full_snapshot");
         assert_eq!(start.generation.as_ref().unwrap().len(), 64);
-        let journal = fs::read(repo.metadata.join("bisect.json")).unwrap();
+        let journal = fs::read(repo.metadata.join("bisect.bin")).unwrap();
         for request in [
             BisectRequest::Status,
             BisectRequest::Next,
@@ -11980,10 +12258,7 @@ mod tests {
             assert_eq!(report.candidate, start.candidate);
             assert_eq!(report.generation, start.generation);
             assert!(!report.changed);
-            assert_eq!(
-                fs::read(repo.metadata.join("bisect.json")).unwrap(),
-                journal
-            );
+            assert_eq!(fs::read(repo.metadata.join("bisect.bin")).unwrap(), journal);
         }
         assert_eq!(repo.bundle_bytes(None).unwrap(), bundle);
         assert_eq!(stored_state(&repo), before);
@@ -11992,7 +12267,7 @@ mod tests {
             b"intentionally invalid index"
         );
         assert_eq!(
-            fs::read(repo.metadata.join("pending.json")).unwrap(),
+            fs::read(repo.metadata.join("pending.bin")).unwrap(),
             b"intentionally invalid pending"
         );
         assert_eq!(fs::read(work).unwrap(), b"dirty unknown bytes");
@@ -12026,14 +12301,14 @@ mod tests {
             .unwrap();
         assert!(outside_current.good.contains(&s2));
         assert_eq!(outside_current.remaining.len(), 3);
-        let raw = fs::read(repo.metadata.join("bisect.json")).unwrap();
+        let raw = fs::read(repo.metadata.join("bisect.bin")).unwrap();
         assert!(repo
             .bisect(BisectRequest::Mark {
                 kind: BisectKind::Good,
                 revisions: vec![merge.clone()]
             })
             .is_err());
-        assert_eq!(fs::read(repo.metadata.join("bisect.json")).unwrap(), raw);
+        assert_eq!(fs::read(repo.metadata.join("bisect.bin")).unwrap(), raw);
         repo.bisect(BisectRequest::Reset).unwrap();
         let fp = bisect_start(&repo, &merge, &root, true);
         assert_eq!(fp.candidate.as_ref(), Some(&a2));
@@ -12046,7 +12321,7 @@ mod tests {
                 first_parent: true
             })
             .is_err());
-        assert!(!repo.metadata.join("bisect.json").exists());
+        assert!(!repo.metadata.join("bisect.bin").exists());
     }
 
     #[test]
@@ -12077,7 +12352,7 @@ mod tests {
                 revisions: Vec::new()
             })
             .is_err());
-        let raw = fs::read(repo.metadata.join("bisect.json")).unwrap();
+        let raw = fs::read(repo.metadata.join("bisect.bin")).unwrap();
         let noop = repo
             .bisect(BisectRequest::Mark {
                 kind: BisectKind::Skip,
@@ -12085,7 +12360,7 @@ mod tests {
             })
             .unwrap();
         assert!(!noop.changed);
-        assert_eq!(fs::read(repo.metadata.join("bisect.json")).unwrap(), raw);
+        assert_eq!(fs::read(repo.metadata.join("bisect.bin")).unwrap(), raw);
         let found = repo
             .bisect(BisectRequest::Mark {
                 kind: BisectKind::Good,
@@ -12134,7 +12409,7 @@ mod tests {
         assert_eq!(marked.marks.len(), 1);
         assert_eq!(marked.marks[0].revisions.len(), 2);
         assert!(marked.marks[0].revisions[0] < marked.marks[0].revisions[1]);
-        let raw = fs::read(repo.metadata.join("bisect.json")).unwrap();
+        let raw = fs::read(repo.metadata.join("bisect.bin")).unwrap();
         let before = stored_state(&repo);
         let noop = repo
             .bisect(BisectRequest::Mark {
@@ -12159,7 +12434,7 @@ mod tests {
         ] {
             assert!(repo.bisect(request).is_err());
         }
-        assert_eq!(fs::read(repo.metadata.join("bisect.json")).unwrap(), raw);
+        assert_eq!(fs::read(repo.metadata.join("bisect.bin")).unwrap(), raw);
         assert_eq!(stored_state(&repo), before);
         let old_bad = ids[6].clone();
         repo.bisect(BisectRequest::Mark {
@@ -12232,10 +12507,8 @@ mod tests {
         });
         let mut bad_initial = state.clone();
         bad_initial.initial_good = vec![ids[3].clone()];
-        let duplicate = String::from_utf8(original.clone())
-            .unwrap()
-            .replacen("\"version\":1", "\"version\":1,\"version\":1", 1)
-            .into_bytes();
+        let mut duplicate = original.clone();
+        duplicate.extend_from_slice(&original);
         let mut no_lf = original.clone();
         no_lf.pop();
         for bytes in [
@@ -12246,7 +12519,7 @@ mod tests {
             encode_bisect(&redundant).unwrap(),
             encode_bisect(&bad_initial).unwrap(),
         ] {
-            fs::write(repo.metadata.join("bisect.json"), &bytes).unwrap();
+            fs::write(repo.metadata.join("bisect.bin"), &bytes).unwrap();
             let before = stored_state(&repo);
             assert!(repo.bisect(BisectRequest::Status).is_err());
             assert!(repo
@@ -12256,11 +12529,11 @@ mod tests {
                     first_parent: false
                 })
                 .is_err());
-            assert_eq!(fs::read(repo.metadata.join("bisect.json")).unwrap(), bytes);
+            assert_eq!(fs::read(repo.metadata.join("bisect.bin")).unwrap(), bytes);
             assert_eq!(stored_state(&repo), before);
             assert!(repo.bisect(BisectRequest::Reset).unwrap().changed);
         }
-        fs::write(repo.metadata.join("bisect.json"), original).unwrap();
+        fs::write(repo.metadata.join("bisect.bin"), original).unwrap();
         assert_eq!(
             repo.bisect(BisectRequest::Status)
                 .unwrap()
@@ -12283,7 +12556,7 @@ mod tests {
         state.marks = vec![event.clone(); MAX_BISECT_MARKS];
         let valid_shape = encode_bisect(&state).unwrap();
         assert!(valid_shape.len() as u64 <= MAX_BISECT_BYTES);
-        fs::write(repo.metadata.join("bisect.json"), &valid_shape).unwrap();
+        fs::write(repo.metadata.join("bisect.bin"), &valid_shape).unwrap();
         assert_eq!(
             repo.read_bisect().unwrap().unwrap().marks.len(),
             MAX_BISECT_MARKS
@@ -12293,9 +12566,8 @@ mod tests {
         assert!(repo.bisect(BisectRequest::Status).is_err());
         state.marks.push(event);
         assert!(encode_bisect(&state).unwrap_err().contains("4096"));
-        let mut unchecked = serde_json::to_vec(&state).unwrap();
-        unchecked.push(b'\n');
-        fs::write(repo.metadata.join("bisect.json"), unchecked).unwrap();
+        let unchecked = crate::binary::encode(&state).unwrap();
+        fs::write(repo.metadata.join("bisect.bin"), unchecked).unwrap();
         assert!(repo.read_bisect().unwrap_err().contains("4096"));
         state.marks.clear();
         state.initial_good = (0..16384usize)
@@ -12303,7 +12575,7 @@ mod tests {
             .collect();
         assert!(encode_bisect(&state).unwrap_err().contains("1 MiB"));
         fs::write(
-            repo.metadata.join("bisect.json"),
+            repo.metadata.join("bisect.bin"),
             vec![b' '; MAX_BISECT_BYTES as usize + 1],
         )
         .unwrap();
@@ -12356,10 +12628,10 @@ mod tests {
         assert!(repo.bisect(BisectRequest::Status).is_err());
         assert!(repo.bisect(BisectRequest::Reset).unwrap().changed);
         assert_eq!(stored_state(&repo), before);
-        assert!(!repo.metadata.join("bisect.json").exists());
-        fs::create_dir(repo.metadata.join("bisect.json")).unwrap();
+        assert!(!repo.metadata.join("bisect.bin").exists());
+        fs::create_dir(repo.metadata.join("bisect.bin")).unwrap();
         assert!(repo.bisect(BisectRequest::Reset).is_err());
-        assert!(repo.metadata.join("bisect.json").is_dir());
+        assert!(repo.metadata.join("bisect.bin").is_dir());
     }
 
     #[cfg(unix)]
@@ -12370,11 +12642,11 @@ mod tests {
         let repo = temp.repo("bisect-symlink");
         let outside = temp.path("outside");
         fs::write(&outside, b"preserve").unwrap();
-        symlink(&outside, repo.metadata.join("bisect.json")).unwrap();
+        symlink(&outside, repo.metadata.join("bisect.bin")).unwrap();
         assert!(repo.bisect(BisectRequest::Status).is_err());
         assert!(repo.bisect(BisectRequest::Reset).is_err());
         assert_eq!(fs::read(outside).unwrap(), b"preserve");
-        assert!(fs::symlink_metadata(repo.metadata.join("bisect.json"))
+        assert!(fs::symlink_metadata(repo.metadata.join("bisect.bin"))
             .unwrap()
             .file_type()
             .is_symlink());

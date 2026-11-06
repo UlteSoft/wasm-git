@@ -2,6 +2,7 @@
 /target/
 /build/
 /tmp/
+/.tmp/
 /artifacts/
 /evidence/
 /evidence-*/
@@ -28,3 +29,6 @@ __pycache__/
 
 # Historical test run reports belong outside the source tree.
 /docs/testing-round*.md
+
+# Downloaded upstream metadata used by the review workflow.
+/.community-proposals/

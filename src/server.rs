@@ -10,15 +10,26 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "server --root DIR [--listen 127.0.0.1:9419] [--token-file FILE] [--allow-write] [--allow-force] [--max-connections N]; server --stdio --root DIR [--allow-force]";
+const USAGE: &str = "server --root DIR [--listen 127.0.0.1:9419] [--token-file FILE | --policy FILE] [--allow-write | --read-only] [--allow-force] [--signed-authors BINARY_TRUST_FILE] [--pre-receive PROGRAM] [--post-receive PROGRAM] [--max-connections N]; server --stdio --root DIR [--policy FILE --principal NAME] [--read-only] [--allow-force]; server compile-policy INPUT_JSON NEW_BINARY_FILE; server audit-log BINARY_LOG";
 const MAX_HEADER: usize = 16 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(15);
 
+#[path = "server_policy.rs"]
+mod policy;
+#[path = "server_receive.rs"]
+mod receive;
+
+#[derive(Clone)]
 struct Settings {
     root: PathBuf,
     token: Option<Vec<u8>>,
     write: bool,
     force: bool,
+    policy: Option<Arc<policy::Policy>>,
+    actor: String,
+    pre_receive: Option<PathBuf>,
+    signed_authors: Option<PathBuf>,
+    post_receive: Option<PathBuf>,
 }
 
 /// Refuse symbolic links in every existing path component, including root.
@@ -53,7 +64,109 @@ fn repository_name(name: &str) -> Result<(), String> {
     protocol::repository_name(name)
 }
 
+fn authorize(
+    settings: &Settings,
+    repository: &str,
+    operation: &Operation,
+    payload: &[u8],
+) -> Result<(), String> {
+    let check = |reference: Option<&str>, force: bool| -> Result<(), String> {
+        if reference.is_some() && !settings.write {
+            return Err("server is read-only".into());
+        }
+        if force && !settings.force {
+            return Err("server does not allow forced updates".into());
+        }
+        if let Some(policy) = &settings.policy {
+            policy.authorize(&settings.actor, repository, reference, force, false)?;
+        }
+        Ok(())
+    };
+    check(None, false)?;
+    match operation {
+        Operation::Push { branch, force, .. } => {
+            check(Some(&format!("refs/heads/{branch}")), *force)
+        }
+        Operation::UpdateRef {
+            namespace,
+            name,
+            force,
+            ..
+        } => check(
+            Some(&format!(
+                "refs/{}/{name}",
+                if matches!(namespace, RefNamespace::Branch) {
+                    "heads"
+                } else {
+                    "tags"
+                }
+            )),
+            *force,
+        ),
+        Operation::PublishBatch {} => {
+            check(Some("*"), false)?;
+            let batch: protocol::BatchPublication = crate::binary::decode(payload)?;
+            if batch.updates.is_empty() || batch.updates.len() > 4096 {
+                return Err("receive requires 1..=4096 updates".into());
+            }
+            for u in batch.updates {
+                check(
+                    Some(&format!(
+                        "refs/{}/{}",
+                        if matches!(u.namespace, RefNamespace::Branch) {
+                            "heads"
+                        } else {
+                            "tags"
+                        },
+                        u.name
+                    )),
+                    u.force,
+                )?;
+            }
+            Ok(())
+        }
+        Operation::ApplyUpload { operation, .. } => {
+            check(Some("*"), false)?;
+            // Batch operands arrive in the verified upload. Reauthorize that
+            // exact payload before applying it in process_locked.
+            if matches!(**operation, Operation::PublishBatch {}) {
+                Ok(())
+            } else {
+                authorize(settings, repository, operation, &[])
+            }
+        }
+        Operation::UploadSlice { .. } | Operation::CancelUpload { .. } => check(Some("*"), false),
+        Operation::Fork { destination } => {
+            if !settings.write {
+                return Err("server is read-only".into());
+            }
+            repository_name(destination)?;
+            if let Some(policy) = &settings.policy {
+                policy.authorize(&settings.actor, destination, None, false, true)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
 fn process(
+    settings: &Settings,
+    request: Request,
+    payload: &[u8],
+) -> Result<(Response, Vec<u8>), String> {
+    repository_name(&request.repository)?;
+    authorize(settings, &request.repository, &request.operation, payload)?;
+    let root = real_path(&settings.root.join(&request.repository), true)?;
+    let repository = Repository::open(root)?;
+    // OS-owned locks survive neither a crash nor an SSH process exit. Queue
+    // competing service operations instead of leaking local fail-fast locks to
+    // network readers. Local writer locks and ref leases remain authoritative.
+    let _gate = repository.service_lock(TIMEOUT)?;
+    process_locked(settings, request, payload)
+}
+
+fn process_locked(
     settings: &Settings,
     request: Request,
     payload: &[u8],
@@ -73,20 +186,175 @@ fn process(
         tip: None,
     };
     let bytes = match request.operation {
+        Operation::ObjectSlice { id, offset } => {
+            if !payload.is_empty() {
+                return Err("object slice requires empty payload".into());
+            }
+            let raw = repository.reachable_object(&id)?;
+            let offset = usize::try_from(offset).map_err(|_| "object offset exceeds platform")?;
+            if offset >= raw.len() {
+                return Err("object offset outside envelope".into());
+            }
+            let mut bytes = (raw.len() as u64).to_be_bytes().to_vec();
+            bytes.extend_from_slice(&crate::binary::oid(&id)?);
+            bytes.extend_from_slice(
+                &raw[offset
+                    ..raw
+                        .len()
+                        .min(offset.saturating_add(protocol::TRANSFER_CHUNK))],
+            );
+            bytes
+        }
         Operation::Advertise {} => {
             if !payload.is_empty() {
                 return Err("advertise requires an empty payload".into());
             }
-            response.state = Some(repository.state()?);
+            response.state = Some(repository.advertised_state()?);
+            Vec::new()
+        }
+        Operation::RefsPage { after, expected } => {
+            if !payload.is_empty() {
+                return Err("ref page requires an empty payload".into());
+            }
+            let mut state = repository.advertised_state()?;
+            let generation = format!(
+                "{:x}",
+                <sha2::Sha256 as sha2::Digest>::digest(crate::binary::encode(&state)?)
+            );
+            if expected.as_ref().is_some_and(|e| e != &generation) {
+                return Err("references changed during pagination; restart advertisement".into());
+            }
+            let mut refs: Vec<_> = state
+                .branches
+                .iter()
+                .map(|(n, id)| (format!("refs/heads/{n}"), id.clone()))
+                .chain(
+                    state
+                        .tags
+                        .iter()
+                        .map(|(n, id)| (format!("refs/tags/{n}"), id.clone())),
+                )
+                .collect();
+            refs.sort();
+            refs.retain(|(n, _)| after.as_ref().is_none_or(|a| n > a));
+            let next = (refs.len() > 256).then(|| refs[255].0.clone());
+            state.branches.clear();
+            state.tags.clear();
+            for (name, id) in refs.into_iter().take(256) {
+                if let Some(name) = name.strip_prefix("refs/heads/") {
+                    state.branches.insert(name.into(), id);
+                } else {
+                    state
+                        .tags
+                        .insert(name.strip_prefix("refs/tags/").unwrap().into(), id);
+                }
+            }
+            crate::binary::encode(&protocol::RefPage {
+                generation,
+                state,
+                next,
+            })?
+        }
+        Operation::FetchSlice { offset, expected } => {
+            let options = (!payload.is_empty())
+                .then(|| crate::binary::decode::<crate::repository::FetchOptions>(payload))
+                .transpose()?;
+            let (state, bytes) =
+                repository.download_slice_options(expected.as_deref(), offset, options.as_ref())?;
+            response.state = state;
+            bytes
+        }
+        Operation::UploadSlice {
+            transfer,
+            total,
+            offset,
+        } => {
+            if !settings.write {
+                return Err("server is read-only".into());
+            }
+            repository.upload_slice(&transfer, total, offset, payload)?;
+            Vec::new()
+        }
+        Operation::CancelUpload { transfer } => {
+            if !settings.write {
+                return Err("server is read-only".into());
+            }
+            if !payload.is_empty() {
+                return Err("cancel upload requires an empty payload".into());
+            }
+            repository.remove_upload(&transfer)?;
+            Vec::new()
+        }
+        Operation::ApplyUpload {
+            transfer,
+            operation,
+        } => {
+            if !settings.write {
+                return Err("server is read-only".into());
+            }
+            if !payload.is_empty()
+                || !matches!(
+                    &*operation,
+                    Operation::Push { .. }
+                        | Operation::UpdateRef { .. }
+                        | Operation::PublishBatch {}
+                )
+            {
+                return Err("uploaded payload can only apply one reference mutation".into());
+            }
+            let bytes = match repository.read_upload(&transfer) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    // Incomplete uploads remain resumable. A complete upload
+                    // with a bad digest can never succeed and must be removed.
+                    if error.contains("checksum mismatch") {
+                        repository.remove_upload(&transfer)?;
+                    }
+                    return Err(error);
+                }
+            };
+            let result =
+                authorize(settings, &request.repository, &operation, &bytes).and_then(|()| {
+                    process_locked(
+                        settings,
+                        Request {
+                            version: request.version,
+                            repository: request.repository,
+                            operation: *operation,
+                        },
+                        &bytes,
+                    )
+                });
+            if let Err(error) = repository.remove_upload(&transfer) {
+                eprintln!("upload cleanup: {error}");
+            }
+            return result;
+        }
+        Operation::Fork { destination } => {
+            if !settings.write {
+                return Err("server is read-only".into());
+            }
+            if !payload.is_empty() {
+                return Err("fork requires an empty payload".into());
+            }
+            repository_name(&destination)?;
+            match receive::fork(settings, &request.repository, &repository, &destination) {
+                Ok(()) => response.tip = Some(format!("fork-created:{destination}")),
+                Err(error) => return Ok((receive_error_response(error), Vec::new())),
+            }
             Vec::new()
         }
         Operation::Fetch {} => {
-            if !payload.is_empty() {
-                return Err("fetch requires an empty payload".into());
+            let options = (!payload.is_empty())
+                .then(|| crate::binary::decode::<crate::repository::FetchOptions>(payload))
+                .transpose()?;
+            let (state, bytes) = repository.network_fetch(options.as_ref())?;
+            if options.is_some() {
+                bytes
+            } else {
+                response.state = Some(state);
+                Repository::empty_network_bundle(&bytes)?
             }
-            let (state, bytes) = repository.bundle_bytes(None)?;
-            response.state = Some(state);
-            bytes
         }
         Operation::Push {
             branch,
@@ -99,8 +367,26 @@ fn process(
             if force && !settings.force {
                 return Err("server does not allow forced updates".into());
             }
-            match repository.receive_bundle_checked(payload, &branch, expected.as_deref(), force) {
-                Ok(tip) => response.tip = Some(tip),
+            let completed = repository.complete_network_bundle(payload)?;
+            let tip = Repository::bundle_state(&completed)?
+                .tip()
+                .cloned()
+                .ok_or("bundle has no commit at its HEAD branch")?;
+            let updates = [protocol::RefUpdate {
+                namespace: RefNamespace::Branch,
+                name: branch,
+                expected,
+                new: Some(tip.clone()),
+                force,
+            }];
+            match receive::publish(
+                settings,
+                &request.repository,
+                &repository,
+                &completed,
+                &updates,
+            ) {
+                Ok(()) => response.tip = Some(tip),
                 Err(error) => return Ok((receive_error_response(error), Vec::new())),
             }
             // The successful receive already identifies the exact published tip.
@@ -121,19 +407,40 @@ fn process(
             if force && !settings.force {
                 return Err("server does not allow forced updates".into());
             }
-            let namespace = match namespace {
-                RefNamespace::Branch => "branch",
-                RefNamespace::Tag => "tag",
-            };
-            match repository.receive_ref_bundle_checked(
-                payload,
+            let updates = [protocol::RefUpdate {
                 namespace,
-                &name,
-                expected.as_deref(),
-                new.as_deref(),
+                name,
+                expected,
+                new: new.clone(),
                 force,
+            }];
+            match receive::publish(
+                settings,
+                &request.repository,
+                &repository,
+                payload,
+                &updates,
             ) {
-                Ok(tip) => response.tip = tip,
+                Ok(()) => response.tip = new,
+                Err(error) => return Ok((receive_error_response(error), Vec::new())),
+            }
+            Vec::new()
+        }
+        Operation::PublishBatch {} => {
+            let batch: protocol::BatchPublication = crate::binary::decode(payload)?;
+            match receive::publish(
+                settings,
+                &request.repository,
+                &repository,
+                &batch.bundle,
+                &batch.updates,
+            ) {
+                Ok(()) => {
+                    response.tip = Some(format!(
+                        "{:x}",
+                        <sha2::Sha256 as sha2::Digest>::digest(payload)
+                    ))
+                }
                 Err(error) => return Ok((receive_error_response(error), Vec::new())),
             }
             Vec::new()
@@ -375,6 +682,23 @@ fn http_request(stream: &mut DeadlineStream, settings: &Settings) -> Result<(), 
             );
         }
     }
+    let mut authenticated = settings.clone();
+    if let Some(policy) = &settings.policy {
+        let token = headers
+            .get("authorization")
+            .and_then(|h| h.strip_prefix("Bearer "))
+            .unwrap_or("");
+        let Some(actor) = policy.authenticate(token.as_bytes()) else {
+            return http_response(
+                stream,
+                "401 Unauthorized",
+                b"authentication required",
+                false,
+            );
+        };
+        authenticated.actor = actor;
+    }
+    let settings = &authenticated;
     let Some(length_text) = headers.get("content-length") else {
         return http_response(
             stream,
@@ -460,6 +784,25 @@ pub fn run(args: &[String]) -> Result<String, String> {
     {
         return Ok(USAGE.into());
     }
+    if let [_, command, input, output] = args {
+        if command == "compile-policy" {
+            return policy::compile(Path::new(input), Path::new(output));
+        }
+        if command == "audit-log" {
+            return Err("audit-log accepts only one path".into());
+        }
+    }
+    if let [_, command, path] = args {
+        if command == "audit-log" {
+            return receive::read_audit(Path::new(path));
+        }
+    }
+    let mut policy_file = None;
+    let mut principal = None;
+    let mut read_only = false;
+    let mut pre_receive = None;
+    let mut signed_authors = None;
+    let mut post_receive = None;
     let mut root = None;
     let mut listen = "127.0.0.1:9419".to_owned();
     let mut listen_selected = false;
@@ -472,15 +815,24 @@ pub fn run(args: &[String]) -> Result<String, String> {
     while index < args.len() {
         match args[index].as_str() {
             "--stdio" => stdio = true,
+            "--read-only" => read_only = true,
             "--allow-write" => write = true,
             "--allow-force" => force = true,
-            flag @ ("--root" | "--listen" | "--token-file" | "--max-connections") => {
+            flag @ ("--root" | "--listen" | "--token-file" | "--max-connections" | "--policy"
+            | "--principal" | "--pre-receive" | "--post-receive" | "--signed-authors") => {
                 index += 1;
                 let value = args
                     .get(index)
                     .ok_or_else(|| format!("missing {flag} value; {USAGE}"))?;
                 match flag {
                     "--root" => root = Some(PathBuf::from(value)),
+                    "--policy" => policy_file = Some(PathBuf::from(value)),
+                    "--principal" => principal = Some(value.clone()),
+                    "--signed-authors" => {
+                        signed_authors = Some(real_path(Path::new(value), false)?)
+                    }
+                    "--pre-receive" => pre_receive = Some(real_path(Path::new(value), false)?),
+                    "--post-receive" => post_receive = Some(real_path(Path::new(value), false)?),
                     "--listen" => {
                         listen = value.clone();
                         listen_selected = true;
@@ -512,14 +864,39 @@ pub fn run(args: &[String]) -> Result<String, String> {
     if stdio && token.is_some() {
         return Err("stdio uses SSH authentication; token-file is for HTTP".into());
     }
-    if !stdio && write && token.is_none() {
-        return Err("HTTP --allow-write requires --token-file".into());
+    if read_only && (write || force) {
+        return Err("--read-only conflicts with write/force flags".into());
+    }
+    let policy = policy_file
+        .map(|p| policy::Policy::load(&p).map(Arc::new))
+        .transpose()?;
+    if policy.is_some() && token.is_some() {
+        return Err("choose --policy or --token-file".into());
+    }
+    if principal.is_some() && (!stdio || policy.is_none()) {
+        return Err("--principal requires SSH stdio and --policy".into());
+    }
+    if stdio && policy.is_some() && principal.is_none() {
+        return Err("SSH policy requires a trusted forced-command --principal".into());
+    }
+    if let Some(name) = &principal {
+        if !policy.as_ref().unwrap().principal_exists(name) {
+            return Err("unknown SSH principal".into());
+        }
+    }
+    if !stdio && write && token.is_none() && policy.is_none() {
+        return Err("HTTP --allow-write requires --token-file or --policy".into());
     }
     let settings = Arc::new(Settings {
         root,
         token,
-        write: stdio || write,
+        write: !read_only && (stdio || write),
         force,
+        policy,
+        actor: principal.unwrap_or_else(|| if stdio { "ssh".into() } else { "token".into() }),
+        pre_receive,
+        signed_authors,
+        post_receive,
     });
     if stdio {
         let mut input = std::io::stdin().lock();
@@ -560,18 +937,36 @@ pub fn run(args: &[String]) -> Result<String, String> {
     for (accepted, incoming) in listener.incoming().enumerate() {
         let stream = incoming.map_err(|e| format!("accept: {e}"))?;
         let deadline = Instant::now() + TIMEOUT;
-        if workers.len() == 16 {
-            workers
-                .remove(0)
-                .join()
-                .map_err(|_| "server worker panicked")?;
-        }
-        let settings = Arc::clone(&settings);
-        workers.push(std::thread::spawn(move || {
-            if let Err(error) = connection(stream, &settings, deadline) {
-                eprintln!("server connection: {error}");
+        let mut index = 0;
+        while index < workers.len() {
+            if workers[index].is_finished() {
+                workers
+                    .swap_remove(index)
+                    .join()
+                    .map_err(|_| "server worker panicked")?;
+            } else {
+                index += 1;
             }
-        }));
+        }
+        if workers.len() >= 16 {
+            // Never wait for the oldest peer in the accept loop. A saturated
+            // service rejects promptly; the peer can retry with backoff.
+            stream.set_nonblocking(true).map_err(|e| e.to_string())?;
+            let _ = http_response(
+                &mut &stream,
+                "503 Service Unavailable",
+                b"server busy; retry",
+                false,
+            );
+            let _ = stream.shutdown(Shutdown::Both);
+        } else {
+            let settings = Arc::clone(&settings);
+            workers.push(std::thread::spawn(move || {
+                if let Err(error) = connection(stream, &settings, deadline) {
+                    eprintln!("server connection: {error}");
+                }
+            }));
+        }
         if max_connections.is_some_and(|maximum| accepted >= maximum - 1) {
             break;
         }
@@ -679,6 +1074,11 @@ mod tests {
             token: Some(b"required-token".to_vec()),
             write: false,
             force: false,
+            policy: None,
+            actor: "test".into(),
+            pre_receive: None,
+            signed_authors: None,
+            post_receive: None,
         };
         let worker = std::thread::spawn(move || {
             connection(server, &settings, Instant::now() + Duration::from_secs(10))

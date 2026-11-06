@@ -1,3 +1,5 @@
+#[path = "support/native.rs"]
+mod native;
 use serde_json::Value;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -122,11 +124,7 @@ fn one_snapshot_creates_updates_deletes_verifies_and_preserves_wasm_index_and_he
     ok(&["tag", p(&root), "old", &first]);
     let index = fs::read(root.join(".uwgit/index")).unwrap();
     let bytes = fs::read(root.join("a.wasm")).unwrap();
-    let before: Vec<Value> = fs::read_to_string(root.join(".uwgit/reflog"))
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
+    let before: Vec<Value> = native::log_value(&fs::read(root.join(".uwgit/reflog")).unwrap());
     assert!(success(batch(&root, &format!("update refs/heads/topic HEAD {first}\ncreate refs/tags/release topic\ndelete refs/tags/old {first}\nverify refs/heads/main {second}\nverify refs/heads/absent\n"))).is_empty());
     assert_eq!(ok(&["rev-parse", p(&root), "topic"]), second);
     // Every operand resolves against the original snapshot, including topic.
@@ -135,17 +133,13 @@ fn one_snapshot_creates_updates_deletes_verifies_and_preserves_wasm_index_and_he
     assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), index);
     assert_eq!(fs::read(root.join("a.wasm")).unwrap(), bytes);
     assert_eq!(ok(&["rev-parse", p(&root), "HEAD"]), second);
-    let after: Vec<Value> = fs::read_to_string(root.join(".uwgit/reflog"))
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
+    let after: Vec<Value> = native::log_value(&fs::read(root.join(".uwgit/reflog")).unwrap());
     assert_eq!(&after[..before.len()], before);
     assert_eq!(after.len(), before.len() + 3);
     assert!(after[before.len()..]
         .iter()
         .all(|entry| entry["operation"] == "atomic fixture"));
-    assert!(!root.join(".uwgit/ref-transaction.json").exists());
+    assert!(!root.join(".uwgit/ref-transaction.bin").exists());
     ok(&["fsck", p(&root)]);
 }
 
@@ -394,17 +388,15 @@ fn partial_batches_publish_only_accepted_refs_and_preserve_original_wasm_work_an
                 .1
         );
     }
-    let log = fs::read_to_string(root.join(".uwgit/reflog")).unwrap();
-    let changes = log
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+    let changes = native::log_value(&fs::read(root.join(".uwgit/reflog")).unwrap())
+        .into_iter()
         .filter(|entry| entry["operation"] == "partial fixture")
         .collect::<Vec<_>>();
     assert_eq!(changes.len(), 3);
     assert!(changes
         .iter()
         .all(|entry| entry["reference"] != "refs/heads/missing"));
-    assert!(!root.join(".uwgit/ref-transaction.json").exists());
+    assert!(!root.join(".uwgit/ref-transaction.bin").exists());
     ok(&["fsck", p(&root)]);
 }
 
@@ -594,12 +586,12 @@ fn corruption_and_system_failures_are_never_downgraded_to_partial_rejections() {
         let (_, second) = seed(&root);
         match damage {
             "registry" => {
-                fs::write(root.join(".uwgit/worktrees.json"), b"corrupt registry").unwrap()
+                fs::write(root.join(".uwgit/worktrees.bin"), b"corrupt registry").unwrap()
             }
             "object" => {
                 fs::write(root.join(".uwgit/objects").join(&second), b"corrupt object").unwrap()
             }
-            "journal" => fs::create_dir(root.join(".uwgit/ref-transaction.json")).unwrap(),
+            "journal" => fs::create_dir(root.join(".uwgit/ref-transaction.bin")).unwrap(),
             "lock" => fs::write(root.join(".uwgit/write.lock"), b"external writer\n").unwrap(),
             _ => {
                 fs::remove_file(root.join(".uwgit/reflog")).unwrap();
@@ -769,7 +761,7 @@ fn partial_prepare_holds_the_shared_lock_and_reports_rejections_only_after_commi
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(!root.join(".uwgit/write.lock").exists());
-        assert!(!root.join(".uwgit/ref-transaction.json").exists());
+        assert!(!root.join(".uwgit/ref-transaction.bin").exists());
         assert_eq!(
             root.join(".uwgit/tags/accepted").exists(),
             ending == "commit"

@@ -8,7 +8,8 @@
 [标准 name 约定](https://webassembly.github.io/spec/core/appendix/custom.html)、
 [producers 约定](https://github.com/WebAssembly/tool-conventions/blob/main/ProducersSection.md) 和
 [target_features 约定](https://github.com/WebAssembly/tool-conventions/blob/main/Linking.md#target-features-section)
-是目前的元数据识别来源；识别器有意接受保守子集，扩展或不规则格式回退为 opaque。
+是基础元数据识别来源；扩展识别范围及签名容器、符号提示见 [custom section 审计](custom-sections.md)。
+识别器有意接受保守子集，扩展或不规则格式回退为 opaque。
 
 [BinDiff 手册](https://www.zynamics.com/bindiff/manual/#chapUnderstanding)
 通过唯一特征建立函数锚点，再在调用图邻域中缩小匹配候选，并区分相似度和置信度。
@@ -28,7 +29,7 @@ imports 与 export 角色先提供锚点；没有角色锚点的递归依赖、�
 不完整上下文不参与强函数体匹配，剩余相似度候选保留歧义及较低置信。
 原始函数体相同也要核对引用上下文，避免将相同的 `call 1` 配到不同目标。
 
-函数差异还比较按 opcode 序列对齐的 `call`、`return_call` 和 `ref.func` 位置，
+函数差异还比较按 Wasm 控制区/基本块共享对齐的 `call`、`return_call` 和 `ref.func` 位置，
 返回两侧原始 operator index/offset、函数索引、解析目标和独立静态函数候选。
 caller 的配对仍使用普通函数 matcher；callee 的确定对应只采用下文的独立依赖图，
 不借用同名 export 角色、相似度或已消费的重复项来说明目标相同。
@@ -37,12 +38,14 @@ caller 的配对仍使用普通函数 matcher；callee 的确定对应只采用�
 只有重复 import 或未确定的目标提示、且没有其他已知修改时，放入 `call_binding_notes`，
 不据此把函数计作已知修改。
 `direct_calls_changed` 保持原始数字索引列表的含义；绑定变化由新增证据表达。
-opcode 对齐和 defined target 对应都是阅读辅助，`identity_unproven=true` 不被消除。
+控制区指令对齐和 defined target 对应都是阅读辅助，`identity_unproven=true` 不被消除。
 每条记录的 `match_scope` 披露排除 export 角色的范围；可空的 `dependency_proof` 引用共享图根。
 共享图保留既有 JSON 字段名 `export_dependency_graph`，现在也供调用点使用，并为没有 export 的模块构建。
-没有唯一证明且索引改变时保留 ambiguous/unresolved；同索引、无歧义且仅修改被调函数实现时不制造绑定事件。
+没有唯一证明时保留 ambiguous/unresolved，包括索引未变但目标函数体改变的情况：删除函数后，另一个函数可能复用该数字槽位。没有 caller 指令修改时仅添加 `call_binding_notes`，不计作 caller 修改，也不声称目标已改绑。
 full text 展示调用根与逐引用见证，short 披露证明根数量；循环不能借调用或导出角色自举证明。
 这些解释不改变精确字节审计，也不让物理 `trace` 查询自动扩展到语义依赖。
+
+`FunctionDelta` 附两侧原始函数索引和可选的未认证 `name` 符号，方便从 C++ 符号定位；两侧名称不同明确提示不等于源码重命名证明。`change_kind` 区分一般函数体/接口变化、已确认的静态函数引用重定位，以及尚不能区分重定位与改绑的引用变化。只有对齐完整、无类型/locals/控制结构/分支目标变化，且每个原始修改都是有独立唯一目标证据的 Call/RefFunc 操作数替换时，才标记 `confirmed_reference_relocation`。仍保留全部原始编辑与计数，不据此声称运行行为等价。
 
 参考 `uwvm2-ros/documents/ros/multimodule.md` 的真实 import/export 链接方式后，uwgit 不为宿主协议建立额外模块分类。
 宿主名与字段名就是原始 import 字符串，各类外部项、签名和索引都应可比较。
@@ -146,6 +149,7 @@ memarg 的 flags/显式 index/offset 仅按完整已知前缀定位首错，保�
 所有 offset 均为原始文件的字节偏移，区间右端不包含在内。重复 custom section 按出现次序编号，
 不会因名称重复而合并。`semantic_changes` 的 section/条目路径按位置对齐，不宣称跨版本对象身份；
 例如插入 import 后的位置移动可能形成多项解释变化。函数匹配另行提供候选对应关系。
+`custom_changes` 则按名称和逐字节核对的内容建立保守对应，独立报告内容、位置、解释字段及签名输入变化。
 
 ## 不漏报与最小性的契约
 
@@ -174,64 +178,27 @@ NaN 按原始位模式比较；多内存 memarg、bulk init 索引、EH catch �
 ## 原始对象与文件树
 
 仓库对象布局为 `.uwgit/{format,HEAD,refs,objects,tmp}`，另有可选的 tags、reflog、index、stash、config、remotes。
-format 文件为 `uwgit-repository-v1\n`。工作区命令见[命令矩阵](git-workflows.md)，网络服务见[服务协议](server.md)。
-HEAD 保存单个分支名；`refs/<name>` 保存 64 个小写十六进制字符及换行。
-引用名使用受限简单名称，不能包含目录穿越路径。
+format 文件为 `UWGRPO\0\x02`。对象、bundle、补丁和状态均采用[二进制格式](binary-format.md)；不兼容旧 JSON 仓库。
+HEAD 以带 tag 的二进制记录保存分支名或 detached 提交摘要；`refs/<name>` 保存原始 32 字节摘要及版本头。
+引用名支持层级，不能包含目录穿越路径。
 
 对象编码：
 
 | 字段 | 编码 |
 |---|---|
-| magic | `UWGO\0\0\0\x01`，8 字节 |
+| magic | `UWGO\0\0\0\x02`，8 字节 |
 | kind | 1 字节，1=原始 Core wasm，2=commit，3=文件树 |
 | length | 8 字节无符号大端长度 |
 | payload | 完整原始数据 |
 
-对象 ID 是整个编码的 SHA-256，包括类型及长度。commit payload 是规范 JSON，字段固定为
-`format:1, wasm:<blob id>, parents:[<commit ids>], message:<text>`。
-不写入环境相关时间戳以保证相同内容/父链/消息得到相同 ID；作者身份与签名暂不进入协议。
-普通 commit 创建单父提交；非快进 merge 与显式手工解决创建双父提交，父顺序为 `[ours,theirs]`。
-读取器接受并验证多父 DAG。旧 format 1 提交和对象的编码、摘要保持不变。
+对象 ID 是完整原生 envelope 的 SHA-256，包括类型及长度。Wasm blob 保存原始模块字节，
+commit 和 tree 保存按顺序编码的二进制字段及原始 32 字节引用；不持久化解析 IR 或 diff JSON。
+pack 压缩与有限深度 delta 不改变对象 ID。bundle 的 manifest 和对象目录也保存二进制字段，
+安装前验证对象摘要、完整祖先图和实际引用。
 
-多文件提交采用 format 2，以 `tree` 引用 kind 3 对象，省略 `wasm`；
-其规范字段顺序为 `format, parents, message, tree`，可选的 `legacy_path` 在末尾。
-树 payload 为 `{format:1,entries:{path:blob_id}}`，路径按 UTF-8 字符串排序，目录由路径隐含。
-空映射就是空文件树，文件删除不以空 Wasm 代替。路径禁止绝对路径、空段、点段、控制字符、
-元数据目录及文件/目录前缀冲突。每个 blob 仍保存完整原始模块。
-
-旧提交没有文件名。升级时明确记录 `legacy_path`，后代提交保留该映射；不从内容或名称猜路径。
-同路径的新增、删除、修改独立参与三方合并；多个路径的冲突或非法树必须在安装对象及发布引用前发现。
-历史重放先在内存中完成全部文件树，最后一次发布分支引用。已有 index 的工作区还需预检全部目标路径，
-避免提交成功后才发现未追踪文件会被覆盖。外部并发写入和发布后的实际 I/O 失败仍会明确报告部分完成状态。
-工作树的文件/目录转换由同一完整计划预检，核对所有受控路径和被替换目录的完整子树，
-发布前重新比对计划；依次删除受控文件、清理受控空目录、写入目标。
-非递归目录清理保留同级内容，任何未追踪文件、未受控空子目录或符号链接阻碍都会拒绝转换。
---resolved-index 则是明确的元数据提交：持有 index.lock 读取完整规范暂存树，
-再以 write.lock 校验双方不可变 ID、分支、共同祖先和全部对象，记录双父结果与当次逐文件审计。
-它不进行工作树同步，也不把未暂存修改作为解决结果。
-
-离线精确字节 patch 使用单独的[规范 JSON 格式](patch.md)，绑定完整原始文件摘要及可重放编辑，
-不将未经复核的语义或最小性声明作为输入。它不取代携带 DAG 的 bundle。
-
-bundle 编码为 magic `UWGB\0\0\0\x01`、u64be manifest 长度、规范 manifest JSON
-`{format,head,refs}`、u64be 对象数，以及按 ID 排序的全部对象记录。
-无标签时保留旧版 format 1 manifest 的精确编码；有标签时显式使用 format 2，增加 tags 映射。
-含 tree 或 format 2 提交时显式使用 format 3 manifest；旧对象集合仍使用原 format 1/2 编码。
-仓库 marker 与对象 envelope 不变，提交 ID 不因传输或增加标签而变化。
-每条记录为 64 字节 ASCII ID、u64be 编码长度、完整对象编码。
-重复键、非规范编码、重复对象、摘要不符、未知类型、缺父对象、错误对象类型、循环图和尾随数据均拒绝。
-
-unbundle 在修改仓库之前验证全部输入；随后持锁检查本地状态、写入对象，最后发布目标引用。
-它选择 bundle 的 HEAD 提交导入指定接收分支。
-已有本地 index 时，unbundle 拒绝直接导入当前分支，应导入 incoming 分支后再 merge，以保留工作区预检与同步。
-若导出仓库的 HEAD 尚未有提交，
-即使其他分支已有提交，该 bundle 也不能用于 unbundle；应先 switch 到已有提交的分支再导出。
-clone 保留全部分支与 unborn HEAD，不受这项源提交选择限制。
-输入验证失败不写入任何对象；写入过程发生 I/O 中断可能留下未引用对象，但不应提前更新引用。
-clone 先读取一致快照，再写入新的目录；目标目录必须不存在。
-仓库版 inspect/diff/patch/apply 的输入使用已验证快照；两侧引用批量解析并返回实际提交 ID。
-新文件输出使用同目录临时文件写全并同步后 hard-link 原子发布，拒绝覆盖任何已有目标，再同步父目录。
-读对象重新核对 SHA-256。写锁保护协作进程；操作系统用户的任意外部篡改不属于锁提供的互斥保证。
+离线[字节补丁](patch.md)保存原始摘要、物理区间及原始编辑字节；人类可读 diff、十六进制和
+可选 JSON 报告在命令展示层生成。所有旧 JSON 读取/迁移分支均删除。
+具体对象、索引、RPC、状态记录及中断恢复合同见[二进制格式](binary-format.md)和[压缩存储](packed-storage.md)。
 
 ## 验收边界
 
@@ -246,8 +213,8 @@ clone 先读取一致快照，再写入新的目录；目标目录必须不存�
 当前已实现受限的结构化三方合并及带预期 HEAD 检查的手工解决，见[合并说明](merge.md)。
 区间历史查询沿全部父边提供审计编辑脚本下的影响证据，保留重复内容的不确定性及回退/预算边界，
 不将物理对齐作为函数身份或作者来源证明，见[历史追踪说明](trace.md)。
-HTTP/SSH 传输共享已验证的对象及 bundle 闭包。跨布局索引重编号、语义等价或 rename 的历史证明、
-签名、pack/delta 压缩与超大仓库流式处理均待实现。
+HTTP/SSH 传输共享已验证的对象及 bundle 闭包，pack/delta 压缩已实现。
+跨布局索引重编号的历史证明、语义等价、rename 身份证明、签名和超大仓库恒定内存流式处理仍未实现。
 
 常量表达式中读取先前定义的 global 记录 `gc`，与整数算术的 `extended_const` 独立。
 custom 外层名称先检查长度是否超过本节剩余字节，防止固定 reader 在 32 位地址空间中溢出；
@@ -267,3 +234,54 @@ FC 次级 opcode 8..17 只在次级 opcode 完整识别后，按 wire 顺序定�
 失败或未知的次级 opcode 不授权读取后续操作数。
 `memory.size` / `memory.grow` 仅在真实 reader 的确定整数/EOF 失败后定位一个完整 u32 字段；
 完整索引、旧版保留零 wire 规则和命名空间验证分开处理，不读取后续指令。
+
+
+## Wasm 分层更新对应
+
+函数候选在完整 typed body、角色和独立引用证据之外，使用按顺序排列的 typed 三指令邻域来打破
+opcode/立即数直方图相同的候选平局。邻域包含 block/loop/if/else/end，以及规范化静态引用目标。
+邻域散列只参与相似度排序；精确身份键仍比较完整数据。原始候选平局仍保留歧义，
+搜索预算耗尽的函数仍标记 unclassified。特征每轮缓存并 intern 为整数，候选用有序整数交集评分。
+已匹配函数不再重复构建相似度直方图；均匀候选矩阵只有在所有评分项的交集上下界一致时才走快速路径。
+
+`FunctionDelta.instruction_alignment` 使用 `wasm_structured_regions_v1`：
+
+- 先用迭代式 arena 解析 function/block/loop/if/try_table 标签树，固定 then/else 所属分支臂。
+- 在同一个已配对父区和分支臂内，依次寻找唯一的引用归一化完整指令区、唯一控制形状，
+  再做有序邻接补配。不同父区/不同 if 分支臂之间不会凭相同指令内容认定为同一个块。
+- 区域头/else/end 分别对齐；兄弟区域的顺序用最长递增子序列区分插入造成的索引漂移与重排。
+  区域移动独立记录，不伪装成一批常量替换。移动且修改的区域仍列出实际指令修改。
+- 区内再按 br/br_if/br_table、return、trap、尾调用、引用条件跳转和 throw 切分基本块。
+  共有的控制转移边界约束两侧指令对齐，防止相同指令跨既有跳转边界配对。
+- 线性块先去掉共同首尾，再用唯一 typed token 锚点分割，只在有界空隙使用 Myers。
+  一个函数共享 4,194,304 工作额度；单次 Myers 空隙最多 262,144 平方工作量。
+  锚点扫描也扣预算。无锚点大空隙使用保守位置对应，标记 `complete=false` 和具体原因。
+  不使用会随机器负载变化的时间截止，因此单线程与默认全线程得到相同结果。
+- 一个新增/移除的无子控制结构的普通 block 可以包住原有线性指令；仅其头/end 算新增/移除。
+  不把 loop、if 或异常处理区扁平化。未知/旧 EH 控制语法使用有界线性回退并标记不完整。
+
+`regions` 仅列移动区、直接修改的最小已匹配控制区、function 上下文和最大未匹配子树，
+不把深层一条指令的改变重复展开为每个祖先的改变。`basic_blocks` 保留各块的半开 operator 范围，
+范围可以有洞，以免把中间嵌套控制区算作线性块的一部分；每个基本块附 then/else/body 分支臂和两侧对应控制区的起始 operator。区域附两侧原始 offset、父区头和 parent_arm；
+`OperatorDelta::Replace.index` 是旧序号，`new_index` 是新序号。Insert 的序号属于新函数，Delete 属于旧函数。
+这些序号均从各函数第零条指令开始，字节 offset 仍是整个原始模块内的绝对位置。
+
+分支证据把数字 label depth 解析到两侧对应标签：loop 指向循环头，其余 block/if/try_table 指向退出标签，
+function 指向返回标签。深度改变但对应标签相同是 `same_label_depth_relocated`；对应标签不同为
+`different_label`；标签无对应/越界为 `unresolved_label`。br_table 的各 target 与 default 按角色分开，
+目标个数改变不会把 default 错配到普通 target。try_table 的 catch depth 按新标签入栈之前的外层栈解析。
+原始立即数改变始终保留在 operator delta，即便数字变化只是索引/深度重定位。
+
+调用/引用绑定复用完全相同的区域、基本块、指令对应，不再独立运行第二次整函数 Myers。
+重复站点在相邻唯一锚点之间仍不能区分时，报告 `ambiguous_site`，不声称已知改绑。
+未知控制语法或工作预算回退也撤回调用站点的确定对应；歧义标签不提供确定的分支重定向证据。
+`pairing=wasm_region_instruction_alignment` 披露使用的站点对应方法。
+
+这是对二进制语法的确定性对应，不是源代码历史或运行行为的证明，`identity_unproven=true` 始终保留。
+`complete` 表示这个对应过程没有语法回退/预算截断，不表示候选函数或块已被证明属于同一历史实体。
+插入全新控制转移会改变原有基本块结构，只有两侧共有且已对应的控制边界可以作为硬约束。
+原始字节审计、二进制 patch、对象 OID、压缩存储和物理 trace 完全独立，仍可逐字节恢复新模块。
+
+算法参考 BinDiff commit `13c437afa0740bd704cf396e3de3eb8d1a471ead` 的
+`match/basic_block_hash.cc`、`match/basic_block_edges_mdindex.cc`、`match/flow_graph.cc`：
+借鉴唯一锚点、邻接传播与分阶段对应的思路；实现为 Wasm 标签树和分支臂约束，未移植机器码 CFG 算法或复制源码。

@@ -590,7 +590,7 @@ fn decode_hex(value: &Value) -> Vec<u8> {
 }
 
 fn replay_patch_independently(patch: &Value, old: &[u8], new: &[u8]) {
-    assert_eq!(patch["format"], "uwgit-byte-patch-v1");
+    assert_eq!(patch["format"], "uwgit-byte-patch-binary-v1");
     assert_eq!(patch["old_sha256"], sha(old));
     assert_eq!(patch["new_sha256"], sha(new));
     assert_eq!(patch["old_len"], old.len());
@@ -636,7 +636,7 @@ fn commit(case: &mut Case, repo: &Path, input: &Path, message: &str) -> String {
 fn object(repo: &Path, id: &str, kind: u8) -> Vec<u8> {
     let bytes = std::fs::read(repo.join(".uwgit/objects").join(id)).unwrap();
     assert_eq!(sha(&bytes), id);
-    assert_eq!(&bytes[..8], b"UWGO\0\0\0\x01");
+    assert_eq!(&bytes[..8], b"UWGO\0\0\0\x02");
     assert_eq!(bytes[8], kind);
     let length = u64::from_be_bytes(bytes[9..17].try_into().unwrap());
     assert_eq!(length, (bytes.len() - 17) as u64);
@@ -644,7 +644,10 @@ fn object(repo: &Path, id: &str, kind: u8) -> Vec<u8> {
 }
 
 fn verify_commit(repo: &Path, id: &str, parents: &[String], expected: &[u8]) -> Value {
-    let commit: Value = serde_json::from_slice(&object(repo, id, 2)).unwrap();
+    let commit = serde_json::to_value(
+        wasm_git::repository::Commit::from_bytes(&object(repo, id, 2)).unwrap(),
+    )
+    .unwrap();
     assert_eq!(commit["parents"], json!(parents));
     let blob = commit["wasm"].as_str().unwrap();
     assert_eq!(object(repo, blob, 1), expected);
@@ -730,7 +733,10 @@ fn lifecycle(case: &mut Case, label: &str, old_file: &Path, new_file: &Path) {
             &text(&patch),
         ]),
     );
-    let metadata: Value = serde_json::from_slice(&std::fs::read(&patch).unwrap()).unwrap();
+    let metadata: Value = serde_json::to_value(
+        wasm_git::patch::BytePatch::from_bytes(&std::fs::read(&patch).unwrap()).unwrap(),
+    )
+    .unwrap();
     replay_patch_independently(&metadata, &old, &new);
     case.artifact("offline exact byte patch", &patch);
     case.cli_json(
@@ -1905,7 +1911,10 @@ fn reference_roundtrip(case: &mut Case, label: &str, old_file: &Path, new_file: 
             &text(&patch),
         ]),
     );
-    let patch_json: Value = serde_json::from_slice(&std::fs::read(&patch).unwrap()).unwrap();
+    let patch_json: Value = serde_json::to_value(
+        wasm_git::patch::BytePatch::from_bytes(&std::fs::read(&patch).unwrap()).unwrap(),
+    )
+    .unwrap();
     replay_patch_independently(&patch_json, &old, &new);
     case.artifact("reference-binding raw offline patch", &patch);
     case.cli_json(
@@ -2182,7 +2191,7 @@ fn real_preload_call_indices_and_actual_import_targets_are_distinct_oracles() {
             .iter()
             .find(|binding| binding["old"]["function_index"] == operand)
             .unwrap();
-        assert_eq!(binding["pairing"], "opcode_alignment");
+        assert_eq!(binding["pairing"], "wasm_region_instruction_alignment");
         assert_eq!(binding["target_changed"], true);
         assert_eq!(binding["identity_unproven"], true);
         let independent_old = base_calls

@@ -76,13 +76,13 @@ python3 tools/test-example-inputs.py > "$run/evidence/sdk-input-tests.log" 2>&1
 sdk_input_status=$?
 python3 tools/test-source-manifest.py > "$run/evidence/source-transfer-tests.log" 2>&1
 source_transfer_status=$?
-cargo clippy --locked --all-targets -- -D warnings > "$run/evidence/clippy.log" 2>&1
+cargo clippy --locked --all-features --all-targets -- -D warnings > "$run/evidence/clippy.log" 2>&1
 clippy_status=$?
-cargo test --locked "${regular_targets[@]}" -- "${regular_filters[@]}" --nocapture > "$run/evidence/tests.log" 2>&1
+cargo test --locked --all-features "${regular_targets[@]}" -- "${regular_filters[@]}" --nocapture > "$run/evidence/tests.log" 2>&1
 test_status=$?
 doctest_status=0
 if [[ $run_doctest == 1 && $test_status == 0 ]]; then
-    cargo test --locked --doc -- --nocapture > "$run/evidence/doctests.log" 2>&1
+    cargo test --locked --all-features --doc -- --nocapture > "$run/evidence/doctests.log" 2>&1
     doctest_status=$?
 elif [[ $run_doctest == 1 ]]; then
     printf '%s\n' 'Separate doctests were requested but not run because regular tests failed.' > "$run/evidence/doctests.log"
@@ -95,7 +95,7 @@ if [[ $run_spec == 1 && $test_status == 0 ]]; then
     if [[ $spec_status == 0 ]]; then
         while IFS=$'\t' read -r version corpus_root; do
             UWGIT_SPEC_ROOT="$corpus_root" UWGIT_SPEC_VERSION="$version" UWGIT_SPEC_REPORT="$run/evidence/spec-core$version.json" \
-                cargo test --locked --test spec_corpus official_core_wast_corpus_audit -- --ignored --exact --nocapture --test-threads=1 > "$run/evidence/spec-core$version.log" 2>&1
+                cargo test --locked --all-features --test spec_corpus official_core_wast_corpus_audit -- --ignored --exact --nocapture --test-threads=1 > "$run/evidence/spec-core$version.log" 2>&1
             if [[ $? != 0 ]]; then spec_status=1; fi
         done < <(python3 -c 'import json,sys; data=json.load(open(sys.argv[1])); [print(str(c["version"])+"\t"+c["root"]) for c in data["corpora"]]' "$run/evidence/spec-inputs.json")
         python3 tools/check-spec-reports.py "$run/evidence/spec-inputs.json" "$run/evidence" --corpus-mode "$corpus_mode" > "$run/evidence/spec-verification.json" 2> "$run/evidence/spec-verification.log"
@@ -111,7 +111,7 @@ fi
 fuzz_status=0
 if [[ $run_fuzz == 1 && $test_status == 0 ]]; then
     UWGIT_AUDIT_FUZZ_REPORT_DIR="$run/evidence/audit-fuzz" \
-        cargo test --locked --test audit_fuzz deterministic_extended_byte_fuzz_with_replay_receipts -- \
+        cargo test --locked --all-features --test audit_fuzz deterministic_extended_byte_fuzz_with_replay_receipts -- \
         --ignored --exact --nocapture --test-threads=1 > "$run/evidence/fuzz.log" 2>&1
     fuzz_status=$?
     if [[ $fuzz_status == 0 ]]; then

@@ -115,7 +115,7 @@ fn snapshot(directory: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
 
 fn metadata(patch: &BytePatch) -> Value {
     json!({
-        "format": "uwgit-byte-patch-v1",
+        "format": "uwgit-byte-patch-binary-v1",
         "old_sha256": patch.old_sha256,
         "new_sha256": patch.new_sha256,
         "old_len": patch.old_len,
@@ -139,7 +139,7 @@ fn roundtrip(label: &str, old: &[u8], new: &[u8]) -> Value {
     assert_eq!(patch.new_sha256, digest(new));
     assert_eq!(patch.old_len, old.len() as u64);
     assert_eq!(patch.new_len, new.len() as u64);
-    assert_eq!(encoded, serde_json::to_vec(&patch).unwrap());
+    assert_eq!(encoded, patch.to_bytes().unwrap());
     assert_eq!(created["schema_version"], 1);
     assert_eq!(created["written"], true);
     assert_eq!(created["output"], patch_path);
@@ -443,9 +443,12 @@ fn tampered_metadata_spans_and_payloads_are_rejected_before_output_creation() {
     cases.push(("no-op-edit", malformed));
     for (label, malformed) in cases {
         let patch_path = tmp.path(&format!("{label}.uwpatch"));
-        // Keep canonical field order while bypassing the creator's checks: these
-        // cases must reach the protocol/replay validation, not fail reordering.
-        std::fs::write(&patch_path, serde_json::to_vec(&malformed).unwrap()).unwrap();
+        // Hex spellings exist only in the display DTO, not in the binary wire.
+        if label == "odd-hex" || label == "uppercase-hex" {
+            assert!(malformed.to_bytes().is_err());
+            continue;
+        }
+        std::fs::write(&patch_path, unchecked_patch(&malformed)).unwrap();
         let error = reject_without_writes(&tmp, &old_path, &patch_path, label);
         if label == "target-hash" || label == "new-payload" {
             assert!(error.contains("new_sha256"), "{label}: {error}");
@@ -457,7 +460,7 @@ fn tampered_metadata_spans_and_payloads_are_rejected_before_output_creation() {
 }
 
 #[test]
-fn noncanonical_or_ambiguous_json_cannot_be_applied() {
+fn malformed_binary_and_old_json_patches_cannot_be_applied() {
     let tmp = Temp::new("protocol");
     let old = functions(41, 53);
     let new = functions(47, 53);
@@ -465,22 +468,20 @@ fn noncanonical_or_ambiguous_json_cannot_be_applied() {
     let canonical = patch.to_bytes().unwrap();
     let old_path = tmp.path("old.wasm");
     std::fs::write(&old_path, &old).unwrap();
-    let text = String::from_utf8(canonical.clone()).unwrap();
-    let mut newline = canonical.clone();
-    newline.push(b'\n');
-    let duplicate = text.replacen(
-        "{\"format\":",
-        "{\"format\":\"uwgit-byte-patch-v1\",\"format\":",
-        1,
-    );
-    let unknown = text.replacen('{', "{\"untrusted_claim\":true,", 1);
-    let escaped = text.replacen("uwgit", "\\u0075wgit", 1);
+    let mut trailing = canonical.clone();
+    trailing.push(0);
+    let mut wrong_magic = canonical.clone();
+    wrong_magic[7] = b'0';
+    let mut count_overflow = canonical.clone();
+    count_overflow[88..92].fill(255);
+    let mut reversed_span = canonical.clone();
+    reversed_span[92..100].fill(255);
     let cases = [
-        ("pretty", serde_json::to_vec_pretty(&patch).unwrap()),
-        ("newline", newline),
-        ("duplicate", duplicate.into_bytes()),
-        ("unknown-field", unknown.into_bytes()),
-        ("alternate-escape", escaped.into_bytes()),
+        ("old-json", serde_json::to_vec(&patch).unwrap()),
+        ("trailing", trailing),
+        ("wrong-magic", wrong_magic),
+        ("count-overflow", count_overflow),
+        ("reversed-span", reversed_span),
         ("truncated", canonical[..canonical.len() - 1].to_vec()),
     ];
     for (label, bytes) in cases {
@@ -646,4 +647,36 @@ fn command_help_exits_successfully_without_reading_inputs_or_writing_outputs() {
         assert!(String::from_utf8_lossy(&result.stdout).contains("Usage:"));
         assert_eq!(snapshot(&tmp.0), before);
     }
+}
+
+fn unchecked_patch(patch: &BytePatch) -> Vec<u8> {
+    let raw = |value: &str| {
+        (0..value.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&value[i..i + 2], 16).unwrap())
+            .collect::<Vec<_>>()
+    };
+    let mut bytes = if patch.format == "uwgit-byte-patch-binary-v1" {
+        b"UWGPAT01".to_vec()
+    } else {
+        b"UWGPAT00".to_vec()
+    };
+    bytes.extend(raw(&patch.old_sha256));
+    bytes.extend(raw(&patch.new_sha256));
+    bytes.extend(patch.old_len.to_be_bytes());
+    bytes.extend(patch.new_len.to_be_bytes());
+    bytes.extend((patch.edits.len() as u32).to_be_bytes());
+    for edit in &patch.edits {
+        for n in [
+            edit.old_span.start,
+            edit.old_span.end,
+            edit.new_span.start,
+            edit.new_span.end,
+        ] {
+            bytes.extend(n.to_be_bytes());
+        }
+        bytes.extend(raw(&edit.old_hex));
+        bytes.extend(raw(&edit.new_hex));
+    }
+    bytes
 }

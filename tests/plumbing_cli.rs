@@ -1,3 +1,5 @@
+#[path = "support/native.rs"]
+mod native;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -260,7 +262,10 @@ fn checkout_index_materializes_exact_images_with_complete_preflight_and_no_index
         None,
     );
     assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), before);
-    assert_eq!(fs::read(root.join(".uwgit/HEAD")).unwrap(), b"main\n");
+    assert_eq!(
+        fs::read(root.join(".uwgit/HEAD")).unwrap(),
+        native::reference("main")
+    );
 }
 
 #[test]
@@ -379,9 +384,23 @@ fn unresolved_index_cannot_be_used_as_a_complete_manual_history_resolution() {
     }
     // Saved stashes are complete snapshots. A canonical but unmerged saved
     // index must not be read as an empty resolved tree by list/apply.
-    let payload = std::str::from_utf8(&before[9..]).unwrap().trim_end();
-    let saved = format!("{{\"format\":2,\"next_id\":1,\"entries\":[{{\"id\":0,\"message\":\"unmerged\",\"base\":\"{head}\",\"index\":{payload},\"worktree\":{{}}}}]}}\n");
-    fs::write(root.join(".uwgit/stash"), saved).unwrap();
+    let index = wasm_git::binary::decode::<native::Index>(&before[9..]).unwrap();
+    let saved = native::Stashes {
+        format: 2,
+        next_id: 1,
+        entries: vec![native::Stash {
+            id: 0,
+            message: "unmerged".into(),
+            base: head.clone(),
+            index,
+            worktree: std::collections::BTreeMap::new(),
+        }],
+    };
+    fs::write(
+        root.join(".uwgit/stash"),
+        wasm_git::binary::encode(&saved).unwrap(),
+    )
+    .unwrap();
     fail(&["stash", r, "list"], None);
     fail(&["stash", r, "apply", "0"], None);
     assert_eq!(ok(&["rev-parse", r, "HEAD"], None), head);
@@ -508,7 +527,7 @@ fn read_tree_unmerged_stages_preserve_each_original_side_until_explicit_resoluti
     std::fs::write(root.join("a.wasm"), wasm(9)).unwrap();
     ok(&["read-tree", r, "-m", &base, &ours, &theirs], None);
     let original = fs::read(root.join(".uwgit/index")).unwrap();
-    assert!(original.starts_with(b"UWGITIDX\x03"));
+    assert!(original.starts_with(b"UWGITIDX\x06"));
     let rows = ok(&["ls-files", r, "--unmerged"], None);
     for (number, id) in ids.iter().enumerate() {
         assert!(rows.contains(&format!("100644 {id} {}\ta.wasm", number + 1)));
@@ -620,7 +639,10 @@ fn cacheinfo_and_update_index_use_native_images_without_touching_worktree_or_hea
         b"uncommitted local bytes"
     );
     assert_eq!(ok(&["ls-files", r], None), "");
-    assert_eq!(fs::read(root.join(".uwgit/HEAD")).unwrap(), b"main\n");
+    assert_eq!(
+        fs::read(root.join(".uwgit/HEAD")).unwrap(),
+        native::reference("main")
+    );
 }
 
 #[test]
@@ -701,7 +723,7 @@ fn object_hashes_payloads_and_graphs_roundtrip_without_touching_head() {
     let root = &temp.0;
     let bytes = wasm(7);
     let dry = ok(&["hash-object", path(root), "--stdin"], Some(&bytes));
-    let mut envelope = b"UWGO\0\0\0\x01".to_vec();
+    let mut envelope = b"UWGO\0\0\0\x02".to_vec();
     envelope.push(1);
     envelope.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
     envelope.extend_from_slice(&bytes);
@@ -723,7 +745,10 @@ fn object_hashes_payloads_and_graphs_roundtrip_without_touching_head() {
         None,
     );
     assert_eq!(fs::read(exported).unwrap(), bytes);
-    assert_eq!(fs::read(root.join(".uwgit/HEAD")).unwrap(), b"main\n");
+    assert_eq!(
+        fs::read(root.join(".uwgit/HEAD")).unwrap(),
+        native::reference("main")
+    );
     assert!(!root.join(".uwgit/index").exists());
     assert_eq!(fs::read_dir(root.join(".uwgit/refs")).unwrap().count(), 0);
     ok(&["fsck", path(root)], None);
@@ -830,7 +855,10 @@ fn read_and_write_tree_leave_work_bytes_and_branch_unchanged() {
     ok(&["read-tree", path(root), &tree], None);
     assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), before);
     assert_eq!(fs::read(root.join("a.wasm")).unwrap(), b"dirty work bytes");
-    assert_eq!(fs::read(root.join(".uwgit/HEAD")).unwrap(), b"main\n");
+    assert_eq!(
+        fs::read(root.join(".uwgit/HEAD")).unwrap(),
+        native::reference("main")
+    );
 }
 
 #[test]

@@ -32,7 +32,6 @@ pub struct ReplayJournal {
     pub checkpoint: Option<ReplayCheckpoint>,
     pub index_changed: bool,
     pub worktree_changed: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rebase: Option<ReplayRebase>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,10 +80,7 @@ fn mapped(snapshot: &Snapshot, id: &str, anchor: Option<&str>) -> RepositoryResu
     let mut revision = if let Some(Object::Tree(tree)) = snapshot.objects.get(id) {
         let mut files = Files::new();
         for (path, id) in &tree.entries {
-            let Some(Object::Wasm(bytes)) = snapshot.objects.get(id) else {
-                return Err("replay tree contains a missing original Wasm image".into());
-            };
-            files.insert(path.clone(), bytes.clone());
+            files.insert(path.clone(), partial_storage::blob(snapshot, id)?.to_vec());
         }
         RevisionFiles {
             commit: String::new(),
@@ -373,7 +369,7 @@ fn stage_image(
                 stage_tree_object(WASM_KIND, bytes, &snapshot.encoded, &mut staged)?,
             );
         }
-        let bytes = serde_json::to_vec(&Tree { format: 1, entries }).map_err(|e| e.to_string())?;
+        let bytes = encode_tree(&Tree { format: 1, entries }).map_err(|e| e.to_string())?;
         stage_tree_object(TREE_KIND, &bytes, &snapshot.encoded, &mut staged)?
     };
     for (key, bytes) in staged {
@@ -864,7 +860,7 @@ impl Repository {
 }
 fn selection_digest(pending: &PendingOperation) -> RepositoryResult<String> {
     let replay = pending.replay.as_ref().ok_or("missing replay state")?;
-    let bytes = serde_json::to_vec(&(
+    let bytes = crate::binary::encode(&(
         &pending.id,
         &pending.operation,
         &pending.branch,
@@ -878,7 +874,7 @@ fn selection_digest(pending: &PendingOperation) -> RepositoryResult<String> {
     ))
     .map_err(|e| e.to_string())?;
     let bytes = if pending.version == 3 {
-        serde_json::to_vec(&(bytes, &replay.rebase)).map_err(|e| e.to_string())?
+        crate::binary::encode(&(bytes, &replay.rebase)).map_err(|e| e.to_string())?
     } else {
         bytes
     };
@@ -1378,45 +1374,7 @@ mod tests {
                 let index_after = if images.conflicts.is_empty() {
                     index(&images.files)
                 } else {
-                    #[derive(Serialize)]
-                    struct Stage<'a> {
-                        base: &'a Option<Vec<u8>>,
-                        ours: &'a Option<Vec<u8>>,
-                        theirs: &'a Option<Vec<u8>>,
-                    }
-                    #[derive(Serialize)]
-                    struct Raw<'a> {
-                        format: u32,
-                        files: &'a Files,
-                        legacy_path: Option<&'a str>,
-                        conflicts: BTreeMap<&'a str, Stage<'a>>,
-                    }
-                    let conflicts = images
-                        .conflicts
-                        .iter()
-                        .map(|(p, s)| {
-                            (
-                                p.as_str(),
-                                Stage {
-                                    base: &s[0],
-                                    ours: &s[1],
-                                    theirs: &s[2],
-                                },
-                            )
-                        })
-                        .collect();
-                    let mut raw = b"UWGITIDX\x03".to_vec();
-                    raw.extend(
-                        serde_json::to_vec(&Raw {
-                            format: 3,
-                            files: &images.files,
-                            legacy_path: None,
-                            conflicts,
-                        })
-                        .unwrap(),
-                    );
-                    raw.push(b'\n');
-                    raw
+                    crate::porcelain::fixture_index(&images.files, None, &images.conflicts)
                 };
                 Ok(ReplayCheckpoint {
                     action: "begin".into(),
@@ -1613,7 +1571,7 @@ mod tests {
             let progress = settled.replay.as_ref().unwrap().progress.clone();
             fs::write(
                 f.repo.metadata.join(format!("refs/{}", settled.branch)),
-                format!("{progress}\n"),
+                encode_reference(&progress, false).unwrap(),
             )
             .unwrap();
             fs::write(f.repo.root.join("a.wasm"), b"later raw edit").unwrap();
@@ -1623,7 +1581,7 @@ mod tests {
             assert_eq!(control(&f, "continue").unwrap()["already_published"], true);
             assert_eq!(f.repo.reflog().unwrap().len(), logs + 1);
             fs::write(
-                f.repo.metadata.join("pending.json"),
+                f.repo.metadata.join("pending.bin"),
                 encode_pending(&settled).unwrap(),
             )
             .unwrap();
@@ -1655,7 +1613,7 @@ mod tests {
             };
             forged.replay.as_mut().unwrap().selection_sha256 = selection_digest(&forged).unwrap();
             fs::write(
-                f.repo.metadata.join("pending.json"),
+                f.repo.metadata.join("pending.bin"),
                 encode_pending(&forged).unwrap(),
             )
             .unwrap();
@@ -1744,7 +1702,11 @@ mod tests {
                 .unwrap();
             let progress = settled.replay.as_ref().unwrap().progress.clone();
             if published {
-                fs::write(f.repo.metadata.join("refs/main"), format!("{progress}\n")).unwrap();
+                fs::write(
+                    f.repo.metadata.join("refs/main"),
+                    encode_reference(&progress, false).unwrap(),
+                )
+                .unwrap();
             }
             fs::write(f.repo.metadata.join("index"), b"later broken editor index").unwrap();
             fs::write(f.repo.root.join("a.wasm"), b"later raw edit").unwrap();
@@ -1763,7 +1725,7 @@ mod tests {
                 b"later broken editor index"
             );
             fs::write(
-                f.repo.metadata.join("pending.json"),
+                f.repo.metadata.join("pending.bin"),
                 encode_pending(&settled).unwrap(),
             )
             .unwrap();
@@ -1791,12 +1753,18 @@ mod tests {
         let raw = fs::read(f.repo.metadata.join("index")).unwrap();
         f.repo.create_branch("other", &f.head).unwrap();
         f.repo
-            .atomic_write(&f.repo.metadata.join("HEAD"), b"other\n")
+            .atomic_write(
+                &f.repo.metadata.join("HEAD"),
+                &encode_reference("other", false).unwrap(),
+            )
             .unwrap();
         assert!(control(&f, "continue").is_err());
         assert!(control(&f, "abort").is_err());
         f.repo
-            .atomic_write(&f.repo.metadata.join("HEAD"), b"main\n")
+            .atomic_write(
+                &f.repo.metadata.join("HEAD"),
+                &encode_reference("main", false).unwrap(),
+            )
             .unwrap();
         for field in 0..4 {
             let mut forged = f.pending.clone();
@@ -1814,10 +1782,10 @@ mod tests {
                     .map(|_| ())
                     .unwrap(),
             }
-            let bytes = serde_json::to_vec(&forged).unwrap();
+            let bytes = crate::binary::encode(&forged).unwrap();
             // Add canonical trailing newline just as encode_pending does.
             fs::write(
-                f.repo.metadata.join("pending.json"),
+                f.repo.metadata.join("pending.bin"),
                 [bytes, b"\n".to_vec()].concat(),
             )
             .unwrap();
@@ -1826,7 +1794,7 @@ mod tests {
             assert_eq!(f.repo.snapshot().unwrap().encoded, objects);
         }
         fs::write(
-            f.repo.metadata.join("pending.json"),
+            f.repo.metadata.join("pending.bin"),
             encode_pending(&f.pending).unwrap(),
         )
         .unwrap();

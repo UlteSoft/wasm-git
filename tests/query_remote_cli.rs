@@ -1,4 +1,6 @@
 //! Fixed, advertisement-only queries. No object download or guest execution.
+#[path = "support/native.rs"]
+mod native;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
@@ -97,7 +99,7 @@ fn response() -> Value {
         "state":{"format":1,"head":"main","branches":{"main":A,"topic":B},"tags":{"v1":A}},"tip":null})
 }
 fn frame_json(metadata: &[u8], payload: &[u8]) -> Vec<u8> {
-    let mut bytes = b"UWGRPC01".to_vec();
+    let mut bytes = b"UWGRPC02".to_vec();
     bytes.extend_from_slice(&(metadata.len() as u32).to_be_bytes());
     bytes.extend_from_slice(&(payload.len() as u64).to_be_bytes());
     bytes.extend_from_slice(metadata);
@@ -105,15 +107,15 @@ fn frame_json(metadata: &[u8], payload: &[u8]) -> Vec<u8> {
     bytes
 }
 fn frame(metadata: &Value, payload: &[u8]) -> Vec<u8> {
-    frame_json(&serde_json::to_vec(metadata).unwrap(), payload)
+    frame_json(&native::response_bytes(metadata), payload)
 }
 fn decode_request(bytes: &[u8]) -> Value {
-    assert_eq!(&bytes[..8], b"UWGRPC01");
+    assert_eq!(&bytes[..8], b"UWGRPC02");
     let metadata = u32::from_be_bytes(bytes[8..12].try_into().unwrap()) as usize;
     let payload = u64::from_be_bytes(bytes[12..20].try_into().unwrap());
     assert_eq!(payload, 0, "advertisement query sent an object payload");
     assert_eq!(bytes.len(), 20 + metadata);
-    let request: Value = serde_json::from_slice(&bytes[20..]).unwrap();
+    let request: Value = native::request_value(&bytes[20..]);
     assert_eq!(request["version"], 1);
     assert_eq!(request["operation"], json!({"kind":"advertise"}));
     request
@@ -310,7 +312,7 @@ fn configured_remote_query_ignores_objects_tracking_and_existing_local_locks_wit
     )
     .unwrap();
     fs::write(
-        repo.join(".uwgit/remotes/origin.tracking.json"),
+        repo.join(".uwgit/remotes/origin.tracking.bin"),
         b"unrelated broken tracking",
     )
     .unwrap();
@@ -345,7 +347,7 @@ fn missing_or_invalid_configuration_never_creates_metadata_or_repairs_inputs() {
         br#"{"version":1,"name":"wrong","url":"http://localhost/x","allow_insecure_http":false}"#,
         br#"{"version":1,"name":"origin","url":"file:///tmp/x","allow_insecure_http":false}"#,
     ] {
-        fs::write(repo.join(".uwgit/remotes/origin.json"), contents).unwrap();
+        fs::write(repo.join(".uwgit/remotes/origin.bin"), contents).unwrap();
         let before = snapshot(&repo);
         let output = command(&["ls-remote", s(&repo)]).output().unwrap();
         assert_eq!(output.status.code(), Some(1));
@@ -353,7 +355,7 @@ fn missing_or_invalid_configuration_never_creates_metadata_or_repairs_inputs() {
         assert_eq!(snapshot(&repo), before);
     }
     fs::write(
-        repo.join(".uwgit/remotes/origin.json"),
+        repo.join(".uwgit/remotes/origin.bin"),
         vec![b' '; 1024 * 1024 + 1],
     )
     .unwrap();
@@ -373,7 +375,7 @@ fn symlinked_remote_configuration_is_rejected_without_following_it_or_writing() 
     let outside = t.path("outside");
     fs::create_dir(&outside).unwrap();
     fs::write(
-        outside.join("origin.json"),
+        outside.join("origin.bin"),
         serde_json::to_vec(&json!({
             "version":1,"name":"origin","url":peer.url(),"allow_insecure_http":false
         }))
@@ -382,12 +384,12 @@ fn symlinked_remote_configuration_is_rejected_without_following_it_or_writing() 
     .unwrap();
     let remotes = repo.join(".uwgit/remotes");
     fs::create_dir(&remotes).unwrap();
-    symlink(outside.join("origin.json"), remotes.join("origin.json")).unwrap();
+    symlink(outside.join("origin.bin"), remotes.join("origin.bin")).unwrap();
     let before = snapshot(&repo);
     let output = command(&["ls-remote", s(&repo)]).output().unwrap();
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(snapshot(&repo), before);
-    fs::remove_file(remotes.join("origin.json")).unwrap();
+    fs::remove_file(remotes.join("origin.bin")).unwrap();
     fs::remove_dir(&remotes).unwrap();
     symlink(&outside, &remotes).unwrap();
     let before = snapshot(&repo);

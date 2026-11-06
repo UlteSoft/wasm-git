@@ -22,7 +22,7 @@ impl ReferenceHead {
             worktree,
             before: snapshot.manifest.head.clone(),
             after,
-            head_reflog: optional_file(&repo.metadata.join("head-reflog.json"))?,
+            head_reflog: optional_file(&repo.metadata.join("head-reflog.bin"))?,
             worktrees,
         })
     }
@@ -98,7 +98,7 @@ impl ReferenceHead {
             entries.remove(0);
         }
         entries.push(self.event(before, after, message, sequence));
-        let bytes = serde_json::to_vec(&entries).map_err(|error| error.to_string())?;
+        let bytes = crate::binary::encode(&entries).map_err(|error| error.to_string())?;
         if bytes.len() as u64 > MAX_PENDING_BYTES {
             return Err("HEAD reflog exceeds its size limit".into());
         }
@@ -123,12 +123,12 @@ impl ReferenceHead {
         let reflog_after = self.reflog_after(before, after, message)?;
         for (path, before, after) in [
             (
-                repo.common_metadata.join("worktrees.json"),
+                repo.common_metadata.join("worktrees.bin"),
                 &self.worktrees,
                 &registry_after,
             ),
             (
-                origin.metadata.join("head-reflog.json"),
+                origin.metadata.join("head-reflog.bin"),
                 &self.head_reflog,
                 &reflog_after,
             ),
@@ -158,13 +158,13 @@ impl ReferenceHead {
         let origin = self.origin(repo)?;
         origin.atomic_write(
             &origin.metadata.join("HEAD"),
-            format!("{}\n", self.after).as_bytes(),
+            &encode_reference(&self.after, false)?,
         )?;
         checkpoint()?;
         let registry_after = self.registry_after()?;
         if registry_after != self.worktrees {
             repo.atomic_write(
-                &repo.common_metadata.join("worktrees.json"),
+                &repo.common_metadata.join("worktrees.bin"),
                 registry_after
                     .as_deref()
                     .ok_or("missing resulting worktree registry")?,
@@ -174,7 +174,7 @@ impl ReferenceHead {
         let bytes = self
             .reflog_after(before, after, message)?
             .ok_or("missing resulting HEAD reflog")?;
-        origin.atomic_write(&origin.metadata.join("head-reflog.json"), &bytes)?;
+        origin.atomic_write(&origin.metadata.join("head-reflog.bin"), &bytes)?;
         checkpoint()
     }
 

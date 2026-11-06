@@ -13,7 +13,7 @@
 - 网络 clone 为已提交初始 HEAD 建立 origin 同名关联；空仓库没有关联。普通 branch/switch 不推断 tracking，本地 clone/bundle 不复制 upstream。
 - 分支重命名移动关联，删除先清关联；remote rename 移动关联，remote remove 清关联，避免名称复用继承旧配置。服务端删除分支同样清理本地关联。
 
-关联独立保存为 `.uwgit/upstreams.json` 的规范 version 1 数据，限制 1 MiB，拒绝重复键、非规范编码、未知字段、不合法名称、symlink 和孤立本地分支映射。
+关联独立保存为 `.uwgit/upstreams.bin` 的规范 version 1 数据，限制 1 MiB，拒绝重复键、非规范编码、未知字段、不合法名称、symlink 和孤立本地分支映射。
 它不改变提交、RepositoryState、bundle 或网络协议格式。逻辑检查在对象安装和引用发布前完成；多文件 I/O 失败按已完成与不确定步骤报告，不承诺跨文件回滚。
 push 不把远端广告伪装成 fetched tracking；新目标需 fetch 后才能通过 upstream 别名查询。
 

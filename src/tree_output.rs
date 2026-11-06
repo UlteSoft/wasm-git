@@ -220,6 +220,8 @@ fn labels(parsed: &DiffArgs, format: DiffFormat) -> DiffArgs {
         new_path: parsed.new_path.clone(),
         format,
         short: parsed.short,
+        compact: parsed.compact,
+        sections: parsed.sections.clone(),
         repo: None,
         file: None,
         standard: parsed.standard,
@@ -254,25 +256,16 @@ pub fn render_files(
     let mut files = Vec::new();
     let (mut added, mut deleted, mut modified, mut unchanged) = (0, 0, 0, 0);
     let mut text = Vec::new();
-    for row in rows {
+    let rendered = crate::parallel::map_owned(rows, |row| -> Result<_, String> {
+        if row.old.is_none() && row.new.is_none() {
+            return Ok(None);
+        }
         let status = match (&row.old, &row.new) {
-            (None, Some(_)) => {
-                added += 1;
-                "added"
-            }
-            (Some(_), None) => {
-                deleted += 1;
-                "deleted"
-            }
-            (Some(a), Some(b)) if a != b => {
-                modified += 1;
-                "modified"
-            }
-            (Some(_), Some(_)) => {
-                unchanged += 1;
-                "unchanged"
-            }
-            (None, None) => continue,
+            (None, Some(_)) => "added",
+            (Some(_), None) => "deleted",
+            (Some(a), Some(b)) if a != b => "modified",
+            (Some(_), Some(_)) => "unchanged",
+            (None, None) => unreachable!(),
         };
         let mut entry = json!({"path":row.path,"status":status,"old":if row.old.is_some(){row.old_origin.clone()}else{Value::Null},"new":if row.new.is_some(){row.new_origin.clone()}else{Value::Null},"diff":null,"content":null,"audit":null});
         let details = match (row.old, row.new) {
@@ -285,28 +278,27 @@ pub fn render_files(
                     bytes: b,
                     origin: row.new_origin,
                 };
-                let mut json_args = labels(parsed, DiffFormat::Json);
-                json_args.short = false;
-                let report = render_pair(
-                    &json_args,
-                    Input {
-                        bytes: old.bytes.clone(),
-                        origin: old.origin.clone(),
-                    },
-                    Input {
-                        bytes: new.bytes.clone(),
-                        origin: new.origin.clone(),
-                    },
-                )?;
-                entry["diff"] = serde_json::from_str(&report)
-                    .map_err(|e| format!("decode file diff report: {e}"))?;
                 if parsed.format == DiffFormat::Text || parsed.short {
                     render_pair(&labels(parsed, DiffFormat::Text), old, new)?
                 } else {
+                    let mut json_args = labels(parsed, DiffFormat::Json);
+                    json_args.short = false;
+                    let report = render_pair(&json_args, old, new)?;
+                    entry["diff"] = serde_json::from_str(&report)
+                        .map_err(|e| format!("decode file diff report: {e}"))?;
                     String::new()
                 }
             }
             (Some(bytes), None) => {
+                if !parsed.sections.is_empty() {
+                    let (details, value) = selected_presence(parsed, bytes, false)?;
+                    entry["diff"] = value;
+                    return Ok(Some((
+                        status,
+                        format!("File {:?}: {status}\n{details}", row.path),
+                        entry,
+                    )));
+                }
                 entry["content"] = witness("old", &bytes);
                 entry["audit"] = audit_side(&bytes, parsed.standard);
                 format!(
@@ -317,6 +309,15 @@ pub fn render_files(
                 )
             }
             (None, Some(bytes)) => {
+                if !parsed.sections.is_empty() {
+                    let (details, value) = selected_presence(parsed, bytes, true)?;
+                    entry["diff"] = value;
+                    return Ok(Some((
+                        status,
+                        format!("File {:?}: {status}\n{details}", row.path),
+                        entry,
+                    )));
+                }
                 entry["content"] = witness("new", &bytes);
                 entry["audit"] = audit_side(&bytes, parsed.standard);
                 format!(
@@ -328,8 +329,23 @@ pub fn render_files(
             }
             _ => unreachable!(),
         };
-        text.push(format!("File {:?}: {status}\n{details}", row.path));
-        files.push(entry);
+        Ok(Some((
+            status,
+            format!("File {:?}: {status}\n{details}", row.path),
+            entry,
+        )))
+    });
+    for result in rendered {
+        if let Some((status, details, entry)) = result? {
+            match status {
+                "added" => added += 1,
+                "deleted" => deleted += 1,
+                "modified" => modified += 1,
+                _ => unchanged += 1,
+            }
+            text.push(details);
+            files.push(entry);
+        }
     }
     let changed = added + deleted + modified > 0;
     if parsed.format == DiffFormat::Text || parsed.short {
@@ -347,6 +363,9 @@ fn render_pair(parsed: &DiffArgs, old: Input, new: Input) -> Result<String, Stri
     match crate::render_diff(&args, &inputs) {
         Ok(report) => Ok(report),
         Err(reason) => {
+            if !parsed.sections.is_empty() {
+                return Err(reason);
+            }
             let fallback = binary_diff(&inputs[0], &inputs[1], parsed.standard, &reason);
             if parsed.format == DiffFormat::Json && !parsed.short {
                 serde_json::to_string_pretty(&fallback).map_err(|e| e.to_string())
@@ -358,6 +377,38 @@ fn render_pair(parsed: &DiffArgs, old: Input, new: Input) -> Result<String, Stri
                 ))
             }
         }
+    }
+}
+
+// Absent files have no selected sections. Their virtual header supplies framing
+// only, is explicitly labelled, and is never emitted as an original file/patch.
+fn selected_presence(
+    parsed: &DiffArgs,
+    bytes: Vec<u8>,
+    added: bool,
+) -> Result<(String, Value), String> {
+    crate::audit::section::check_header(&bytes)?;
+    let absent = Input {
+        bytes: bytes[..8].to_vec(),
+        origin: json!({"kind":"absent","virtual_header":true}),
+    };
+    let present = Input {
+        bytes,
+        origin: json!({"kind":"present"}),
+    };
+    let inputs = if added {
+        [absent, present]
+    } else {
+        [present, absent]
+    };
+    let output = crate::render_diff(parsed, &inputs)?;
+    if parsed.format == DiffFormat::Text || parsed.short {
+        Ok((output, Value::Null))
+    } else {
+        Ok((
+            String::new(),
+            serde_json::from_str(&output).map_err(|e| e.to_string())?,
+        ))
     }
 }
 
@@ -401,11 +452,14 @@ pub fn export_file(args: &[String]) -> Result<String, String> {
         Err(e) if e.kind() == clap::error::ErrorKind::DisplayHelp => return Ok(e.to_string()),
         Err(e) => return Err(e.to_string()),
     };
-    let revision =
-        repository::read_file_revisions(Path::new(&parsed.repo_dir), &[&parsed.revision])?
-            .into_iter()
-            .next()
-            .ok_or("missing selected revision")?;
+    let revision = repository::read_selected_file_revisions(
+        Path::new(&parsed.repo_dir),
+        &[&parsed.revision],
+        Some(&parsed.file),
+    )?
+    .into_iter()
+    .next()
+    .ok_or("missing selected revision")?;
     let input = select_input(&parsed.revision, revision, Some(&parsed.file))?;
     if let Some(destination) = parsed.output {
         crate::output::write_export_file(Path::new(&destination), &input.bytes)?;

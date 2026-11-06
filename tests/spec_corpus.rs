@@ -296,6 +296,7 @@ struct ModuleEvidence {
     audit_validation: Option<String>,
     diagnostic_counts: Counts,
     identity_checked: bool,
+    function_projection_checked: bool,
     mutation_replayed: bool,
     patch_identity_replayed: bool,
     patch_mutation_replayed: bool,
@@ -536,6 +537,7 @@ impl Runner {
             audit_validation: None,
             diagnostic_counts: Counts::new(),
             identity_checked: false,
+            function_projection_checked: false,
             mutation_replayed: false,
             patch_identity_replayed: false,
             patch_mutation_replayed: false,
@@ -692,6 +694,34 @@ impl Runner {
             count(&mut evidence.diagnostic_counts, &diagnostic.code);
         }
         if matches!(expected, Expectation::Valid) {
+            // Physical opcode decoding alone does not establish that the
+            // function-diff IR retains typed operands and known control grammar.
+            let projection = wasm_git::parse::parse_module(&bytes)
+                .map_err(|e| e.to_string())
+                .and_then(|module| {
+                    for function in &module.functions {
+                        for op in &function.operators {
+                            if matches!(op.opcode, wasm_git::ir::Opcode::Unrecognized(_))
+                                || matches!(op.immediate, wasm_git::ir::Immediate::Unrecognized(_))
+                            {
+                                return Err(format!(
+                                    "unprojected Core operator at {}: {op:?}",
+                                    op.offset
+                                ));
+                            }
+                        }
+                    }
+                    Ok(())
+                });
+            match projection {
+                Ok(()) => evidence.function_projection_checked = true,
+                Err(error) => self.fail(
+                    &file.path,
+                    Some(&evidence.location),
+                    "valid_core_function_projection_incomplete",
+                    error,
+                ),
+            }
             if inspected.validation != "valid_with_all_known_features" {
                 self.fail(
                     &file.path,

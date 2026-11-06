@@ -1,5 +1,8 @@
+#![cfg(feature = "server")]
 //! Fixed real-server loopback and stdio workflows. No Wasm execution or fuzzing.
 
+#[path = "support/native.rs"]
+mod native;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
@@ -97,24 +100,16 @@ fn metadata(repo: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     files
 }
 fn packet(repository: &str, operation: Value, payload: &[u8]) -> Vec<u8> {
-    let metadata =
-        serde_json::to_vec(&json!({"version":1,"repository":repository,"operation":operation}))
-            .unwrap();
-    let mut bytes = b"UWGRPC01".to_vec();
-    bytes.extend_from_slice(&(metadata.len() as u32).to_be_bytes());
-    bytes.extend_from_slice(&(payload.len() as u64).to_be_bytes());
-    bytes.extend_from_slice(&metadata);
-    bytes.extend_from_slice(payload);
-    bytes
+    native::packet(repository, operation, payload)
 }
 fn decode(bytes: &[u8]) -> (Value, Vec<u8>) {
     assert!(bytes.len() >= 20);
-    assert_eq!(&bytes[..8], b"UWGRPC01");
+    assert_eq!(&bytes[..8], b"UWGRPC02");
     let metadata = u32::from_be_bytes(bytes[8..12].try_into().unwrap()) as usize;
     let payload = usize::try_from(u64::from_be_bytes(bytes[12..20].try_into().unwrap())).unwrap();
     assert_eq!(bytes.len(), 20 + metadata + payload);
     (
-        serde_json::from_slice(&bytes[20..20 + metadata]).unwrap(),
+        native::response_value(&bytes[20..20 + metadata]),
         bytes[20 + metadata..].to_vec(),
     )
 }
@@ -460,7 +455,7 @@ fn stdio_is_one_complete_framed_request_and_rejects_trailing_or_traversal() {
     let (response, payload) = decode(&output.stdout);
     assert_eq!(response["ok"], true);
     assert_eq!(response["state"]["head"], "main");
-    assert!(payload.starts_with(b"UWGB\0\0\0\x01"));
+    assert!(payload.starts_with(b"UWGB\0\0\0\x02"));
     let mut extra = request.clone();
     extra.push(0);
     let output = stdio(&temp, &extra);
@@ -518,7 +513,7 @@ fn write_service_requires_authentication_and_stdio_rejects_http_only_constraints
 }
 
 #[test]
-fn omitted_nullable_mutation_fields_never_delete_or_publish_a_reference() {
+fn truncated_mutation_operands_never_delete_or_publish_a_reference() {
     let temp = Temp::new();
     let project = temp.repository("project");
     let initial = commit(&temp, &project, 1);
@@ -549,28 +544,26 @@ fn omitted_nullable_mutation_fields_never_delete_or_publish_a_reference() {
     ];
     let server = Server::start(&temp, cases.len() + 2, true, false);
     let before = metadata(&project);
-    for (operation, payload, missing) in cases {
-        let bytes = packet("project", operation, payload);
+    for (mut operation, payload, missing) in cases {
+        operation[missing] = Value::Null;
+        let mut bytes = packet("project", operation, payload);
+        let n = u32::from_be_bytes(bytes[8..12].try_into().unwrap()) as usize;
+        bytes.remove(20 + n - 1);
+        bytes[8..12].copy_from_slice(&((n - 1) as u32).to_be_bytes());
         let (status, body) = server.request(&bytes, Some(TOKEN));
         assert_eq!(status, 200);
         let (response, payload) = decode(&body);
         assert_eq!(response["ok"], false);
         assert_eq!(response["publication_unknown"], false);
         let error = response["error"].as_str().unwrap();
-        assert!(
-            error.contains("missing field") && error.contains(missing),
-            "{error}"
-        );
+        assert!(error.contains("binary record"), "{error}");
         assert!(payload.is_empty());
         assert_eq!(metadata(&project), before);
         let rejected = stdio(&temp, &bytes);
         assert!(!rejected.status.success());
         assert!(rejected.stdout.is_empty());
         let error = String::from_utf8(rejected.stderr).unwrap();
-        assert!(
-            error.contains("missing field") && error.contains(missing),
-            "{error}"
-        );
+        assert!(error.contains("binary record"), "{error}");
         assert_eq!(metadata(&project), before);
     }
     for (namespace, name, directory) in

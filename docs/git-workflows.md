@@ -1,6 +1,6 @@
 # 多 Wasm 文件树与 Git 类工作流
 
-一个 format 2 提交保存路径到完整 Core Wasm 原字节对象的映射，以及父提交、消息和 tree ID。
+一个 format 2 提交保存路径到完整 Wasm 原字节对象的映射，以及父提交、消息和 tree ID。Core、Component 及未知编码都可保存；存储接受不等于语义验证成功。
 文件名、新增、删除、移动、空树都进入历史。模块字节不经 WAT 往返，也不按语言特性配置拒绝未知指令或未知 section。
 暂存只要求 Core Wasm 的八字节头；验证与审计结果另外报告。
 
@@ -119,8 +119,8 @@ reset 缺省 REV 为 HEAD。clone 没有 index 时的普通历史操作保持对
 format 1 是一个没有文件名的原始 Wasm 提交。其对象 ID、commit payload、旧 bundle 与原字节继续可读，
 不会为旧历史捏造 module.wasm 等名称。无 anchor 的旧 clone 保持无 index；status 明确报告 legacy_head_unmapped。
 
-旧二进制 UWGITIDX 版本 1 index 自带原 path，可作为显式 anchor 读取。
-没有旧 index 时，用户第一次 add DIR PATH 的首个路径确定 legacy_path；PATH 可以包含新的模块字节。
+当前二进制 index 的 legacy_path 保存显式 anchor；旧索引编码不再读取。
+没有显式 anchor 时，用户第一次 add DIR PATH 的首个路径确定 legacy_path；PATH 可以包含新的模块字节。
 该映射及其他已暂存路径由下一次 format 2 提交持久保存，后代继承，空树也保留 anchor。
 旧内容没有变动也能提交这次明确命名的 format 1 到 format 2 升级。
 
@@ -158,7 +158,7 @@ wasm-git commit ./legacy -m 'name legacy module and add second module'
 
 stash 可以保存编辑中的非 Wasm 工作字节或已删除文件。base 未变时原样回放；需要合并但无法解释或冲突时明确拒绝。
 全部文件的合并与安全检查在第一处写入前完成。stash 属于本地元数据，不随 clone/bundle/fetch/push 传输；
-旧单文件 format 1 stash 可读取，后续写入升级为完整树格式。
+stash 只保存当前二进制完整树结构，不读取旧单文件 stash。
 
 merge、pull、cherry-pick、revert、rebase 的冲突输出 JSON 并返回 2；其他命令错误返回 1。
 默认 rebase 冲突不建立半完成状态；可用下述显式录制模式保存队列。不支持交互式或保留 merge 拓扑。
@@ -213,7 +213,7 @@ wasm-git rebase DIR --quit
 skip 跳过当前原提交并继续余下队列，不使用当前 index 内容，也不恢复最初 index；abort 才恢复最初 baseline。
 quit 只移除操作记录，不发布中间进度。pending 不随 clone、bundle、HTTP 或 SSH 传输。
 新模式在文件/index 检查点结算后才发布最终 tip；重试按原/新字节修复物化，最终发布可补唯一 reflog。旧 journal 的 continue prepared 恢复在引用发布前仍要求同一份有效 index。
-旧单目标 version 1 journal 的编码继续可读。验证及精确限制见[rebase 续作](rebase-pending.md)。
+不保留旧 JSON journal 的读取分支。验证及精确限制见[rebase 续作](rebase-pending.md)。
 
 ## 引用、查询和本地配置
 
@@ -257,7 +257,7 @@ describe 名称解析、标签选择、归档固定元数据与 legacy 命名规
 尚未 fetch、远端分支已消失时明确失败；不退回本地 HEAD，也不接续 ancestry 或 reflog 表达式。
 从 `origin/main` 创建普通 branch/switch 不自动设置关联；可随后显式 `branch DIR -u origin/main topic`。
 
-upstream 独立保存在本地 `.uwgit/upstreams.json`，只关联已提交的本地分支；不会进入提交、bundle 或远端传输。
+upstream 独立保存在本地 `.uwgit/upstreams.bin`，只关联已提交的本地分支；不会进入提交、bundle 或远端传输。
 网络 clone 为有提交的初始 HEAD 设置 origin 同名关联；本地 clone 不复制源仓库的关联。
 分支重命名移动关联，删除分支先清关联；remote rename 移动关联，remote remove 清除对应关联。
 多个文件的 I/O 失败会报告已完成与不确定的步骤；不承诺跨文件事务回滚。损坏的本地关联配置会明确拒绝操作。
@@ -309,10 +309,9 @@ restore、stash apply、cat-file 的 `--output` 值也可为字面 `--help` / `-
 
 ## 持久化与边界
 
-新 index 使用九字节 UWGITIDX\\x02 头，加规范 JSON：
-`{format:2,files:{path:[完整原字节]},legacy_path:null或显式路径}` 及换行。
-版本 1 的长度前缀二进制 index 仍可严格读取，发布新 index 时升级。
-配置和 stash 同样严格校验 canonical JSON、重复/未知字段、路径、Core 头和长度，不静默修复损坏元数据。
+index 统一使用九字节 `UWGITIDX\x06` 头和按字段位置编码的二进制记录；完整 Wasm 图像直接存原字节。
+配置、stash、pending、bisect、reflog、引用事务与远端状态也采用规范二进制，校验长度、路径、
+Core 头、引用和恢复证据，不静默修复损坏元数据。不读取或迁移旧 JSON 格式。见[二进制格式](binary-format.md)。
 
 工作区命令共享 index.lock；对象与引用使用 write.lock，历史写入同时 CAS 审定的分支名和旧 ID。
 所有文件的逻辑冲突先预检；新文件独占创建，已跟踪文件通过同目录完整临时文件替换。

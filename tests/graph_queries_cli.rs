@@ -1,5 +1,7 @@
 //! Independent graph expectations and real-Git reference checks use equivalent
 //! topologies, never compatible objects or a Git backend inside the product.
+#[path = "support/native.rs"]
+mod native;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -440,7 +442,7 @@ fn native_remote_branch_views_match_git_namespace_and_displayed_name_filters() {
     let f = query_graph();
     let url = "ssh://test@localhost/tmp/ref-query.git";
     text(f.uw(&["remote", "add", "origin", url]));
-    fs::write(f.native.join(".uwgit/remotes/origin.tracking.json"),serde_json::to_vec(&serde_json::json!({"version":1,"remote":"origin","url":url,"state":{"format":1,"head":"main","branches":{"main":f.id("right")},"tags":{}}})).unwrap()).unwrap();
+    fs::write(f.native.join(".uwgit/remotes/origin.tracking.bin"),native::tracking_bytes(serde_json::json!({"version":1,"remote":"origin","url":url,"state":{"format":1,"head":"main","branches":{"main":f.id("right")},"tags":{}}}))).unwrap();
     text(f.git(&["remote", "add", "origin", url]));
     text(f.git(&[
         "update-ref",

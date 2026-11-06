@@ -7,6 +7,7 @@
 use crate::protocol::{self, Operation, RefNamespace, Request, Response};
 use crate::repository::{Repository, RepositoryResult, RepositoryState};
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
@@ -18,8 +19,9 @@ use std::time::{Duration, Instant};
 
 const MAX_TRANSFER: usize = protocol::MAX_PACKET_BYTES;
 const MAX_CONFIG: u64 = 1024 * 1024;
+const MAX_TRACKING: u64 = 64 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(35);
-const USAGE: &str = "remote <DIR> [add <NAME> <URL>|remove <NAME>|rename <OLD> <NEW>|-v|show <NAME>]; fetch <DIR> [REMOTE]; push <DIR> [REMOTE] [SOURCE:DESTINATION] [-u|--set-upstream] [--force-with-lease <OLD_ID|absent>]; push <DIR> [REMOTE] --tags; push <DIR> [REMOTE] --delete <BRANCH|refs/tags/TAG> [--force-with-lease <OLD_ID>]; pull <DIR> [REMOTE] [BRANCH] [--ff-only] [-m <MESSAGE>] (message required unless --ff-only); clone <URL> <NEW_DIR>; HTTP URLs are http(s)://HOST/REPOSITORY; SSH URLs are ssh://USER@HOST/ABSOLUTE/ROOT/REPOSITORY; --allow-insecure-http explicitly permits non-loopback cleartext HTTP";
+const USAGE: &str = "selective clone/fetch: --depth N, --deepen N, --unshallow, --branch NAME, --filter all|blob:none|blob:limit=N|path:PATH; clone-status DIR; hydrate DIR; promisor DIR SOURCE...; remote <DIR> [add <NAME> <URL>|remove <NAME>|rename <OLD> <NEW>|-v|show <NAME>]; fetch <DIR> [REMOTE]; push <DIR> [REMOTE] [SOURCE:DESTINATION] [-u|--set-upstream] [--force-with-lease <OLD_ID|absent>]; push <DIR> [REMOTE] --tags [--atomic]; push <DIR> REMOTE SOURCE:DESTINATION [SOURCE:DESTINATION ...] --atomic; push <DIR> [REMOTE] --delete <BRANCH|refs/tags/TAG> [--force-with-lease <OLD_ID>]; pull <DIR> [REMOTE] [BRANCH] [--ff-only] [-m <MESSAGE>] (message required unless --ff-only); clone <URL> <NEW_DIR>; HTTP URLs are http(s)://HOST/REPOSITORY; SSH URLs are ssh://USER@HOST/ABSOLUTE/ROOT/REPOSITORY; --allow-insecure-http explicitly permits non-loopback cleartext HTTP";
 const LS_REMOTE_USAGE: &str = "ls-remote URL [PATTERN...] [--heads|--branches] [--tags] [--symref] [--refs] [--exit-code] [--json] [--allow-insecure-http]; ls-remote DIR [REMOTE [PATTERN...]] [OPTIONS]. DIR alone reads the existing origin configuration. Patterns match full refs or slash-delimited tails with * and ?; [] and backslash escapes are unsupported. -- ends options. Only HTTP(S) and SSH advertisements are queried; no objects are downloaded or verified, and no local repository metadata is written. --refs suppresses HEAD and its symbolic target. --exit-code returns 2 when no matching object-ID reference is advertised, including an unborn HEAD even if --symref prints its target.";
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -34,11 +36,11 @@ struct Remote {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Tracking {
+pub(crate) struct Tracking {
     version: u32,
     remote: String,
     url: String,
-    state: RepositoryState,
+    pub(crate) state: RepositoryState,
 }
 
 /// A local view of an upstream. A missing remote or tracking branch is `None`,
@@ -224,8 +226,17 @@ fn parse_url(value: &str) -> RepositoryResult<Endpoint> {
 }
 
 fn regular(path: &Path) -> RepositoryResult<Vec<u8>> {
+    let limit = if path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.ends_with(".tracking.bin"))
+    {
+        MAX_TRACKING
+    } else {
+        MAX_CONFIG
+    };
     let metadata = fs::symlink_metadata(path).map_err(|e| format!("read remote metadata: {e}"))?;
-    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > MAX_CONFIG {
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > limit {
         return Err("remote metadata must be a bounded regular file".into());
     }
     let file = File::open(path).map_err(|error| format!("open remote metadata: {error}"))?;
@@ -237,11 +248,11 @@ fn regular(path: &Path) -> RepositoryResult<Vec<u8>> {
         return Err("opened remote metadata must be a regular file".into());
     }
     let mut bytes = Vec::new();
-    file.take(MAX_CONFIG + 1)
+    file.take(limit + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| format!("read remote metadata: {error}"))?;
-    if bytes.len() as u64 > MAX_CONFIG {
-        return Err("remote metadata exceeds the 1 MiB limit".into());
+    if bytes.len() as u64 > limit {
+        return Err("remote metadata exceeds its configured size limit".into());
     }
     Ok(bytes)
 }
@@ -293,9 +304,8 @@ fn load(repo: &Repository, remote: &str) -> RepositoryResult<Remote> {
     name(remote)?;
     let directory =
         existing_config_dir(repo)?.ok_or("remote configuration directory does not exist")?;
-    let config: Remote =
-        serde_json::from_slice(&regular(&directory.join(format!("{remote}.json")))?)
-            .map_err(|e| format!("invalid remote configuration: {e}"))?;
+    let config: Remote = crate::binary::decode(&regular(&directory.join(format!("{remote}.bin")))?)
+        .map_err(|e| format!("invalid remote configuration: {e}"))?;
     if config.version != 1 || config.name != remote {
         return Err("remote configuration version or name mismatch".into());
     }
@@ -307,12 +317,12 @@ fn optional_tracking(repo: &Repository, remote: &Remote) -> RepositoryResult<Opt
     let Some(directory) = existing_config_dir(repo)? else {
         return Ok(None);
     };
-    let path = directory.join(format!("{}.tracking.json", remote.name));
+    let path = directory.join(format!("{}.tracking.bin", remote.name));
     match fs::symlink_metadata(&path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(format!("read remote tracking: {e}")),
         Ok(_) => {
-            let tracking: Tracking = serde_json::from_slice(&regular(&path)?)
+            let tracking: Tracking = crate::binary::decode(&regular(&path)?)
                 .map_err(|e| format!("invalid remote tracking: {e}"))?;
             if tracking.version != 1 || tracking.remote != remote.name || tracking.url != remote.url
             {
@@ -346,9 +356,8 @@ fn existing_config_dir(repo: &Repository) -> RepositoryResult<Option<PathBuf>> {
 fn load_readonly(repo: &Repository, remote: &str) -> RepositoryResult<Remote> {
     name(remote)?;
     let directory = existing_config_dir(repo)?.ok_or("remote has not been configured")?;
-    let config: Remote =
-        serde_json::from_slice(&regular(&directory.join(format!("{remote}.json")))?)
-            .map_err(|error| format!("invalid remote configuration: {error}"))?;
+    let config: Remote = crate::binary::decode(&regular(&directory.join(format!("{remote}.bin")))?)
+        .map_err(|error| format!("invalid remote configuration: {error}"))?;
     if config.version != 1 || config.name != remote {
         return Err("remote configuration version or name mismatch".into());
     }
@@ -422,12 +431,7 @@ pub fn ls_remote_query(args: &[String]) -> RepositoryResult<crate::query_command
         let repo = Repository::open(target)?;
         (load_readonly(&repo, remote_name)?, Some(remote_name))
     };
-    let (response, payload) = exchange(
-        &remote,
-        Operation::Advertise {},
-        &[],
-        flags.contains("--allow-insecure-http"),
-    )?;
+    let (response, payload) = advertise(&remote, flags.contains("--allow-insecure-http"))?;
     if !payload.is_empty() {
         return Err("ls-remote advertisement unexpectedly contains an object payload".into());
     }
@@ -596,7 +600,7 @@ pub fn upstream_status(repo: &Repository, local: &str) -> RepositoryResult<Optio
         return Ok(None);
     };
     let path = existing_config_dir(repo)?
-        .map(|directory| directory.join(format!("{}.json", upstream.remote)));
+        .map(|directory| directory.join(format!("{}.bin", upstream.remote)));
     let tip = match path.map(fs::symlink_metadata).transpose() {
         Ok(None) => None,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -612,8 +616,8 @@ pub fn upstream_status(repo: &Repository, local: &str) -> RepositoryResult<Optio
     }))
 }
 
-fn atomic_json<T: Serialize>(repo: &Repository, path: &Path, value: &T) -> RepositoryResult<()> {
-    let bytes = serde_json::to_vec(value).map_err(|e| format!("encode remote metadata: {e}"))?;
+fn atomic_record<T: Serialize>(repo: &Repository, path: &Path, value: &T) -> RepositoryResult<()> {
+    let bytes = crate::binary::encode(value).map_err(|e| format!("encode remote metadata: {e}"))?;
     let temp = repo.common_metadata().join("tmp").join(unique("remote"));
     let result = (|| {
         let mut file = OpenOptions::new()
@@ -811,7 +815,54 @@ fn exchange(
     payload: &[u8],
     allow_http: bool,
 ) -> RepositoryResult<(Response, Vec<u8>)> {
+    if payload.len() > MAX_TRANSFER / 2
+        && matches!(
+            &operation,
+            Operation::Push { .. } | Operation::UpdateRef { .. } | Operation::PublishBatch {}
+        )
+    {
+        if payload.len() as u64 > protocol::MAX_BUNDLE_BYTES {
+            return Err("bundle exceeds the 4 GiB transfer limit".into());
+        }
+        let transfer = format!("{:x}", sha2::Sha256::digest(payload));
+        for (i, chunk) in payload.chunks(protocol::TRANSFER_CHUNK).enumerate() {
+            exchange(
+                remote,
+                Operation::UploadSlice {
+                    transfer: transfer.clone(),
+                    total: payload.len() as u64,
+                    offset: (i * protocol::TRANSFER_CHUNK) as u64,
+                },
+                chunk,
+                allow_http,
+            )?;
+        }
+        return exchange(
+            remote,
+            Operation::ApplyUpload {
+                transfer,
+                operation: Box::new(operation),
+            },
+            &[],
+            allow_http,
+        );
+    }
     let endpoint = parse_url(&remote.url)?;
+    let publishes = matches!(
+        &operation,
+        Operation::Push { .. }
+            | Operation::UpdateRef { .. }
+            | Operation::PublishBatch {}
+            | Operation::ApplyUpload { .. }
+            | Operation::Fork { .. }
+    );
+    let uncertain = |error: String| {
+        if publishes {
+            format!("remote publication outcome is unknown: {error}; inspect the remote before retrying")
+        } else {
+            error
+        }
+    };
     let request = Request {
         version: 1,
         repository: endpoint.repository().to_owned(),
@@ -866,14 +917,14 @@ fn exchange(
                 .arg("--url")
                 .arg(endpoint)
                 .env_remove("UWGIT_REMOTE_TOKEN");
-            subprocess(command, encoded, "HTTP")?
+            subprocess(command, encoded, "HTTP").map_err(&uncertain)?
         }
         Endpoint::Ssh {
             host, port, root, ..
         } => {
             let executable = std::env::var_os("UWGIT_SSH_PROGRAM").unwrap_or_else(|| "ssh".into());
             let program =
-                std::env::var("UWGIT_REMOTE_PROGRAM").unwrap_or_else(|_| "wasm-git".into());
+                std::env::var("UWGIT_REMOTE_PROGRAM").unwrap_or_else(|_| "wasm-git-server".into());
             if program.is_empty() || program.contains(['\0', '\r', '\n']) {
                 return Err("invalid remote executable path".into());
             }
@@ -891,16 +942,19 @@ fn exchange(
                     shell_quote(&root)
                 ))
                 .env_remove("UWGIT_REMOTE_TOKEN");
-            subprocess(command, encoded, "SSH")?
+            subprocess(command, encoded, "SSH").map_err(&uncertain)?
         }
     };
     let mut cursor = std::io::Cursor::new(&bytes);
-    let (response, payload): (Response, Vec<u8>) = protocol::read_packet(&mut cursor)?;
+    let (response, payload): (Response, Vec<u8>) =
+        protocol::read_packet(&mut cursor).map_err(&uncertain)?;
     if cursor.position() != bytes.len() as u64 {
-        return Err("remote response has trailing bytes after its single RPC frame".into());
+        return Err(uncertain(
+            "remote response has trailing bytes after its single RPC frame".into(),
+        ));
     }
     if response.version != 1 {
-        return Err("unsupported remote response version".into());
+        return Err(uncertain("unsupported remote response version".into()));
     }
     if response.publication_unknown {
         let reason = if response.ok {
@@ -920,9 +974,193 @@ fn exchange(
         ));
     }
     if response.error.is_some() {
-        return Err("successful remote response contains an error".into());
+        return Err(uncertain(
+            "successful remote response contains an error".into(),
+        ));
     }
     Ok((response, payload))
+}
+
+fn fetch_payload(
+    remote: &Remote,
+    allow_http: bool,
+    repo: Option<&Repository>,
+) -> RepositoryResult<(Response, Vec<u8>)> {
+    let selection = repo.map(Repository::clone_selection).transpose()?.flatten();
+    fetch_payload_selected(remote, allow_http, repo, selection)
+}
+
+fn fetch_payload_selected(
+    remote: &Remote,
+    allow_http: bool,
+    repo: Option<&Repository>,
+    selection: Option<crate::repository::SelectOptions>,
+) -> RepositoryResult<(Response, Vec<u8>)> {
+    let options = crate::binary::encode(&crate::repository::FetchOptions {
+        selection,
+        have: repo
+            .map(Repository::negotiation_haves)
+            .transpose()?
+            .unwrap_or_default(),
+    })?;
+    match exchange(remote, Operation::Fetch {}, &options, allow_http) {
+        Ok(result) => {
+            return if repo.is_some() {
+                Ok(result)
+            } else {
+                complete_fetch(result, None)
+            }
+        }
+        Err(error) if error.contains("RPC packet exceeds 64 MiB") => (),
+        Err(error) => return Err(error),
+    }
+    let mut bytes = Vec::new();
+    let mut expected: Option<String> = None;
+    let mut total = None;
+    let mut first = None;
+    loop {
+        let (response, chunk) = exchange(
+            remote,
+            Operation::FetchSlice {
+                offset: bytes.len() as u64,
+                expected: expected.clone(),
+            },
+            &options,
+            allow_http,
+        )?;
+        if chunk.len() < 40 {
+            return Err("truncated sliced bundle header".into());
+        }
+        let length = u64::from_be_bytes(chunk[..8].try_into().unwrap());
+        let id = crate::binary::hex(&chunk[8..40]);
+        if length > protocol::MAX_BUNDLE_BYTES
+            || total.is_some_and(|n| n != length)
+            || expected.as_ref().is_some_and(|previous| previous != &id)
+        {
+            return Err("sliced bundle identity or length changed".into());
+        }
+        if first.is_none() {
+            first = Some(response);
+            total = Some(length);
+            expected = Some(id);
+        }
+        let payload = &chunk[40..];
+        if payload.is_empty()
+            || payload.len() > protocol::TRANSFER_CHUNK
+            || (bytes.len() as u64)
+                .checked_add(payload.len() as u64)
+                .is_none_or(|n| n > length)
+        {
+            return Err("invalid sliced bundle bounds".into());
+        }
+        bytes
+            .try_reserve(payload.len())
+            .map_err(|e| e.to_string())?;
+        bytes.extend_from_slice(payload);
+        if bytes.len() as u64 == length {
+            break;
+        }
+    }
+    if format!("{:x}", sha2::Sha256::digest(&bytes)) != expected.unwrap() {
+        return Err("sliced bundle checksum mismatch".into());
+    }
+    let result = (first.ok_or("missing sliced advertisement")?, bytes);
+    if repo.is_some() {
+        Ok(result)
+    } else {
+        complete_fetch(result, None)
+    }
+}
+
+fn complete_fetch(
+    (mut response, payload): (Response, Vec<u8>),
+    repo: Option<&Repository>,
+) -> RepositoryResult<(Response, Vec<u8>)> {
+    if !payload.starts_with(b"UWGNET01") {
+        return Ok((response, payload));
+    }
+    let bytes = match repo {
+        Some(repo) => repo.complete_network_bundle(&payload)?,
+        None => Repository::empty_network_bundle(&payload)?,
+    };
+    let state = Repository::bundle_state(&bytes)?;
+    if response.state.as_ref().is_some_and(|s| s != &state) {
+        return Err("negotiated advertisement does not match verified bundle".into());
+    }
+    response.state = Some(state);
+    Ok((response, bytes))
+}
+
+fn advertise(remote: &Remote, allow_http: bool) -> RepositoryResult<(Response, Vec<u8>)> {
+    match exchange(remote, Operation::Advertise {}, &[], allow_http) {
+        Ok(result) => return Ok(result),
+        Err(error) if error.contains("RPC metadata length") => (),
+        Err(error) => return Err(error),
+    }
+    let mut after = None;
+    let mut expected = None;
+    let mut state: Option<RepositoryState> = None;
+    let mut received = 0u64;
+    loop {
+        let (mut response, payload) = exchange(
+            remote,
+            Operation::RefsPage {
+                after: after.clone(),
+                expected: expected.clone(),
+            },
+            &[],
+            allow_http,
+        )?;
+        received = received.saturating_add(payload.len() as u64);
+        if received > MAX_TRACKING {
+            return Err("reference advertisement exceeds 64 MiB".into());
+        }
+        let page: protocol::RefPage = crate::binary::decode(&payload)?;
+        if expected.as_ref().is_some_and(|e| e != &page.generation)
+            || page.state.branches.len() + page.state.tags.len() > 256
+        {
+            return Err("invalid reference page generation or size".into());
+        }
+        expected = Some(page.generation);
+        if let Some(state) = &mut state {
+            if state.head != page.state.head || state.format != page.state.format {
+                return Err("reference page HEAD changed".into());
+            }
+            for (name, id) in page.state.branches {
+                if state.branches.insert(name, id).is_some() {
+                    return Err("duplicate paged branch".into());
+                }
+            }
+            for (name, id) in page.state.tags {
+                if state.tags.insert(name, id).is_some() {
+                    return Err("duplicate paged tag".into());
+                }
+            }
+        } else {
+            state = Some(page.state);
+        }
+        if page.next.is_none() {
+            let digest = format!(
+                "{:x}",
+                sha2::Sha256::digest(crate::binary::encode(
+                    state.as_ref().ok_or("empty reference pages")?
+                )?)
+            );
+            if expected.as_ref() != Some(&digest) {
+                return Err("paged reference snapshot digest mismatch".into());
+            }
+            response.state = state;
+            return Ok((response, Vec::new()));
+        }
+        if page
+            .next
+            .as_ref()
+            .is_none_or(|next| after.as_ref().is_some_and(|a| next <= a))
+        {
+            return Err("reference page cursor did not advance".into());
+        }
+        after = page.next;
+    }
 }
 
 fn fetch(
@@ -937,18 +1175,18 @@ fn fetch(
         }
         optional_tracking(repo, remote)?
     };
-    let (response, payload) = exchange(remote, Operation::Fetch {}, &[], allow_http)?;
-    let advertised = response
-        .state
-        .ok_or("fetch response lacks repository state")?;
+    let (response, payload) = fetch_payload(remote, allow_http, Some(repo))?;
     if payload.is_empty() {
         return Err("fetch response lacks its verified bundle".into());
     }
-    let verified = Repository::bundle_state(&payload)?;
-    if verified != advertised {
-        return Err("remote advertisement does not match the verified bundle".into());
+    if !payload.starts_with(b"UWGNET01") && response.state.is_none() {
+        return Err("fetch response lacks repository state".into());
     }
-    let installed = repo.install_bundle_bytes(&payload)?;
+    let installed = if repo.clone_selection()?.is_some() {
+        repo.install_selective_bundle(&payload)?
+    } else {
+        repo.install_network_bundle(&payload, response.state.as_ref())?
+    };
     let _lock = config_lock(repo)?;
     if load(repo, &remote.name)? != *remote {
         return Err("remote configuration changed while fetching; objects were installed but tracking was not updated".into());
@@ -964,9 +1202,9 @@ fn fetch(
         url: remote.url.clone(),
         state: installed.clone(),
     };
-    atomic_json(
+    atomic_record(
         repo,
-        &config_dir(repo)?.join(format!("{}.tracking.json", remote.name)),
+        &config_dir(repo)?.join(format!("{}.tracking.bin", remote.name)),
         &tracking,
     )?;
     Ok(installed)
@@ -1023,6 +1261,7 @@ fn update_ref(
     repo: &Repository,
     remote: &Remote,
     change: RefChange<'_>,
+    have: &[String],
     allow_http: bool,
 ) -> RepositoryResult<()> {
     let RefChange {
@@ -1033,7 +1272,7 @@ fn update_ref(
         force,
     } = change;
     let bundle = if let Some(id) = new {
-        repo.bundle_bytes(Some(id))?.1
+        repo.network_bundle(&[id.to_owned()], have)?.1
     } else {
         Vec::new()
     };
@@ -1060,9 +1299,46 @@ fn update_ref(
     Ok(())
 }
 
+fn publish_atomic(
+    repo: &Repository,
+    remote: &Remote,
+    updates: Vec<protocol::RefUpdate>,
+    state: &RepositoryState,
+    allow_http: bool,
+) -> RepositoryResult<()> {
+    if updates.is_empty() {
+        return Ok(());
+    }
+    let wants: Vec<_> = updates
+        .iter()
+        .filter_map(|u| u.new.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let have: Vec<_> = state
+        .branches
+        .values()
+        .chain(state.tags.values())
+        .cloned()
+        .collect();
+    let bundle = if wants.is_empty() {
+        Vec::new()
+    } else {
+        repo.network_bundle(&wants, &have)?.1
+    };
+    let payload = crate::binary::encode(&protocol::BatchPublication { updates, bundle })?;
+    let expected = format!("{:x}", sha2::Sha256::digest(&payload));
+    let (response, bytes) = exchange(remote, Operation::PublishBatch {}, &payload, allow_http)?;
+    if !bytes.is_empty() || response.tip.as_deref() != Some(&expected) {
+        return Err("atomic publication outcome is unknown: receipt does not match the requested transaction".into());
+    }
+    Ok(())
+}
+
 fn push_command(root: &str, args: &[&str], allow_http: bool) -> RepositoryResult<String> {
     let mut positional = Vec::new();
     let mut tags = false;
+    let mut atomic = false;
     let mut delete = false;
     let mut set_upstream = false;
     let mut explicit_lease = None;
@@ -1070,6 +1346,7 @@ fn push_command(root: &str, args: &[&str], allow_http: bool) -> RepositoryResult
     while index < args.len() {
         match args[index] {
             "--tags" if !tags => tags = true,
+            "--atomic" if !atomic => atomic = true,
             "--delete" if !delete => delete = true,
             "-u" | "--set-upstream" if !set_upstream => set_upstream = true,
             "--force-with-lease" if explicit_lease.is_none() => {
@@ -1083,7 +1360,7 @@ fn push_command(root: &str, args: &[&str], allow_http: bool) -> RepositoryResult
         }
         index += 1;
     }
-    if positional.len() > 2
+    if (positional.len() > 2 && (!atomic || set_upstream || explicit_lease.is_some()))
         || (tags && (delete || explicit_lease.is_some() || positional.len() > 1))
         || (delete && positional.is_empty())
         || (set_upstream && (tags || delete))
@@ -1166,7 +1443,7 @@ fn push_command(root: &str, args: &[&str], allow_http: bool) -> RepositoryResult
         }
         Some((RefNamespace::Branch, local.head.clone(), Some(source)))
     };
-    let (advertisement, empty) = exchange(&remote, Operation::Advertise {}, &[], allow_http)?;
+    let (advertisement, empty) = advertise(&remote, allow_http)?;
     if !empty.is_empty() {
         return Err("advertisement unexpectedly contains a bundle".into());
     }
@@ -1174,6 +1451,48 @@ fn push_command(root: &str, args: &[&str], allow_http: bool) -> RepositoryResult
         .state
         .ok_or("advertisement lacks repository state")?;
     validate_state(&state)?;
+    if atomic && (tags || positional.len() > 2) {
+        let mut updates = Vec::new();
+        if tags {
+            for (name, new) in &local.tags {
+                let old = state.tags.get(name).cloned();
+                if old.as_ref() != Some(new) {
+                    updates.push(protocol::RefUpdate {
+                        namespace: RefNamespace::Tag,
+                        name: name.clone(),
+                        expected: old,
+                        new: Some(new.clone()),
+                        force: false,
+                    });
+                }
+            }
+        } else {
+            for spec in &positional[1..] {
+                let (namespace, name, new) = if delete {
+                    let (ns, name) = reference(spec)?;
+                    (ns, name, None)
+                } else {
+                    let (source, dest) = spec
+                        .split_once(':')
+                        .ok_or("atomic refspec requires SOURCE:DESTINATION")?;
+                    let (ns, name) = reference(dest)?;
+                    (ns, name, Some(repo.resolve(source)?))
+                };
+                let old = remote_tip(&state, &namespace, name);
+                updates.push(protocol::RefUpdate {
+                    namespace,
+                    name: name.into(),
+                    expected: old,
+                    new,
+                    force: false,
+                });
+            }
+        }
+        publish_atomic(&repo, &remote, updates.clone(), &state, allow_http)?;
+        return pretty(
+            &serde_json::json!({"remote":remote.name,"status":"pushed","atomic":true,"updates":updates}),
+        );
+    }
     if tags {
         let mut updates = Vec::new();
         let mut failures = 0usize;
@@ -1199,6 +1518,12 @@ fn push_command(root: &str, args: &[&str], allow_http: bool) -> RepositoryResult
                     new: Some(id),
                     force: false,
                 },
+                &state
+                    .branches
+                    .values()
+                    .chain(state.tags.values())
+                    .cloned()
+                    .collect::<Vec<_>>(),
                 allow_http,
             ) {
                 Ok(()) => updates.push(
@@ -1242,18 +1567,40 @@ fn push_command(root: &str, args: &[&str], allow_http: bool) -> RepositoryResult
         RefNamespace::Branch => "branch",
         RefNamespace::Tag => "tag",
     };
-    update_ref(
-        &repo,
-        &remote,
-        RefChange {
-            namespace,
-            reference: &reference,
-            expected,
-            new: source.as_deref(),
-            force: explicit_lease.is_some() && !delete,
-        },
-        allow_http,
-    )?;
+    if atomic {
+        publish_atomic(
+            &repo,
+            &remote,
+            vec![protocol::RefUpdate {
+                namespace: namespace.clone(),
+                name: reference.clone(),
+                expected: expected.clone(),
+                new: source.clone(),
+                force: explicit_lease.is_some() && !delete,
+            }],
+            &state,
+            allow_http,
+        )?;
+    } else {
+        update_ref(
+            &repo,
+            &remote,
+            RefChange {
+                namespace,
+                reference: &reference,
+                expected,
+                new: source.as_deref(),
+                force: explicit_lease.is_some() && !delete,
+            },
+            &state
+                .branches
+                .values()
+                .chain(state.tags.values())
+                .cloned()
+                .collect::<Vec<_>>(),
+            allow_http,
+        )?;
+    }
     if let Some((branch, tip, previous)) = binding_source {
         let save = (|| {
             let _lock = config_lock(&repo)?;
@@ -1270,8 +1617,19 @@ fn push_command(root: &str, args: &[&str], allow_http: bool) -> RepositoryResult
     )
 }
 
+#[path = "remote_pool.rs"]
+mod pool;
 /// Dispatch remote commands; arguments start with the subcommand, not argv[0].
+#[path = "remote_select.rs"]
+mod selection;
+pub(crate) use pool::fork_pins as fork_pool_pins;
+pub use pool::run as pool_cli;
+pub use selection::{fetch_object_source, run_selective, selective_requested, validate_source};
+
 pub fn run(args: &[String]) -> RepositoryResult<String> {
+    if selective_requested(args) {
+        return run_selective(args);
+    }
     if crate::command_args::help_requested(args) {
         return Ok(USAGE.into());
     }
@@ -1309,6 +1667,39 @@ pub fn run(args: &[String]) -> RepositoryResult<String> {
         })
         .collect();
     match args.as_slice() {
+        ["fork", url, destination] => {
+            protocol::repository_name(destination)?;
+            parse_url(url)?;
+            let remote = Remote {
+                version: 1,
+                name: "fork".into(),
+                url: (*url).into(),
+                allow_insecure_http: allow_http,
+            };
+            let (response, bytes) = exchange(
+                &remote,
+                Operation::Fork {
+                    destination: (*destination).into(),
+                },
+                &[],
+                allow_http,
+            )?;
+            if !bytes.is_empty() {
+                return Err("fork acknowledgement contains an unexpected payload; publication outcome is unknown, inspect the destination before retrying".into());
+            }
+            let state = response.state;
+            if let Some(state) = &state {
+                validate_state(state)?;
+            }
+            if state.is_none()
+                && response.tip.as_deref() != Some(&format!("fork-created:{destination}"))
+            {
+                return Err("fork receipt missing; publication outcome is unknown".into());
+            }
+            pretty(
+                &serde_json::json!({"status":"forked","repository":destination,"state":state,"storage":"shared_immutable_objects"}),
+            )
+        }
         ["remote", root] | ["remote", root, "-v"] => {
             let repo = Repository::open(root)?;
             let _lock = config_lock(&repo)?;
@@ -1321,11 +1712,11 @@ pub fn run(args: &[String]) -> RepositoryResult<String> {
                     .file_name()
                     .into_string()
                     .map_err(|_| "non-UTF-8 remote metadata name")?;
-                if filename.ends_with(".tracking.json") {
+                if filename.ends_with(".tracking.bin") {
                     continue;
                 }
                 let remote = filename
-                    .strip_suffix(".json")
+                    .strip_suffix(".bin")
                     .ok_or("unexpected file in remote configuration")?;
                 remotes.push(load(&repo, remote)?);
             }
@@ -1337,7 +1728,7 @@ pub fn run(args: &[String]) -> RepositoryResult<String> {
             parse_url(url)?;
             let repo = Repository::open(root)?;
             let _lock = config_lock(&repo)?;
-            let path = config_dir(&repo)?.join(format!("{remote_name}.json"));
+            let path = config_dir(&repo)?.join(format!("{remote_name}.bin"));
             if path.try_exists().map_err(|e| e.to_string())? || fs::symlink_metadata(&path).is_ok()
             {
                 return Err("remote already exists".into());
@@ -1348,7 +1739,7 @@ pub fn run(args: &[String]) -> RepositoryResult<String> {
                 url: (*url).to_owned(),
                 allow_insecure_http: allow_http,
             };
-            atomic_json(&repo, &path, &remote)?;
+            atomic_record(&repo, &path, &remote)?;
             pretty(&remote)
         }
         ["remote", root, "show", remote_name] => {
@@ -1367,10 +1758,10 @@ pub fn run(args: &[String]) -> RepositoryResult<String> {
             repo.upstreams()?;
             let directory = config_dir(&repo)?;
             let cleared = repo.remove_upstream_remote(remote_name)?;
-            fs::remove_file(directory.join(format!("{remote_name}.json"))).map_err(|e| {
+            fs::remove_file(directory.join(format!("{remote_name}.bin"))).map_err(|e| {
                 format!("upstream bindings were cleared; remove remote configuration failed: {e}")
             })?;
-            let tracking = directory.join(format!("{remote_name}.tracking.json"));
+            let tracking = directory.join(format!("{remote_name}.tracking.bin"));
             match fs::remove_file(tracking) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -1388,27 +1779,27 @@ pub fn run(args: &[String]) -> RepositoryResult<String> {
             let mut tracking = optional_tracking(&repo, &remote)?;
             repo.upstreams()?;
             let directory = config_dir(&repo)?;
-            let destination = directory.join(format!("{new}.json"));
+            let destination = directory.join(format!("{new}.bin"));
             if fs::symlink_metadata(&destination).is_ok()
-                || fs::symlink_metadata(directory.join(format!("{new}.tracking.json"))).is_ok()
+                || fs::symlink_metadata(directory.join(format!("{new}.tracking.bin"))).is_ok()
             {
                 return Err("destination remote already exists".into());
             }
             remote.name = (*new).to_owned();
-            atomic_json(&repo, &destination, &remote).map_err(|error| format!("creating the new remote configuration failed or its durability is uncertain; old remote and upstream bindings remain: {error}"))?;
+            atomic_record(&repo, &destination, &remote).map_err(|error| format!("creating the new remote configuration failed or its durability is uncertain; old remote and upstream bindings remain: {error}"))?;
             if let Some(tracking) = tracking.as_mut() {
                 tracking.remote = (*new).to_owned();
-                atomic_json(
+                atomic_record(
                     &repo,
-                    &directory.join(format!("{new}.tracking.json")),
+                    &directory.join(format!("{new}.tracking.bin")),
                     tracking,
                 ).map_err(|error| format!("new remote configuration was created; copying tracking failed, old remote and upstream bindings remain: {error}"))?;
             }
             repo.rename_upstream_remote(old, new).map_err(|error| format!("new remote configuration and available tracking were created; upstream rename failed, old remote remains; inspect upstream bindings before retrying: {error}"))?;
-            fs::remove_file(directory.join(format!("{old}.json")))
+            fs::remove_file(directory.join(format!("{old}.bin")))
                 .map_err(|e| format!("new remote and upstream bindings were published; removing old remote configuration failed: {e}"))?;
             if tracking.is_some() {
-                fs::remove_file(directory.join(format!("{old}.tracking.json")))
+                fs::remove_file(directory.join(format!("{old}.tracking.bin")))
                     .map_err(|e| format!("new remote and upstream bindings were published and old configuration removed; removing old tracking failed: {e}"))?;
             }
             pretty(&remote)
@@ -1486,7 +1877,7 @@ pub fn run(args: &[String]) -> RepositoryResult<String> {
                 url: (*url).to_owned(),
                 allow_insecure_http: allow_http,
             };
-            let (response, payload) = exchange(&remote, Operation::Fetch {}, &[], allow_http)?;
+            let (response, payload) = fetch_payload(&remote, allow_http, None)?;
             let state = response
                 .state
                 .ok_or("clone response lacks repository state")?;
@@ -1500,14 +1891,14 @@ pub fn run(args: &[String]) -> RepositoryResult<String> {
             let repo = Repository::clone_bundle_bytes(&payload, destination)?;
             let _lock = config_lock(&repo)?;
             let directory = config_dir(&repo)?;
-            atomic_json(&repo, &directory.join("origin.json"), &remote)?;
+            atomic_record(&repo, &directory.join("origin.bin"), &remote)?;
             let initial_upstream = state
                 .branches
                 .get(&state.head)
                 .map(|tip| (state.head.clone(), tip.clone()));
-            atomic_json(
+            atomic_record(
                 &repo,
-                &directory.join("origin.tracking.json"),
+                &directory.join("origin.tracking.bin"),
                 &Tracking {
                     version: 1,
                     remote: "origin".into(),

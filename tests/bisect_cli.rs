@@ -173,7 +173,7 @@ fn snapshot(root: &Path) -> BTreeMap<PathBuf, Entry> {
 }
 fn protected(root: &Path) -> BTreeMap<PathBuf, Entry> {
     let mut result = snapshot(root);
-    result.remove(Path::new(".uwgit/bisect.json"));
+    result.remove(Path::new(".uwgit/bisect.bin"));
     result
 }
 fn ids(report: &Value, field: &str) -> BTreeSet<String> {
@@ -339,9 +339,9 @@ fn mark_batches_are_canonical_idempotent_and_atomic_on_late_invalid_member() {
     let mut expected = vec![c[1].clone(), c[2].clone()];
     expected.sort();
     assert_eq!(report["marks"][0]["revisions"], json!(expected));
-    let journal = fs::read(t.path(".uwgit/bisect.json")).unwrap();
+    let journal = fs::read(t.path(".uwgit/bisect.bin")).unwrap();
     assert_eq!(t.bisect(&["good", &c[1], &c[2]])["changed"], false);
-    assert_eq!(fs::read(t.path(".uwgit/bisect.json")).unwrap(), journal);
+    assert_eq!(fs::read(t.path(".uwgit/bisect.bin")).unwrap(), journal);
     t.reject(&["skip", &c[4], &c[1]]);
     let report = t.bisect(&["skip", &c[4], &c[3], &c[4]]);
     assert_eq!(ids(&report, "skip"), set(&[&c[3], &c[4]]));
@@ -407,7 +407,7 @@ fn status_next_log_and_reset_preserve_repository_and_session_identity() {
         assert_eq!(report["marks"].as_array().unwrap().len(), 1);
     }
     assert_eq!(t.bisect(&["reset"])["changed"], true);
-    assert!(!t.path(".uwgit/bisect.json").exists());
+    assert!(!t.path(".uwgit/bisect.bin").exists());
     assert_eq!(t.bisect(&["reset"])["changed"], false);
 }
 
@@ -419,7 +419,7 @@ fn dirty_missing_work_bad_index_and_unrelated_pending_are_not_dependencies() {
     fs::remove_file(t.path("steps/1.wasm")).unwrap();
     t.write("private/new.wasm", b"private untracked bytes");
     t.write(".uwgit/index", b"not a decodable index\0");
-    t.write(".uwgit/pending.json", b"unrelated malformed pending\0");
+    t.write(".uwgit/pending.bin", b"unrelated malformed pending\0");
     #[cfg(unix)]
     std::os::unix::fs::symlink("private/new.wasm", t.path("private-link")).unwrap();
     t.bisect(&["start", &c[6], &c[0]]);
@@ -478,26 +478,26 @@ fn malformed_noncanonical_and_oversized_regular_journals_have_reset_escape() {
     let t = Temp::new();
     let c = linear(&t);
     t.bisect(&["start", &c[6], &c[0]]);
-    let original = fs::read(t.path(".uwgit/bisect.json")).unwrap();
+    let original = fs::read(t.path(".uwgit/bisect.bin")).unwrap();
     let mut noncanonical = original.clone();
     noncanonical.push(b' ');
-    let mut extra: Value = serde_json::from_slice(&original).unwrap();
-    extra["unexpected"] = json!(true);
+    let mut extra = original.clone();
+    extra.extend_from_slice(&[0, 1]);
     let malformed = vec![
         b"not json\0".to_vec(),
         noncanonical,
-        serde_json::to_vec(&extra).unwrap(),
+        extra,
         vec![b'x'; 1024 * 1024 + 1],
     ];
     for bytes in malformed {
-        t.write(".uwgit/bisect.json", &bytes);
+        t.write(".uwgit/bisect.bin", &bytes);
         for action in ["status", "next", "log", "good"] {
             t.reject(&[action]);
         }
         let report = t.bisect(&["reset"]);
         assert_eq!(report["changed"], true);
         assert_eq!(report["status"], "reset");
-        assert!(!t.path(".uwgit/bisect.json").exists());
+        assert!(!t.path(".uwgit/bisect.bin").exists());
     }
 }
 
@@ -505,16 +505,16 @@ fn malformed_noncanonical_and_oversized_regular_journals_have_reset_escape() {
 fn nonregular_journal_is_never_followed_or_removed() {
     let t = Temp::new();
     let c = linear(&t);
-    fs::create_dir(t.path(".uwgit/bisect.json")).unwrap();
+    fs::create_dir(t.path(".uwgit/bisect.bin")).unwrap();
     for action in ["status", "reset"] {
         t.reject(&[action]);
     }
-    fs::remove_dir(t.path(".uwgit/bisect.json")).unwrap();
+    fs::remove_dir(t.path(".uwgit/bisect.bin")).unwrap();
     #[cfg(unix)]
     {
         let outside = t.base.join("outside-journal");
         fs::write(&outside, b"do not follow or remove").unwrap();
-        std::os::unix::fs::symlink(&outside, t.path(".uwgit/bisect.json")).unwrap();
+        std::os::unix::fs::symlink(&outside, t.path(".uwgit/bisect.bin")).unwrap();
         t.reject(&["start", &c[6], &c[0]]);
         for action in ["status", "reset"] {
             t.reject(&[action]);
@@ -558,7 +558,7 @@ fn clone_and_bundle_transfer_history_without_local_bisect_state() {
     let clone = t.base.join("clone");
     ok(&["clone", t.root(), s(&clone)]);
     assert_eq!(snapshot(&t.repo), original);
-    assert!(!clone.join(".uwgit/bisect.json").exists());
+    assert!(!clone.join(".uwgit/bisect.bin").exists());
     let before = snapshot(&clone);
     let output = ok(&["bisect", s(&clone), "status"]);
     assert_eq!(
@@ -569,7 +569,7 @@ fn clone_and_bundle_transfer_history_without_local_bisect_state() {
     let receiver = t.base.join("receiver");
     ok(&["init", s(&receiver)]);
     ok(&["unbundle", s(&receiver), s(&bundle), "imported"]);
-    assert!(!receiver.join(".uwgit/bisect.json").exists());
+    assert!(!receiver.join(".uwgit/bisect.bin").exists());
     assert_eq!(
         serde_json::from_str::<Value>(&ok(&["bisect", s(&receiver), "status"])).unwrap()["status"],
         "inactive"
@@ -620,5 +620,5 @@ fn help_invalid_shapes_and_unborn_repository_do_not_create_session() {
     t.reject(&["start", "HEAD", "HEAD"]);
     assert_eq!(t.readonly("status")["status"], "inactive");
     assert_eq!(t.bisect(&["reset"])["changed"], false);
-    assert!(!t.path(".uwgit/bisect.json").exists() && !missing.exists());
+    assert!(!t.path(".uwgit/bisect.bin").exists() && !missing.exists());
 }

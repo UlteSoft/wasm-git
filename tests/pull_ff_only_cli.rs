@@ -1,8 +1,11 @@
+#![cfg(feature = "server")]
 //! Fixed pull fast-forward policy workflows over real loopback HTTP and a
 //! local SSH/stdio shim. Fetch may retain verified objects and remote tracking;
 //! refusing integration must preserve local refs, index and working bytes.
 #![cfg(unix)]
 
+#[path = "support/native.rs"]
+mod native;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
@@ -95,8 +98,8 @@ fn snapshot(repository: &Path, allow_fetch: bool) -> BTreeMap<PathBuf, Entry> {
                 && [
                     ".uwgit/objects",
                     ".uwgit/tmp",
-                    ".uwgit/remotes/origin.tracking.json",
-                    ".uwgit/remotes/peer.tracking.json",
+                    ".uwgit/remotes/origin.tracking.bin",
+                    ".uwgit/remotes/peer.tracking.bin",
                 ]
                 .iter()
                 .any(|excluded| relative == Path::new(excluded))
@@ -236,10 +239,9 @@ impl Fixture {
         tip(&self.producer, "HEAD")
     }
     fn assert_fetched(&self, local: &Path, remote: &str, id: &str) {
-        let tracking: Value = serde_json::from_slice(
-            &fs::read(local.join(format!(".uwgit/remotes/{remote}.tracking.json"))).unwrap(),
-        )
-        .unwrap();
+        let tracking: Value = native::tracking_value(
+            &fs::read(local.join(format!(".uwgit/remotes/{remote}.tracking.bin"))).unwrap(),
+        );
         assert_eq!(tracking["state"]["branches"]["main"], id);
         assert_eq!(tip(local, &format!("{remote}/main")), id);
         // The new tip is readable despite the refused local integration.
@@ -325,7 +327,7 @@ fn divergent_pull_ff_only_keeps_local_state_but_retains_fetch_objects_and_tracki
             run(&["commit", path(&fixture.producer), "-m", "remote divergence"]);
             let theirs = fixture.publish("main");
             let protected = snapshot(&local, true);
-            let old_tracking = fs::read(local.join(".uwgit/remotes/origin.tracking.json")).unwrap();
+            let old_tracking = fs::read(local.join(".uwgit/remotes/origin.tracking.bin")).unwrap();
             let rejected = fixture
                 .command(&["pull", path(&local), "--ff-only", "-m", "--ff-only"])
                 .output()
@@ -336,7 +338,7 @@ fn divergent_pull_ff_only_keeps_local_state_but_retains_fetch_objects_and_tracki
             assert_eq!(tip(&local, "HEAD"), ours);
             assert_eq!(snapshot(&local, true), protected);
             assert_ne!(
-                fs::read(local.join(".uwgit/remotes/origin.tracking.json")).unwrap(),
+                fs::read(local.join(".uwgit/remotes/origin.tracking.bin")).unwrap(),
                 old_tracking
             );
             fixture.assert_fetched(&local, "origin", &theirs);
