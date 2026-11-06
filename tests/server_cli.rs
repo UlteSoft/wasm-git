@@ -279,7 +279,7 @@ fn actual_http_server_authenticates_and_remains_read_only_by_default() {
     let (status, body) = server.request(&request, Some(TOKEN));
     assert_eq!(status, 200);
     let (response, payload) = decode(&body);
-    assert_eq!(response["ok"], true);
+    assert_eq!(response["ok"], true, "{response}");
     assert!(payload.is_empty());
     assert_eq!(response["state"]["branches"]["main"], id);
     let request = packet(
@@ -367,10 +367,13 @@ fn actual_http_push_acknowledges_only_successful_cas_and_force_policy() {
     let (response, _) = decode(&body);
     assert_eq!(response["ok"], false);
     assert_eq!(response["publication_unknown"], false);
-    assert!(response["error"]
-        .as_str()
-        .unwrap()
-        .contains("reference changed"));
+    assert!(
+        response["error"]
+            .as_str()
+            .unwrap()
+            .contains("reference changed"),
+        "{response}"
+    );
     assert_eq!(metadata(&repo), before);
     let request = packet(
         "project",
@@ -379,7 +382,7 @@ fn actual_http_push_acknowledges_only_successful_cas_and_force_policy() {
     );
     let (_, body) = server.request(&request, Some(TOKEN));
     let (response, payload) = decode(&body);
-    assert_eq!(response["ok"], true);
+    assert_eq!(response["ok"], true, "{response}");
     assert_eq!(response["tip"], new);
     assert_eq!(response["state"], Value::Null);
     assert!(payload.is_empty());
@@ -402,7 +405,7 @@ fn actual_http_push_acknowledges_only_successful_cas_and_force_policy() {
     let server = Server::start(&temp, 1, true, true);
     let (_, body) = server.request(&force, Some(TOKEN));
     let (response, _) = decode(&body);
-    assert_eq!(response["ok"], true);
+    assert_eq!(response["ok"], true, "{response}");
     assert_eq!(response["tip"], old);
     server.finish();
     assert_eq!(tip(&repo), old);
@@ -453,7 +456,7 @@ fn stdio_is_one_complete_framed_request_and_rejects_trailing_or_traversal() {
         String::from_utf8_lossy(&output.stderr)
     );
     let (response, payload) = decode(&output.stdout);
-    assert_eq!(response["ok"], true);
+    assert_eq!(response["ok"], true, "{response}");
     assert_eq!(response["state"]["head"], "main");
     assert!(payload.starts_with(b"UWGB\0\0\0\x02"));
     let mut extra = request.clone();
@@ -577,7 +580,7 @@ fn truncated_mutation_operands_never_delete_or_publish_a_reference() {
         let (status, body) = server.request(&bytes, Some(TOKEN));
         assert_eq!(status, 200);
         let (response, payload) = decode(&body);
-        assert_eq!(response["ok"], true);
+        assert_eq!(response["ok"], true, "{response}");
         assert!(response["tip"].is_null());
         assert!(payload.is_empty());
         assert!(!project.join(".uwgit").join(directory).join(name).exists());
@@ -603,7 +606,7 @@ fn full_length_http_tokens_authenticate_with_or_without_one_final_line_feed() {
             let (status, body) = server.request(&bytes, Some(&token));
             assert_eq!(status, 200);
             let (response, payload) = decode(&body);
-            assert_eq!(response["ok"], true);
+            assert_eq!(response["ok"], true, "{response}");
             assert_eq!(response["publication_unknown"], false);
             assert!(!payload.is_empty());
             server.finish();

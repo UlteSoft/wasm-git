@@ -64,6 +64,10 @@ fn audit_with_rejections(
     }
     let mut options = fs::OpenOptions::new();
     options.append(true).create(true);
+    // LockFileEx requires GENERIC_READ or GENERIC_WRITE; Windows append-only
+    // access supplies neither. Keep append semantics while admitting the lock.
+    #[cfg(windows)]
+    options.read(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
