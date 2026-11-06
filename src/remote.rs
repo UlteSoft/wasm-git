@@ -648,9 +648,7 @@ fn atomic_record<T: Serialize>(repo: &Repository, path: &Path, value: &T) -> Rep
             Err(e) => return Err(format!("inspect remote metadata: {e}")),
         }
         fs::rename(&temp, path).map_err(|e| format!("publish remote metadata: {e}"))?;
-        File::open(path.parent().ok_or("missing remote metadata parent")?)
-            .and_then(|dir| dir.sync_all())
-            .map_err(|e| format!("sync remote metadata directory: {e}"))
+        crate::output::sync_directory(path.parent().ok_or("missing remote metadata parent")?)
     })();
     let _ = fs::remove_file(temp);
     result
@@ -659,7 +657,7 @@ fn atomic_record<T: Serialize>(repo: &Repository, path: &Path, value: &T) -> Rep
 fn unique(prefix: &str) -> String {
     format!(
         "{prefix}-{}-{}-{}",
-        std::process::id(),
+        crate::platform_fs::process_id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos()),

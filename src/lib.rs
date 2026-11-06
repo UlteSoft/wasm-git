@@ -34,6 +34,7 @@ pub mod parallel;
 pub mod parse;
 pub mod patch;
 pub mod pathspec;
+mod platform_fs;
 mod plumbing_commands;
 mod porcelain;
 pub mod protocol;
@@ -310,7 +311,7 @@ pub fn client_main() {
     }
     let result = match args[1].as_str() {
         "version" | "--version" | "-v" if args.len() == 2 => Ok(format!("wasm-git {}", env!("CARGO_PKG_VERSION"))),
-        "version" if args.len() == 3 && args[2] == "--build-options" => serde_json::to_string_pretty(&json!({"version":env!("CARGO_PKG_VERSION"),"backend":"native_uwgit","original_wasm_bytes":true,"pointer_width":usize::BITS,"object_hash":"sha256","client":cfg!(feature="client"),"server":cfg!(feature="server")})).map_err(|error|error.to_string()),
+        "version" if args.len() == 3 && args[2] == "--build-options" => serde_json::to_string_pretty(&json!({"version":env!("CARGO_PKG_VERSION"),"backend":"native_uwgit","original_wasm_bytes":true,"pointer_width":usize::BITS,"object_hash":"sha256","client":cfg!(feature="client"),"server":cfg!(feature="server"),"host_os":if cfg!(target_os="wasi") { "wasi" } else { std::env::consts::OS },"host_arch":std::env::consts::ARCH,"host_threads":!cfg!(target_family="wasm"),"host_processes":!cfg!(target_family="wasm"),"host_network":!cfg!(target_family="wasm"),"directory_fsync":cfg!(unix)})).map_err(|error|error.to_string()),
         "pool" => remote::pool_cli(&args[1..]),
         "features" => features::run(&args[1..]),
         "pr" => remote::pull_cli(&args[2..]),

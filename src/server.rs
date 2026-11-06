@@ -81,9 +81,7 @@ fn repository_parent(settings: &Settings, name: &str, create: bool) -> Result<Pa
         let next = parent.join(component);
         if create {
             match fs::create_dir(&next) {
-                Ok(()) => fs::File::open(&parent)
-                    .and_then(|f| f.sync_all())
-                    .map_err(|e| e.to_string())?,
+                Ok(()) => crate::output::sync_directory(&parent)?,
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => (),
                 Err(error) => return Err(error.to_string()),
             }
@@ -1379,7 +1377,7 @@ mod tests {
         }
         let path = std::env::temp_dir().join(format!(
             "uwgit-token-boundary-{}-{}",
-            std::process::id(),
+            crate::platform_fs::process_id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

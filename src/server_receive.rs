@@ -130,15 +130,17 @@ impl HookInput {
     fn new(repo: &Repository, updates: &[RefUpdate], bundle: &[u8]) -> Result<Self, String> {
         let directory = repo.root.join(".uwgit/tmp").join(format!(
             "receive-{}-{}",
-            std::process::id(),
+            crate::platform_fs::process_id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        let mut builder = fs::DirBuilder::new();
+        let builder = fs::DirBuilder::new();
         #[cfg(unix)]
-        {
+        let builder = {
             use std::os::unix::fs::DirBuilderExt;
+            let mut builder = builder;
             builder.mode(0o700);
-        }
+            builder
+        };
         builder.create(&directory).map_err(|e| e.to_string())?;
         let quarantine = Quarantine(directory);
         let bundle_path = quarantine.0.join("bundle.bin");
@@ -234,7 +236,7 @@ pub(super) fn publish(
 ) -> Result<(), ReceiveError> {
     let transaction = format!(
         "{}-{}-{}",
-        std::process::id(),
+        crate::platform_fs::process_id(),
         NEXT.fetch_add(1, Ordering::Relaxed),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -358,7 +360,7 @@ pub(super) fn publish_selective(
 ) -> Result<Vec<Option<String>>, ReceiveError> {
     let transaction = format!(
         "receive-{}-{}-{}",
-        std::process::id(),
+        crate::platform_fs::process_id(),
         NEXT.fetch_add(1, Ordering::Relaxed),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -480,7 +482,7 @@ pub(super) fn fork(
 ) -> Result<(), ReceiveError> {
     let transaction = format!(
         "fork-{}-{}-{}",
-        std::process::id(),
+        crate::platform_fs::process_id(),
         NEXT.fetch_add(1, Ordering::Relaxed),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -517,9 +519,7 @@ pub(super) fn fork(
             return Err(error.to_string());
         }
         published = true;
-        fs::File::open(&parent)
-            .and_then(|f| f.sync_all())
-            .map_err(|e| e.to_string())?;
+        crate::output::sync_directory(&parent)?;
         Ok(())
     })();
     let outcome = if result.is_ok() {

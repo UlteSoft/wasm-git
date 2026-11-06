@@ -1686,10 +1686,12 @@ impl Repository {
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
-        let parent = fs::canonicalize(parent)
+        let parent = crate::platform_fs::canonicalize(parent)
             .map_err(|e| io_error("resolve clone destination parent", parent, e))?;
-        let common = fs::canonicalize(&source.common_metadata).map_err(|e| e.to_string())?;
-        let local = fs::canonicalize(&source.metadata).map_err(|e| e.to_string())?;
+        let common =
+            crate::platform_fs::canonicalize(&source.common_metadata).map_err(|e| e.to_string())?;
+        let local =
+            crate::platform_fs::canonicalize(&source.metadata).map_err(|e| e.to_string())?;
         if parent.starts_with(common) || parent.starts_with(local) {
             return Err("clone/fork destination must be outside repository metadata".into());
         }
@@ -3408,7 +3410,7 @@ impl Repository {
             .write_all(
                 &[
                     b"UWGLCK\0\x01".as_slice(),
-                    &std::process::id().to_be_bytes(),
+                    &crate::platform_fs::process_id().to_be_bytes(),
                 ]
                 .concat(),
             )
@@ -6632,9 +6634,7 @@ fn write_new_file(path: &Path, bytes: &[u8]) -> RepositoryResult<()> {
 }
 
 fn sync_directory(path: &Path) -> RepositoryResult<()> {
-    File::open(path)
-        .and_then(|file| file.sync_all())
-        .map_err(|e| io_error("sync directory", path, e))
+    crate::output::sync_directory(path)
 }
 
 fn unique_name(kind: &str) -> String {
@@ -6643,7 +6643,7 @@ fn unique_name(kind: &str) -> String {
         .map_or(0, |duration| duration.as_nanos());
     format!(
         "{kind}-{}-{timestamp}-{}",
-        std::process::id(),
+        crate::platform_fs::process_id(),
         TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
     )
 }

@@ -365,9 +365,7 @@ pub fn replay_control(root: &str, operation: &str, action: &str) -> Result<Strin
                     state.write("index", raw)?;
                 } else if original.is_some() {
                     fs::remove_file(state.metadata.join("index")).map_err(|e| e.to_string())?;
-                    File::open(&state.metadata)
-                        .and_then(|file| file.sync_all())
-                        .map_err(|e| e.to_string())?;
+                    crate::output::sync_directory(&state.metadata)?;
                 }
                 Ok(())
             })?;

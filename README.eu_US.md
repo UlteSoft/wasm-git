@@ -144,3 +144,7 @@ Follow the [development and verification guide](documents/DEVELOPMENT.eu_US.md).
 Use `.tmp/` for all generated artifacts and test output, and keep that directory
 out of Git. Finite tests establish observed results for their recorded inputs;
 they do not prove correctness for every possible or future Wasm module.
+
+## Release engineering
+
+See the [platform and release guide](documents/RELEASE.eu_US.md) for native and WASIp1 builds, CI/CD gates, QEMU tests and capability limits.

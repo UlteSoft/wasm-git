@@ -603,7 +603,7 @@ impl State {
         regular(&path)?;
         let temporary = self.metadata.join("tmp").join(format!(
             "porcelain-{}-{}",
-            std::process::id(),
+            crate::platform_fs::process_id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
         let mut file = OpenOptions::new()
@@ -628,9 +628,7 @@ impl State {
             let _ = fs::remove_file(&temporary);
         }
         result?;
-        File::open(&self.metadata)
-            .and_then(|file| file.sync_all())
-            .map_err(|e| error("sync metadata directory", &self.metadata, e))
+        crate::output::sync_directory(&self.metadata)
     }
 
     fn worktree(&self, path: &str) -> Result<Option<Vec<u8>>, String> {
@@ -698,7 +696,7 @@ impl State {
             self.create_parents(path)?;
             let temporary = parent.join(format!(
                 ".uwgit-worktree-{}-{}.tmp",
-                std::process::id(),
+                crate::platform_fs::process_id(),
                 SEQUENCE.fetch_add(1, Ordering::Relaxed)
             ));
             let mut file = OpenOptions::new()
@@ -734,9 +732,7 @@ impl State {
                 .map_err(|e| error("remove tracked file", &destination, e))?;
         }
         if parent.exists() {
-            File::open(parent)
-                .and_then(|file| file.sync_all())
-                .map_err(|e| error("sync tracked directory", parent, e))?;
+            crate::output::sync_directory(parent)?;
         }
         Ok(())
     }
@@ -1032,8 +1028,10 @@ pub fn remove_linked_worktree(source: &str, target: &str, force: bool) -> Result
         );
     }
     let source = Repository::open(source)?;
-    if fs::canonicalize(source.common_metadata()).map_err(|error| error.to_string())?
-        != fs::canonicalize(state.repo.common_metadata()).map_err(|error| error.to_string())?
+    if crate::platform_fs::canonicalize(source.common_metadata())
+        .map_err(|error| error.to_string())?
+        != crate::platform_fs::canonicalize(state.repo.common_metadata())
+            .map_err(|error| error.to_string())?
     {
         return Err("worktree belongs to a different repository".into());
     }
@@ -1082,14 +1080,16 @@ pub fn move_linked_worktree(source: &str, target: &str, new_path: &str) -> Resul
     let state = State::open(target)?;
     let mut lock = state.lock()?;
     let source = Repository::open(source)?;
-    if fs::canonicalize(source.common_metadata()).map_err(|error| error.to_string())?
-        != fs::canonicalize(state.repo.common_metadata()).map_err(|error| error.to_string())?
+    if crate::platform_fs::canonicalize(source.common_metadata())
+        .map_err(|error| error.to_string())?
+        != crate::platform_fs::canonicalize(state.repo.common_metadata())
+            .map_err(|error| error.to_string())?
     {
         return Err("worktree belongs to a different repository".into());
     }
     let result = source.move_linked_worktree(&state.repo.root, Path::new(new_path));
     if !state.repo.root.exists() {
-        if let Ok(moved) = fs::canonicalize(new_path) {
+        if let Ok(moved) = crate::platform_fs::canonicalize(new_path) {
             lock.0 = moved.join(".uwgit/index.lock");
         }
     }
@@ -1881,9 +1881,7 @@ fn apply_plan(state: &State, prepared: &WorktreePlan) -> Result<(), String> {
                 Ok(()) => {
                     removed_directories += 1;
                     let parent = full.parent().ok_or("removed directory has no parent")?;
-                    File::open(parent)
-                        .and_then(|file| file.sync_all())
-                        .map_err(|e| error("sync removed directory parent", parent, e))?;
+                    crate::output::sync_directory(parent)?;
                 }
                 Err(e) if !required && e.kind() == std::io::ErrorKind::DirectoryNotEmpty => {}
                 Err(e) => return Err(error("remove tracked directory", &full, e)),
@@ -2201,7 +2199,8 @@ fn restore_pending_baseline(
         })?;
     } else if current_index.is_some() {
         fs::remove_file(state.metadata.join("index"))
-            .and_then(|()| File::open(&state.metadata)?.sync_all())
+            .map_err(|error| error.to_string())
+            .and_then(|()| crate::output::sync_directory(&state.metadata))
             .map_err(|error| format!("work files preserved; restoring the original absent index failed or its durability is uncertain; pending operation retained: {error}"))?;
     }
     Ok(())

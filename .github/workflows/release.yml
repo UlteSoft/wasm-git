@@ -1,0 +1,38 @@
+name: Publish release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    uses: ./.github/workflows/rust.yml
+  publish:
+    needs: verify
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: .tmp/dist
+      - name: Verify version and produce checksums
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python -c 'import os,tomllib; v=tomllib.load(open("Cargo.toml","rb"))["package"]["version"]; assert os.environ["RELEASE_TAG"] == "v"+v, "tag must match Cargo version"'
+          python tools/release.py checksums
+      - name: Publish tested prerelease assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release create "$RELEASE_TAG" .tmp/dist/* --verify-tag --prerelease --title "uwgit $RELEASE_TAG" --notes-file documents/RELEASE_NOTES.eu_US.md

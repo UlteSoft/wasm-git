@@ -1,6 +1,6 @@
 //! Publish complete new files without replacing an existing destination.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -17,13 +17,32 @@ fn io_error(action: &str, path: &Path, error: std::io::Error) -> String {
     format!("cannot {action} {}: {error}", path.display())
 }
 
+/// Flush directory metadata where the host API supports it. Windows and WASI
+/// Preview 1 do not expose a portable directory fsync through std; files are
+/// still flushed before publication, but power-loss durability of directory
+/// entries depends on the host filesystem. Do not turn unrelated I/O failures
+/// on platforms with directory fsync into apparent success.
+pub(crate) fn sync_directory(path: &Path) -> Result<(), String> {
+    #[cfg(not(any(windows, target_family = "wasm")))]
+    {
+        std::fs::File::open(path)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| io_error("sync directory", path, error))
+    }
+    #[cfg(any(windows, target_family = "wasm"))]
+    {
+        let _ = path;
+        Ok(())
+    }
+}
+
 fn unique_name() -> String {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |duration| duration.as_nanos());
     format!(
         ".uwgit-output-{}-{timestamp}-{}.tmp",
-        std::process::id(),
+        crate::platform_fs::process_id(),
         TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
     )
 }
@@ -78,9 +97,7 @@ impl StagedOutput {
             .map_err(|error| io_error("remove output staging file", &self.path, error))?;
         self.cleanup = false;
         let parent = parent_directory(destination);
-        File::open(parent)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|error| io_error("sync output directory", parent, error))
+        sync_directory(parent)
     }
 }
 
@@ -130,7 +147,7 @@ pub fn write_export_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .file_name()
         .ok_or_else(|| format!("output path must name a new file: {}", path.display()))?;
     let parent = parent_directory(path);
-    let parent = fs::canonicalize(parent)
+    let parent = crate::platform_fs::canonicalize(parent)
         .map_err(|error| io_error("resolve output parent", parent, error))?;
     if parent.components().any(|component| {
         component
@@ -147,7 +164,7 @@ pub fn create_export_directory(path: &Path) -> Result<PathBuf, String> {
     let name = path
         .file_name()
         .ok_or("export directory must name a new directory")?;
-    let parent = fs::canonicalize(parent_directory(path))
+    let parent = crate::platform_fs::canonicalize(parent_directory(path))
         .map_err(|error| io_error("resolve export parent", parent_directory(path), error))?;
     if name.to_string_lossy().eq_ignore_ascii_case(".uwgit")
         || parent.components().any(|part| {

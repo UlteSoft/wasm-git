@@ -50,3 +50,7 @@ may change without migration.
 Update both language editions in the same change. Keep command examples and
 numeric limits synchronized, and do not turn a finite test result into a universal
 correctness claim. Generated run reports and profiles remain in `.tmp/`.
+
+## Release engineering
+
+See the [platform and release guide](RELEASE.eu_US.md) for native and WASIp1 builds, CI/CD gates, QEMU tests and capability limits.

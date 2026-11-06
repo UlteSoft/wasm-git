@@ -147,7 +147,7 @@ fn temporary_images(
                 };
                 let name = format!(
                     "uwgit-index-{}-{}.wasm",
-                    std::process::id(),
+                    crate::platform_fs::process_id(),
                     SEQUENCE.fetch_add(1, Ordering::Relaxed)
                 );
                 let full = state.repo.root.join(&name);
@@ -169,9 +169,7 @@ fn temporary_images(
             output.push_str(&path);
             output.push(if nul { '\0' } else { '\n' });
         }
-        File::open(&state.repo.root)
-            .and_then(|file| file.sync_all())
-            .map_err(|e| error("sync image directory", &state.repo.root, e))?;
+        crate::output::sync_directory(&state.repo.root)?;
         Ok(QueryOutput::new(output, 0))
     })();
     if result.is_err() {

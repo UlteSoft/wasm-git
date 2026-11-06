@@ -118,3 +118,7 @@ uwgit 不读取 Git 对象库、不使用 Git 网络协议，也不迁移已废�
 参阅[开发与验证指南](documents/DEVELOPMENT.zh_CN.md)。所有生成文件和测试输出放在
 `.tmp/`，不得提交该目录。有限测试只能描述所记录输入的实际结果，不能证明所有可能或未来
 Wasm 模块都正确。
+
+## 发布工程
+
+请参阅[平台与发布手册](documents/RELEASE.zh_CN.md)，了解原生与 WASIp1 构建、CI/CD 门禁、QEMU 测试及能力边界。

@@ -50,8 +50,8 @@ impl Repository {
         for node in &nodes {
             crate::remote::validate_source(node)?;
             if !crate::remote::is_remote_url(&node.location)
-                && fs::canonicalize(&node.location).map_err(|e| e.to_string())?
-                    == fs::canonicalize(&self.root).map_err(|e| e.to_string())?
+                && crate::platform_fs::canonicalize(&node.location).map_err(|e| e.to_string())?
+                    == crate::platform_fs::canonicalize(&self.root).map_err(|e| e.to_string())?
             {
                 return Err("repository cannot be its own pool node".into());
             }

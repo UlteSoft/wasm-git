@@ -41,6 +41,10 @@ and verification guide. The [WasmHub guide](documents/WASMHUB.eu_US.md) covers
 SSH/OpenPGP signatures, PR review/check gates, branch protection and merge recovery.
 Each document has matching English and Chinese editions.
 
+The [release guide](documents/RELEASE.eu_US.md) ([中文版](documents/RELEASE.zh_CN.md))
+documents the Linux, Windows, macOS and WASIp1 MVP/Core 2.0 packages, CI gates,
+QEMU tests, resource limits and platform capability boundaries.
+
 uwgit uses its own repository and network formats. Git-style workflows do not
 imply Git interoperability or support for every Git option. Known Wasm grammar
 and community conventions are interpreted within explicit limits; unknown bytes

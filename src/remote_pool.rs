@@ -125,7 +125,7 @@ pub fn run(args: &[String]) -> RepositoryResult<String> {
                     let location = if is_remote_url(&location) {
                         location
                     } else {
-                        fs::canonicalize(location)
+                        crate::platform_fs::canonicalize(location)
                             .map_err(|e| e.to_string())?
                             .to_string_lossy()
                             .into_owned()

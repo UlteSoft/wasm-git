@@ -77,7 +77,8 @@ pub(super) fn has_entries(common: &Path) -> RepositoryResult<bool> {
     Ok(!registry(common)?.entries.is_empty())
 }
 fn canonical(path: &Path) -> RepositoryResult<PathBuf> {
-    fs::canonicalize(path).map_err(|error| format!("cannot resolve {}: {error}", path.display()))
+    crate::platform_fs::canonicalize(path)
+        .map_err(|error| format!("cannot resolve {}: {error}", path.display()))
 }
 fn marker(path: &Path) -> RepositoryResult<String> {
     let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
@@ -397,7 +398,7 @@ impl Repository {
         if reason.is_some_and(|reason| reason.chars().any(char::is_control)) {
             return Err("worktree lock reason must be one line without control characters".into());
         }
-        let target = match fs::canonicalize(target) {
+        let target = match crate::platform_fs::canonicalize(target) {
             Ok(target) => target,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 let target = if target.is_absolute() {

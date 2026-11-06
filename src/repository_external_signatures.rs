@@ -35,12 +35,14 @@ struct Workspace(PathBuf);
 impl Workspace {
     fn new() -> RepositoryResult<Self> {
         let path = std::env::temp_dir().join(unique_name("uwgit-signature"));
-        let mut builder = fs::DirBuilder::new();
+        let builder = fs::DirBuilder::new();
         #[cfg(unix)]
-        {
+        let builder = {
             use std::os::unix::fs::DirBuilderExt;
+            let mut builder = builder;
             builder.mode(0o700);
-        }
+            builder
+        };
         builder
             .create(&path)
             .map_err(|e| format!("create signature workspace: {e}"))?;
@@ -279,7 +281,7 @@ pub(super) fn public_for_signing(format: SignatureFormat, key: &Path) -> Reposit
             let mut command = Command::new("ssh-keygen");
             command
                 .args(["-y", "-f"])
-                .arg(fs::canonicalize(key).map_err(|e| e.to_string())?);
+                .arg(crate::platform_fs::canonicalize(key).map_err(|e| e.to_string())?);
             decode_ssh_public(&work.run(command, &[])?)
         }
         SignatureFormat::Openpgp => {
@@ -321,7 +323,7 @@ pub(super) fn sign(
             let mut command = Command::new("ssh-keygen");
             command
                 .args(["-Y", "sign", "-n", NAMESPACE, "-f"])
-                .arg(fs::canonicalize(key).map_err(|e| e.to_string())?);
+                .arg(crate::platform_fs::canonicalize(key).map_err(|e| e.to_string())?);
             unarmor(&work.run(command, message)?)?
         }
         SignatureFormat::Openpgp => {
