@@ -23,7 +23,7 @@ impl Repository {
         let file = File::open(&path).map_err(|e| e.to_string())?;
         let deadline = std::time::Instant::now() + timeout;
         loop {
-            match file.try_lock() {
+            match crate::platform_fs::try_service_lock(&file) {
                 Ok(()) => return Ok(file),
                 Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
                     std::thread::sleep(std::time::Duration::from_millis(2))
@@ -370,6 +370,23 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn service_gate_excludes_other_handlers_without_blocking_format_reads() {
+        let temp = Temp::new();
+        let repo = Repository::init(&temp.0).unwrap();
+        let format = repo.common_metadata.join("format");
+        let before = fs::read(&format).unwrap();
+        let gate = repo.service_lock(std::time::Duration::ZERO).unwrap();
+        assert_eq!(fs::read(&format).unwrap(), before);
+        assert!(repo.service_lock(std::time::Duration::ZERO).is_err());
+        assert_eq!(fs::read(&format).unwrap(), before);
+        drop(gate);
+        let _gate = repo
+            .service_lock(std::time::Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(fs::read(&format).unwrap(), before);
     }
 
     #[test]

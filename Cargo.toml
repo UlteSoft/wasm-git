@@ -41,6 +41,9 @@ gimli = { version = "=0.34.0", default-features = false, features = ["read", "st
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 rayon = "=1.11.0"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
+
 [dev-dependencies]
 wat = "=1.249.0"
 wast = "=249.0.0"

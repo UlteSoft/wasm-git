@@ -3,6 +3,56 @@
 #[cfg(not(target_os = "wasi"))]
 pub(crate) use std::fs::canonicalize;
 
+/// Serialize service requests without preventing ordinary reads of the format
+/// inode. Windows byte-range locks are mandatory even for another handle in
+/// this process, so reserve one byte beyond EOF instead of locking its contents.
+pub(crate) fn try_service_lock(file: &std::fs::File) -> Result<(), std::fs::TryLockError> {
+    #[cfg(not(windows))]
+    {
+        file.try_lock()
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::ERROR_LOCK_VIOLATION;
+        use windows_sys::Win32::Storage::FileSystem::{
+            LockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
+        };
+        use windows_sys::Win32::System::IO::{OVERLAPPED, OVERLAPPED_0, OVERLAPPED_0_0};
+        let mut position = OVERLAPPED {
+            Anonymous: OVERLAPPED_0 {
+                Anonymous: OVERLAPPED_0_0 {
+                    Offset: 0,
+                    OffsetHigh: 1,
+                },
+            },
+            ..Default::default()
+        };
+        // SAFETY: the live File owns this synchronous handle. FAIL_IMMEDIATELY
+        // prevents a pending asynchronous operation referencing stack memory.
+        // The lock is released when the returned service guard File is closed.
+        let locked = unsafe {
+            LockFileEx(
+                file.as_raw_handle(),
+                LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+                0,
+                1,
+                0,
+                &mut position,
+            )
+        };
+        if locked != 0 {
+            return Ok(());
+        }
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32) {
+            Err(std::fs::TryLockError::WouldBlock)
+        } else {
+            Err(std::fs::TryLockError::Error(error))
+        }
+    }
+}
+
 /// WASIp1 has no process identifier. This diagnostic field is never a lock
 /// ownership proof; exclusive file creation, timestamps and counters arbitrate
 /// staging names. Zero records the absence of a host PID without panicking.

@@ -833,6 +833,7 @@ dependencies = [
  "wasmparser",
  "wast",
  "wat",
+ "windows-sys 0.61.2",
  "zeroize",
  "zstd",
 ]

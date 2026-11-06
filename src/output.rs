@@ -302,8 +302,28 @@ mod tests {
         {
             use std::os::unix::ffi::OsStrExt;
             let non_utf8 = temp.0.join(std::ffi::OsStr::from_bytes(b"non-utf8-\xff"));
-            write_export_file(&non_utf8, b"non-UTF-8 filename").unwrap();
-            assert_eq!(fs::read(non_utf8).unwrap(), b"non-UTF-8 filename");
+            // APFS rejects this byte sequence for hard-link publication, while
+            // Linux filesystems commonly accept it. Check the documented host
+            // publication requirement, not merely whether open/create works.
+            let probe = temp.path("filename-capability-probe");
+            fs::write(&probe, b"capability probe").unwrap();
+            match fs::hard_link(&probe, &non_utf8) {
+                Ok(()) => {
+                    fs::remove_file(&non_utf8).unwrap();
+                    write_export_file(&non_utf8, b"non-UTF-8 filename").unwrap();
+                    assert_eq!(fs::read(non_utf8).unwrap(), b"non-UTF-8 filename");
+                }
+                Err(_) => {
+                    assert!(write_export_file(&non_utf8, b"non-UTF-8 filename").is_err());
+                    assert!(!non_utf8.exists());
+                    assert!(temp.entries().iter().all(|path| !path
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with(".uwgit-output-")));
+                }
+            }
+            fs::remove_file(probe).unwrap();
         }
     }
 
