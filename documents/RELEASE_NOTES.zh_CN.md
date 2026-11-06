@@ -1,8 +1,10 @@
-# uwgit 0.1.0 预发布
+# uwgit 0.1.1 预发布
 
 无损 WebAssembly 审计与二进制版本历史，原生客户端和服务端共用源码。本预发布
 使用 uwgit 原生仓库及网络格式，不是原生 Git 协议的直接替代。
 
+- Windows 发布程序静态链接 C/C++ 运行库，并在打包前检查真实 PE 导入表。修复未安装
+  VC redistributable 的干净 Windows 无法启动的问题；请用本版本替代 0.1.0 Windows 包。
 - 八种原生包：Linux x86_64/AArch64/ARMv7/RV64GC、Windows x86_64/ARM64、
   macOS x86_64/ARM64；均包含客户端和独立服务端。
 - 两种 WASIp1 客户端：MVP、Core 2.0，标准库、libc、Zstd 按要求重编译，最终

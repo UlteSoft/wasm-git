@@ -27,17 +27,23 @@ jobs:
           - os: windows-2022
             target: x86_64-pc-windows-msvc
             suffix: .exe
+            rustflags: '-D warnings -C target-feature=+crt-static'
           - os: windows-11-arm
             target: aarch64-pc-windows-msvc
             suffix: .exe
+            rustflags: '-D warnings -C target-feature=+crt-static'
           - os: macos-15-intel
             target: x86_64-apple-darwin
             suffix: ''
+            rustflags: '-D warnings'
           - os: macos-15
             target: aarch64-apple-darwin
             suffix: ''
+            rustflags: '-D warnings'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    env:
+      RUSTFLAGS: ${{ matrix.rustflags }}
     steps:
       - uses: actions/checkout@v4
       - name: Create scratch directories

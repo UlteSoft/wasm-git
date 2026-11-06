@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import struct
 import subprocess
 import tarfile
 import tempfile
@@ -154,6 +155,58 @@ def smoke(args):
         print(f"PASS {args.label}: {calls} CLI checks; precise function diff; exact patch/history/GC/clone restoration", flush=True)
 
 
+def windows_imports(path):
+    """Read the actual PE import table; compiler flags alone are not proof."""
+    data = path.read_bytes()
+    if data[:2] != b"MZ":
+        raise RuntimeError(f"not a PE executable: {path}")
+    pe = struct.unpack_from("<I", data, 0x3C)[0]
+    if data[pe:pe + 4] != b"PE\0\0":
+        raise RuntimeError(f"invalid PE header: {path}")
+    count = struct.unpack_from("<H", data, pe + 6)[0]
+    optional_size = struct.unpack_from("<H", data, pe + 20)[0]
+    optional = pe + 24
+    if struct.unpack_from("<H", data, optional)[0] != 0x20B:
+        raise RuntimeError("release Windows executables must be PE32+")
+    sections = optional + optional_size
+
+    def offset(rva):
+        for i in range(count):
+            size, virtual, raw_size, raw = struct.unpack_from("<4I", data, sections + i * 40 + 8)
+            if virtual <= rva < virtual + max(size, raw_size):
+                delta = rva - virtual
+                if delta >= raw_size or raw + delta >= len(data):
+                    break
+                return raw + delta
+        raise RuntimeError(f"unbacked PE import RVA: {rva}")
+
+    # Import directory is index 1 in the PE32+ optional header.
+    rva, size = struct.unpack_from("<2I", data, optional + 112 + 8)
+    if not rva or size < 20:
+        raise RuntimeError("missing Windows import directory")
+    start = offset(rva)
+    imports = []
+    for pos in range(start, min(start + size, len(data)) - 19, 20):
+        descriptor = struct.unpack_from("<5I", data, pos)
+        if not any(descriptor):
+            return imports
+        name = offset(descriptor[3])
+        end = data.find(b"\0", name, min(name + 512, len(data)))
+        if end < 0:
+            raise RuntimeError("unterminated PE import name")
+        imports.append(data[name:end].decode("ascii").lower())
+    raise RuntimeError("unterminated PE import directory")
+
+
+def verify_windows_runtime(path):
+    imports = windows_imports(path)
+    forbidden = [name for name in imports if name.startswith(("vcruntime", "msvcp", "msvcr", "concrt", "api-ms-win-crt-"))
+                 or name == "ucrtbase.dll"]
+    if forbidden:
+        raise RuntimeError(f"Windows release requires an external C/C++ runtime: {path}: {forbidden}")
+    print(f"PASS static CRT imports: {path.name}: {', '.join(imports)}", flush=True)
+
+
 def package(args):
     version = tomllib.loads((ROOT / "Cargo.toml").read_text())["package"]["version"]
     name = f"wasm-git-{version}-{args.label}"
@@ -164,6 +217,10 @@ def package(args):
              ROOT / "documents" / "RELEASE.eu_US.md", ROOT / "documents" / "RELEASE.zh_CN.md"]
     if args.server:
         files.append(Path(args.server).resolve())
+    if args.label.endswith("windows-msvc"):
+        verify_windows_runtime(Path(args.client).resolve())
+        if args.server:
+            verify_windows_runtime(Path(args.server).resolve())
     for path in files:
         if not path.is_file() or path.is_symlink():
             raise RuntimeError(f"missing or symlinked release input: {path}")

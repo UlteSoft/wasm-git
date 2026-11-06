@@ -12,12 +12,15 @@ build trees, test repositories, generated modules, profiles, downloaded tools,
 tokens, and temporary signing keys are never package inputs.
 
 Native release targets are Linux x86_64, AArch64, ARMv7 hard-float and RISC-V
-RV64GC (static musl); Windows x86_64 and ARM64 (MSVC); and macOS x86_64 and ARM64.
+RV64GC (static musl); Windows x86_64 and ARM64 (MSVC with a statically linked CRT); and macOS x86_64 and ARM64.
 WASI targets are `wasm32-wasip1-mvp` and `wasm32-wasip1-core2`.
 These are the tested release targets, not a claim that every CPU or OS version
 is supported. The Rust toolchain is pinned to 1.93.1. Linux cross compilation
 uses cargo-zigbuild 0.24.1 and Zig 0.15.2. Native Windows and macOS binaries are
 built and executed on their respective GitHub-hosted operating systems.
+
+Windows packages do not require a separate VC redistributable. Packaging reads
+the PE import tables of both executables and rejects dynamic CRT dependencies.
 
 The client is still the default Cargo build. Use `--no-default-features
 --features server` for the standalone server or `--features server` for both.

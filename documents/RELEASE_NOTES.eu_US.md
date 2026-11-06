@@ -1,9 +1,13 @@
-# uwgit 0.1.0 prerelease
+# uwgit 0.1.1 prerelease
 
 Lossless WebAssembly audit and binary version history, with shared native client
 and server sources. This prerelease uses uwgit repository/network formats; it is
 not a drop-in Git protocol implementation.
 
+- Windows release binaries statically link the C/C++ runtime. Their actual PE
+  imports are checked before packaging. This fixes startup on clean Windows
+  installations without the VC redistributable; use this version instead of
+  the 0.1.0 Windows packages.
 - Eight native platform packages: Linux x86_64/AArch64/ARMv7/RV64GC, Windows
   x86_64/ARM64, macOS x86_64/ARM64. Each includes client and standalone server.
 - Two WASIp1 client packages: independently validated MVP and Core 2.0 modules,

@@ -10,11 +10,14 @@ WASI 包只包含客户端及上述文档。打包使用明确的文件白名单
 因此不会带入测试仓库、生成的 Wasm、性能分析、下载工具、令牌或临时签名密钥。
 
 原生发布目标为 Linux x86_64、AArch64、ARMv7 hard-float、RISC-V RV64GC
-（静态 musl）；Windows x86_64/ARM64（MSVC）；macOS x86_64/ARM64。
+（静态 musl）；Windows x86_64/ARM64（MSVC，静态链接 CRT）；macOS x86_64/ARM64。
 另有 `wasm32-wasip1-mvp` 和 `wasm32-wasip1-core2`。该清单表示发布验证范围，
 不代表覆盖所有 CPU 或操作系统版本。工具链固定为 Rust 1.93.1；Linux 交叉编译
 使用 cargo-zigbuild 0.24.1 和 Zig 0.15.2。Windows/macOS 发布包由对应操作系统的
 原生 GitHub runner 构建并执行。
+
+Windows 包无需额外安装 VC redistributable。打包时检查两个可执行文件的实际 PE
+导入表，发现动态 CRT 依赖就拒绝发布。
 
 Cargo 默认仍只构建客户端；`--no-default-features --features server` 只构建
 服务端，`--features server` 构建两者。对象、压缩包和网络协议保持 uwgit 原生
