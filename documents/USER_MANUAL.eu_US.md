@@ -225,6 +225,16 @@ state. `worktree add/list/remove/move/lock/unlock/prune/repair` manage them; bra
 occupancy prevents conflicting writes from another worktree. A fork is instead
 an independent repository with shared immutable data.
 
+For scripted reference changes, `update-ref --stdin` supports atomic batches and
+`--batch-updates` reports individual semantic rejections. Two mutually conflicting
+new names are both rejected, independent of input order. Symbolic HEAD updates
+require `--no-deref`. A zero old object ID means the selected reference must not
+exist: under `--no-deref`, an unborn symbolic HEAD still exists and fails that
+lease. Use `symref-update HEAD NEW_TARGET ref OLD_TARGET` to retarget it with an
+exact symbolic-target lease. Without `--no-deref`, `verify HEAD ZERO_ID` checks
+the resolved branch's absence instead. Pointer-only transactions preserve the
+index and working files.
+
 ## 10. Merge and resolve conflicts
 
 ```sh

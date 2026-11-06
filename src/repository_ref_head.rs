@@ -317,6 +317,17 @@ impl ResolvedHeadEdit {
                 }
             }
         }
+        // A dangling symbolic HEAD still exists. A no-deref zero-OID lease
+        // checks the reference itself, not the absence of its resolved commit.
+        if edit.no_deref
+            && !valid_id(before)
+            && (expected == Some(None)
+                || (!symbolic
+                    && matches!(edit.kind, ReferenceEditKind::Verify)
+                    && expected.is_none()))
+        {
+            reason = Some(RejectionReason::Exists);
+        }
         if reason.is_none()
             && after != *before
             && !valid_id(&after)

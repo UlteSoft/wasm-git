@@ -71,6 +71,15 @@ is not a fuzz campaign or an AddressSanitizer run. Tests marked `ignored` remain
 unexecuted unless their required external tools/corpora are supplied and they are
 explicitly selected. Report pass, failure, ignored, and filtered counts separately.
 
+The Git reference integration tests require an independent Git executable with
+`update-ref --batch-updates` support (Git 2.50 or newer). They normalize hash width
+and absent-OID output spelling, and probe the dangling-symref protection fixed
+in Git 2.52. Legacy Git outcomes are asserted separately for those two cases;
+uwgit always enforces the existence guard. For two mutually conflicting new ref
+names, native batches reject both independent of input order; the oracle also
+accepts Git's newer behavior of retaining the first creation, checking its exact
+ref state. Reference, index, and worktree postconditions remain checked. The uwgit executable itself never invokes Git.
+
 Use focused checks after a localized change. Typical suites cover
 `structured_diff_cli`, `call_dependencies_cli`, `custom_audit_cli`,
 `section_diff_cli`, `debug_symbols`, `proposal_diff_cli`, `history_gc_cli`,

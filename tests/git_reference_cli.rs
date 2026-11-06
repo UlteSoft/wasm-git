@@ -896,6 +896,9 @@ fn native_partial_reference_batches_match_git_rejections_control_and_final_ref_v
                     .replace(wrong_type, "TYPE")
                     .replace(&zero, "ZERO")
                     .replace(&absent, "ABSENT")
+                    // Git versions differ in the spelling of an absent OID
+                    // in rejected create commands; compare its meaning.
+                    .replace(" (null) ", " ZERO ")
             };
             let refs = if is_native {
                 success(uw(&["show-ref", p(root)]))
@@ -905,7 +908,26 @@ fn native_partial_reference_batches_match_git_rejections_control_and_final_ref_v
             observations.push((normalize(outcome.stdout), normalize(refs)));
             assert_eq!(fs::read(root.join("a.wasm")).unwrap(), wasm(2));
         }
-        assert_eq!(observations[0], observations[1], "{case}");
+        if case == "two-new" && observations[0] != observations[1] {
+            // Recent Git keeps the first non-conflicting creation. Native
+            // batches deliberately reject both names, independent of input
+            // order (also tested in ref_transactions_cli).
+            assert_eq!(observations[0].0, "rejected refs/heads/new SECOND ZERO refname conflict\nrejected refs/heads/new/child FIRST ZERO refname conflict\n");
+            assert!(!observations[0].1.contains("refs/heads/new"));
+            assert_eq!(
+                observations[1].0,
+                "rejected refs/heads/new SECOND ZERO refname conflict\n"
+            );
+            assert_eq!(
+                observations[1].1,
+                observations[0].1.replace(
+                    "SECOND refs/heads/topic\n",
+                    "FIRST refs/heads/new/child\nSECOND refs/heads/topic\n"
+                )
+            );
+        } else {
+            assert_eq!(observations[0], observations[1], "{case}");
+        }
     }
 }
 
@@ -917,6 +939,21 @@ fn native_head_transactions_match_git_symbolic_oid_leases_and_pointer_only_outco
     success(uw(&["init", p(&native)]));
     fs::create_dir(&reference).unwrap();
     success(git(&reference, &["init", "-b", "main"]));
+    // Git 2.52 fixed zero-OID no-deref leases clobbering dangling symrefs.
+    // Probe the reference executable so older or backported Git builds remain
+    // useful oracles without weakening the native existence requirement.
+    let probe = reference_updates_with_flags(
+        &reference,
+        false,
+        &format!("verify HEAD {}\n", "0".repeat(40)),
+        false,
+        false,
+        true,
+    );
+    let git_guards_dangling_symrefs = !probe.status.success();
+    if git_guards_dangling_symrefs {
+        assert!(String::from_utf8_lossy(&probe.stderr).contains("dangling symref already exists"));
+    }
     let (mut native_ids, mut git_ids) = (Vec::new(), Vec::new());
     for value in [1, 2] {
         for root in [&native, &reference] {
@@ -1078,7 +1115,27 @@ fn native_head_transactions_match_git_symbolic_oid_leases_and_pointer_only_outco
                 assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), index);
             }
         }
-        assert_eq!(observations[0], observations[1], "{case}");
+        if !git_guards_dangling_symrefs && matches!(case, "unborn-verify" | "unborn-attach") {
+            assert_eq!(
+                observations[0].0,
+                ["rejected HEAD reference already exists"],
+                "{case}: native HEAD must retain the existence guard"
+            );
+            assert_eq!(observations[0].1, "refs/heads/unborn", "{case}");
+            assert!(observations[1].0.is_empty(), "{case}: legacy Git response");
+            assert_eq!(
+                observations[1].1,
+                if case == "unborn-attach" {
+                    "refs/heads/topic"
+                } else {
+                    "refs/heads/unborn"
+                },
+                "{case}: legacy Git HEAD"
+            );
+            assert_eq!(observations[0].2, observations[1].2, "{case}");
+        } else {
+            assert_eq!(observations[0], observations[1], "{case}");
+        }
     }
 }
 

@@ -55,7 +55,7 @@ EOF
 wasm-git update-ref DIR --no-deref HEAD EXISTING_COMMIT_ID EXPECTED_OLD_COMMIT_ID
 ```
 
-`symref-update HEAD NEW_TARGET [ref OLD_TARGET | oid OLD_ID]` 和 `symref-verify HEAD [OLD_TARGET]` 接入同一事务。目标仅为正常 `refs/heads/NAME`；可指向尚无提交的 unborn 分支。ref 租约要求 HEAD 确实是所给符号目标，detached HEAD 失败；oid 租约比较当前真实 tip，也可将 detached HEAD 按预期 oid 重新附着。没有 tip 时用 64 个零检查。verify 省略目标要求符号引用不存在，uwgit 正常仓库的 HEAD 因而会拒绝这一条件。
+`symref-update HEAD NEW_TARGET [ref OLD_TARGET | oid OLD_ID]` 和 `symref-verify HEAD [OLD_TARGET]` 接入同一事务。目标仅为正常 `refs/heads/NAME`；可指向尚无提交的 unborn 分支。ref 租约要求 HEAD 确实是所给符号目标，detached HEAD 失败；oid 租约比较当前真实 tip，也可将 detached HEAD 按预期非零 oid 重新附着。全零旧值要求引用不存在：在 `--no-deref` 下，即使没有 tip，符号 HEAD 也已存在，必须拒绝；切换 unborn HEAD 应使用精确 `ref OLD_TARGET` 租约。默认解引用模式的 `verify HEAD ZERO_ID` 可以检查目标分支不存在。verify 省略目标要求符号引用不存在，uwgit 正常仓库的 HEAD 因而会拒绝这一条件。
 
 这两条符号指令要求全局 `--no-deref` 或前一条 `option no-deref`。同一事务可创建或更新目标分支，再一次性发布 HEAD；oid 修订仍从事务准备时的原快照解析，HEAD 完成日志使用最终目标分支的实际 tip。默认普通 HEAD update 仍保护已检出分支；显式 `--no-deref` 的普通 update 将 HEAD 切到真实 commit，进入 detached 状态。原生 HEAD 必须存在，删除 HEAD 和任意符号别名的创建/删除仍不在当前模型中。
 

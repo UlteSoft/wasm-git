@@ -57,6 +57,14 @@ cargo check --locked --manifest-path fuzz/Cargo.toml --bin raw_audit
 Fuzz 目标编译检查不是实际 fuzz 或 ASan 运行。Ignored 项只有在外部工具/语料齐备并明确
 选取时才执行；分别报告 passed、failed、ignored、filtered。
 
+Git 对照集成测试需要独立 Git 可执行文件支持 `update-ref --batch-updates`
+（Git 2.50 或更新版本）。测试统一摘要宽度和缺失 OID 的输出写法，并探测
+Git 2.52 修复的 dangling symref 保护。对于涉及该修复的两种情况，旧 Git
+结果单独断言；uwgit 始终执行引用存在性保护。两个新增引用名称互相冲突时，原生
+批次与输入顺序无关地拒绝两者；对照程序也接受新版 Git 保留首个创建的结果，并
+精确断言其引用状态。引用、index 与工作区的最终
+状态仍须核对。uwgit 可执行程序本身不调用 Git。
+
 局部改动采用相关检查。常用 suite 包括 structured_diff_cli、call_dependencies_cli、
 custom_audit_cli、section_diff_cli、debug_symbols、proposal_diff_cli、history_gc_cli、
 pack_fork_cli、server_hosting_cli、server_expansion。跨层发布前适合执行完整回归。

@@ -188,6 +188,14 @@ Linked worktree 共享对象与引用，独立维护 HEAD/index。
 `worktree add/list/remove/move/lock/unlock/prune/repair` 管理工作树，分支占用阻止跨树冲突
 写入。fork 则是共享不可变数据的独立仓库。
 
+脚本可用 `update-ref --stdin` 执行原子批次，`--batch-updates` 分别报告语义拒绝。
+两个新增名称互相冲突时，与输入顺序无关地拒绝两者。
+修改符号 HEAD 需要 `--no-deref`。旧对象 ID 全零表示所选引用必须不存在；
+在 `--no-deref` 下，尚无提交的符号 HEAD 仍已存在，因此不满足此条件。
+应使用 `symref-update HEAD NEW_TARGET ref OLD_TARGET` 按精确旧符号目标切换。
+不带 `--no-deref` 的 `verify HEAD ZERO_ID` 才是检查解引用后分支不存在。
+只修改引用指针的事务保留 index 与工作文件。
+
 ## 10. 合并与冲突解决
 
 ```sh

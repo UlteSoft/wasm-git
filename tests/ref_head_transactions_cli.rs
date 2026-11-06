@@ -300,11 +300,9 @@ fn verify_noop_and_unborn_head_use_real_absence_without_synthetic_commits() {
     assert_eq!(image(&root), before);
     let objects = fs::read_dir(root.join(".uwgit/objects")).unwrap().count();
     ok(&["symbolic-ref", p(&root), "HEAD", "refs/heads/unborn"]);
-    success(batch(
-        &root,
-        &format!("verify HEAD {}\n", "0".repeat(64)),
-        false,
-        false,
+    success(execute(
+        &["update-ref", p(&root), "--stdin"],
+        format!("verify HEAD {}\n", "0".repeat(64)).as_bytes(),
     ));
     success(batch(
         &root,
@@ -323,10 +321,63 @@ fn verify_noop_and_unborn_head_use_real_absence_without_synthetic_commits() {
         .success());
     success(batch(
         &root,
-        &format!(
-            "symref-update HEAD refs/heads/main oid {}\n",
-            "0".repeat(64)
+        "symref-update HEAD refs/heads/main ref refs/heads/another\n",
+        false,
+        false,
+    ));
+    assert_eq!(ok(&["rev-parse", p(&root), "HEAD"]), second);
+}
+
+#[test]
+fn zero_oid_no_deref_leases_preserve_an_existing_unborn_head() {
+    let temp = Temp::new();
+    let root = temp.path("repo");
+    let (_, second) = seed(&root);
+    ok(&["symbolic-ref", p(&root), "HEAD", "refs/heads/unborn"]);
+    let before = image(&root);
+    let zero = "0".repeat(64);
+    for (record, nul) in [
+        (format!("verify HEAD {zero}\n"), false),
+        ("verify HEAD\n".into(), false),
+        (format!("update HEAD {second} {zero}\n"), false),
+        (
+            format!("symref-update HEAD refs/heads/main oid {zero}\n"),
+            false,
         ),
+        (format!("verify HEAD\0{zero}\0"), true),
+        (format!("update HEAD\0{second}\0{zero}\0"), true),
+        (
+            format!("symref-update HEAD\0refs/heads/main\0oid\0{zero}\0"),
+            true,
+        ),
+    ] {
+        for partial in [false, true] {
+            let output = batch(&root, &record, partial, nul);
+            if partial {
+                let response = String::from_utf8(success(output)).unwrap();
+                assert!(response.starts_with("rejected HEAD "), "{record:?}");
+                assert!(
+                    response.ends_with(" reference already exists\n"),
+                    "{record:?}"
+                );
+            } else {
+                assert!(!output.status.success(), "{record:?}");
+                assert!(
+                    String::from_utf8_lossy(&output.stderr).contains("reference already exists")
+                );
+            }
+            assert_eq!(image(&root), before, "{record:?}, partial={partial}");
+        }
+    }
+    let direct = execute(
+        &["update-ref", p(&root), "--no-deref", "HEAD", &second, &zero],
+        &[],
+    );
+    assert!(!direct.status.success());
+    assert_eq!(image(&root), before);
+    success(batch(
+        &root,
+        "symref-update HEAD refs/heads/main ref refs/heads/unborn\n",
         false,
         false,
     ));
