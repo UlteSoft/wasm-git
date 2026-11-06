@@ -112,7 +112,10 @@ module repositories use the empty path. Content is fetched in 1 MiB binary slice
 guarded by the PR version and original object hash. The client verifies complete
 bytes before invoking the regular section/function/block/instruction audit.
 Added/deleted files show an inspection of their present side, with no fabricated
-empty Wasm counterpart. JSON is an output format only.
+empty Wasm counterpart. They honor `--section` and retain exact selected byte
+evidence with original spans; unfiltered JSON retains the whole present file.
+`--compact` removes explanatory region trees while keeping byte evidence.
+JSON is an output format only.
 
 ## 4. Discussion, review and CI
 

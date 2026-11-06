@@ -288,18 +288,56 @@ fn diff(
         ),
         (old, new) => {
             let status = if new.is_some() { "added" } else { "deleted" };
+            let side = if new.is_some() { "new" } else { "old" };
             let bytes = new.or(old).ok_or("pull file has neither side")?;
-            let audit = crate::audit::inspect(&bytes)?;
+            let (mut audit, scope, complete) = if sections.is_empty() {
+                (
+                    crate::audit::inspect(&bytes)?,
+                    "whole module inspection",
+                    None,
+                )
+            } else {
+                let (audit, scope, complete) = crate::audit::section::inspect_selected(
+                    &bytes,
+                    crate::standard::Standard::AllKnown,
+                    &sections,
+                )?;
+                (audit, scope, Some(complete))
+            };
+            if compact {
+                for section in &mut audit.sections {
+                    section.regions.clear();
+                }
+                audit.standard.omit_supported_evidence();
+            }
             if format == crate::DiffFormat::Json {
+                let evidence = if sections.is_empty() {
+                    vec![crate::tree_output::witness(side, &bytes)]
+                } else {
+                    audit
+                        .sections
+                        .iter()
+                        .map(|section| {
+                            let mut value = crate::tree_output::witness(
+                                side,
+                                &bytes[section.span.start..section.span.end],
+                            );
+                            value["span"] = serde_json::json!(section.span);
+                            value["path"] = serde_json::json!(section.path);
+                            value
+                        })
+                        .collect()
+                };
                 pretty(
-                    &serde_json::json!({"status":status,"file":selected,"pull":number,"version":p.version,"audit":audit}),
+                    &serde_json::json!({"status":status,"file":selected,"pull":number,"version":p.version,"inputs":{"base":base,"head":p.head},"audit":audit,"evidence":evidence,"selectors":sections.iter().map(ToString::to_string).collect::<Vec<_>>(),"validation_scope":scope,"selection_complete":complete,"region_trees_omitted":compact,"whole_module_patch":false}),
                 )
             } else {
                 Ok(format!(
-                    "{status} {} ({} original bytes, {} sections)",
+                    "{status} {:?} ({} original bytes, {} displayed sections)\n{scope}\n{}",
                     selected.path,
                     bytes.len(),
-                    audit.sections.len()
+                    audit.sections.len(),
+                    audit.to_text()
                 ))
             }
         }

@@ -4159,7 +4159,12 @@ fn object_id(bytes: &[u8]) -> String {
 
 pub(crate) fn wasm_payload_id(bytes: &[u8]) -> RepositoryResult<String> {
     validate_wasm_header(bytes)?;
-    Ok(object_id(&encode_object(WASM_KIND, bytes)?))
+    let mut digest = Sha256::new();
+    digest.update(OBJECT_MAGIC);
+    digest.update([WASM_KIND]);
+    digest.update((bytes.len() as u64).to_be_bytes());
+    digest.update(bytes);
+    Ok(crate::binary::hex(&digest.finalize()))
 }
 
 fn valid_id(id: &str) -> bool {

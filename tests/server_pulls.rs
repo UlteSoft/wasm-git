@@ -464,6 +464,34 @@ fn named_tree_pr_diff_keeps_additions_deletions_paths_and_version_leases() {
             serde_json::from_str(&s.cli(&["diff", "1", "--file", path, "--format", "json"]))
                 .unwrap();
         assert_eq!(audit["status"], status);
+        assert!(!audit["evidence"][0]["hex"].as_str().unwrap().is_empty());
+        let filtered: serde_json::Value = serde_json::from_str(&s.cli(&[
+            "diff",
+            "1",
+            "--file",
+            path,
+            "--format",
+            "json",
+            "--section",
+            "code",
+        ]))
+        .unwrap();
+        assert_eq!(filtered["audit"]["sections"].as_array().unwrap().len(), 0);
+        assert_eq!(filtered["evidence"].as_array().unwrap().len(), 0);
+        let selected: serde_json::Value = serde_json::from_str(&s.cli(&[
+            "diff",
+            "1",
+            "--file",
+            path,
+            "--format",
+            "json",
+            "--section",
+            "custom:x",
+            "--compact",
+        ]))
+        .unwrap();
+        assert_eq!(selected["audit"]["sections"].as_array().unwrap().len(), 1);
+        assert_eq!(selected["evidence"][0]["span"]["start"], 8);
     }
     s.record(
         "reader",
@@ -493,6 +521,72 @@ fn named_tree_pr_diff_keeps_additions_deletions_paths_and_version_leases() {
         repo.files_at(&p.merge.unwrap().commit).unwrap().files,
         changed
     );
+}
+
+#[test]
+fn packed_multi_chunk_audit_checks_original_bytes_and_rejects_storage_corruption() {
+    let t = Temp::new();
+    let (repo, fork, _, _) = fixture(&t);
+    let size = protocol::TRANSFER_CHUNK + 17;
+    let mut large = WASM.to_vec();
+    large.push(0);
+    let mut length = size + 2;
+    loop {
+        let b = (length & 127) as u8;
+        length >>= 7;
+        large.push(b | if length > 0 { 128 } else { 0 });
+        if length == 0 {
+            break;
+        }
+    }
+    large.extend([1, b'x']);
+    large.resize(large.len() + size, 9);
+    let head = fork.commit(&large, "large custom update").unwrap();
+    let s = Server::start(&t.0, false, &[]);
+    let p = s.record("alice", create(false));
+    repo.garbage_collect_mode(&[], true, true).unwrap();
+    let mut bytes = Vec::new();
+    while bytes.len() < large.len() {
+        let chunk = s
+            .pull(
+                "reader",
+                PullCommand::File {
+                    number: p.number,
+                    version: p.version,
+                    path: "".into(),
+                    old: false,
+                    offset: bytes.len() as u64,
+                    against: DiffBase::MergeBase,
+                },
+            )
+            .unwrap()
+            .chunk
+            .unwrap();
+        assert_eq!(chunk.total, large.len() as u64);
+        assert!(!chunk.bytes.is_empty());
+        bytes.extend(chunk.bytes);
+    }
+    assert_eq!(bytes, large);
+    // The client also assembles, hashes and audits the slices independently.
+    let audit: serde_json::Value =
+        serde_json::from_str(&s.cli(&["diff", "1", "--format", "json", "--compact"])).unwrap();
+    assert!(audit.to_string().contains(&head));
+    let blob = repo.read_commit(&head).unwrap().commit.wasm;
+    // A corrupt loose shadow must not bypass the final original envelope hash.
+    fs::write(repo.root.join(".uwgit/objects").join(blob), b"corrupt").unwrap();
+    assert!(s
+        .pull(
+            "reader",
+            PullCommand::File {
+                number: p.number,
+                version: p.version,
+                path: "".into(),
+                old: false,
+                offset: 0,
+                against: DiffBase::MergeBase
+            }
+        )
+        .is_err());
 }
 
 #[test]

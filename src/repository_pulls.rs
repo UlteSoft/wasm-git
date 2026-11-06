@@ -420,7 +420,7 @@ impl Repository {
         let id = files
             .get(path)
             .ok_or("path is not in the selected pull revision")?;
-        let Object::Wasm(bytes) = self.read_object(id)? else {
+        let Object::Wasm(bytes) = pull_object(self, id)? else {
             return Err("pull file is missing or not materialized".into());
         };
         let start = usize::try_from(offset).map_err(|_| "pull file offset overflow")?;
@@ -625,12 +625,15 @@ fn diff_base(repo: &Repository, p: &PullRecord, against: DiffBase) -> Repository
             // body just to list paths or serve a single review content slice.
             let mut objects = BTreeMap::new();
             let mut pending = vec![p.base.clone(), p.head.clone()];
+            let shallow = repo.partial_state()?.shallow;
             while let Some(id) = pending.pop() {
                 if objects.contains_key(&id) {
                     continue;
                 }
-                let commit = repo.read_commit_id(&id)?;
-                if commit.shallow {
+                let Object::Commit(commit) = pull_object(repo, &id)? else {
+                    return Err("pull ancestry contains a non-commit".into());
+                };
+                if shallow.contains(&id) {
                     return Err("pull comparison requires complete ancestry".into());
                 }
                 pending.extend(commit.parents.iter().cloned());
@@ -641,13 +644,20 @@ fn diff_base(repo: &Repository, p: &PullRecord, against: DiffBase) -> Repository
     }
 }
 fn pull_files_map(repo: &Repository, id: &str) -> RepositoryResult<BTreeMap<String, String>> {
-    let commit = repo.read_commit_id(id)?;
+    let Object::Commit(commit) = pull_object(repo, id)? else {
+        return Err("pull revision is not a commit".into());
+    };
     if let Some(tree) = &commit.tree {
-        let Object::Tree(tree) = repo.read_object(tree)? else {
+        let Object::Tree(tree) = pull_object(repo, tree)? else {
             return Err("missing pull tree".into());
         };
         Ok(tree.entries.clone())
     } else {
         Ok(BTreeMap::from([("".into(), commit.wasm.clone())]))
     }
+}
+fn pull_object(repo: &Repository, id: &str) -> RepositoryResult<Object> {
+    // Retain frame/CRC/delta checks and verify the final original envelope
+    // once, rather than decoding and hashing each packed result twice.
+    decode_object(id, &repo.read_network_envelope(id)?)
 }

@@ -178,7 +178,7 @@ fn hex(bytes: &[u8]) -> String {
     result
 }
 
-fn witness(side: &str, bytes: &[u8]) -> Value {
+pub(crate) fn witness(side: &str, bytes: &[u8]) -> Value {
     json!({"side":side,"byte_len":bytes.len(),"sha256":format!("{:x}",Sha256::digest(bytes)),"span":{"start":0,"end":bytes.len()},"hex":hex(bytes)})
 }
 

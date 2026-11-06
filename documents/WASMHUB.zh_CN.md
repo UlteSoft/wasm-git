@@ -88,7 +88,8 @@ wasm-git pr https://wasm.example/team/project diff 1 --format json --section cod
 多文件提案使用 `diff NUMBER --file path/module.wasm`；旧单模块仓库使用空路径。
 内容通过 1 MiB 二进制分片读取，受 PR version 和原对象 hash 约束。客户端验证完整字节后，
 调用正常的 section/function/block/instruction 审计。新增/删除文件显示实际存在的一侧，
-不会伪造空 Wasm。JSON 仅为输出形式。
+不会伪造空 Wasm；同样遵守 `--section`，保留带原始区间的所选字节证据，不筛选时 JSON
+保留完整实际文件。`--compact` 省略解释区域树但保留字节证据。JSON 仅为输出形式。
 
 ## 4. 讨论、审阅和 CI
 

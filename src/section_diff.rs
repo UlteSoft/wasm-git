@@ -323,7 +323,7 @@ fn raw<'a>(bytes: &'a [u8], section: &AuditSection) -> &'a [u8] {
     &bytes[section.span.start..section.span.end]
 }
 
-fn inspect_selected(
+pub(crate) fn inspect_selected(
     bytes: &[u8],
     standard: Standard,
     selectors: &[Selector],
