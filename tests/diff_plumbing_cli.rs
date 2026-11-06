@@ -90,6 +90,23 @@ fn commit_index_and_worktree_are_three_independently_compared_byte_snapshots() {
     ]);
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(output.stdout, b"M\0a.wasm\0");
+    #[cfg(unix)]
+    {
+        use std::os::fd::OwnedFd;
+        use std::os::unix::net::UnixStream;
+        use std::process::Stdio;
+        let (writer, reader) = UnixStream::pair().unwrap();
+        drop(reader);
+        let writer: OwnedFd = writer.into();
+        let output = Command::new(env!("CARGO_BIN_EXE_wasm-git"))
+            .args(["diff-tree", p(root), &old, &new, "--exit-code"])
+            .stdout(Stdio::from(writer))
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stderr.is_empty());
+    }
 }
 #[test]
 fn exact_path_filters_additions_deletions_and_invalid_modes_never_write() {

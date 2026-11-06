@@ -417,7 +417,7 @@ fn process_locked(
                     )
                 });
             if let Err(error) = repository.remove_upload(&transfer) {
-                eprintln!("upload cleanup: {error}");
+                crate::cli_error(&format!("upload cleanup: {error}"));
             }
             return result;
         }
@@ -1129,11 +1129,16 @@ pub fn run(args: &[String]) -> Result<String, String> {
         return Ok(String::new());
     }
     let listener = TcpListener::bind(&listen).map_err(|e| format!("listen: {e}"))?;
-    println!(
-        "{}",
-        serde_json::json!({"listen":listener.local_addr().map_err(|e| e.to_string())?.to_string(),"read_only":!write,"protocol":1})
-    );
-    std::io::stdout().flush().map_err(|e| e.to_string())?;
+    {
+        let mut stdout = std::io::stdout().lock();
+        writeln!(
+            stdout,
+            "{}",
+            serde_json::json!({"listen":listener.local_addr().map_err(|e| e.to_string())?.to_string(),"read_only":!write,"protocol":1})
+        )
+        .and_then(|()| stdout.flush())
+        .map_err(|error| format!("write server readiness: {error}"))?;
+    }
     let mut workers: Vec<std::thread::JoinHandle<()>> = Vec::new();
     for (accepted, incoming) in listener.incoming().enumerate() {
         let stream = incoming.map_err(|e| format!("accept: {e}"))?;
@@ -1164,7 +1169,7 @@ pub fn run(args: &[String]) -> Result<String, String> {
             let settings = Arc::clone(&settings);
             workers.push(std::thread::spawn(move || {
                 if let Err(error) = connection(stream, &settings, deadline) {
-                    eprintln!("server connection: {error}");
+                    crate::cli_error(&format!("server connection: {error}"));
                 }
             }));
         }

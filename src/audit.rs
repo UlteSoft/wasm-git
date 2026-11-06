@@ -1885,7 +1885,28 @@ fn custom(
         reader.finish()?;
         Ok(regions)
     }) {
-        Ok(regions) => section.regions.extend(regions),
+        Ok(regions) => {
+            fn opaque_offset(regions: &[Region]) -> Option<usize> {
+                regions.iter().find_map(|region| {
+                    if region.path.ends_with("/opaque") {
+                        Some(region.span.start)
+                    } else {
+                        opaque_offset(&region.children)
+                    }
+                })
+            }
+            if let Some(offset) = opaque_offset(&regions) {
+                section.status = "partially_decoded".into();
+                issue(
+                    diagnostics,
+                    "note",
+                    "custom_partial",
+                    offset,
+                    "custom framing is recognized, but some subsection payloads remain opaque; decoded fields are only partial evidence",
+                );
+            }
+            section.regions.extend(regions);
+        }
         Err(message) => {
             section.status = "opaque".into();
             issue(

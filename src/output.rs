@@ -89,15 +89,33 @@ impl StagedOutput {
     }
 
     fn publish(mut self, destination: &Path) -> Result<(), String> {
+        self.publish_with(destination, |path| fs::remove_file(path), sync_directory)
+    }
+
+    fn publish_with(
+        &mut self,
+        destination: &Path,
+        remove: impl FnOnce(&Path) -> std::io::Result<()>,
+        sync: impl FnOnce(&Path) -> Result<(), String>,
+    ) -> Result<(), String> {
         // Linking is an atomic create-if-absent operation. A competing writer,
         // regular file, directory, or symlink cannot be replaced by this call.
         fs::hard_link(&self.path, destination)
             .map_err(|error| io_error("publish new output file", destination, error))?;
-        fs::remove_file(&self.path)
-            .map_err(|error| io_error("remove output staging file", &self.path, error))?;
+        remove(&self.path).map_err(|error| {
+            format!(
+                "complete output was published to {}; staging cleanup failed at {}: {error}; retain and verify the output before retrying",
+                destination.display(), self.path.display()
+            )
+        })?;
         self.cleanup = false;
         let parent = parent_directory(destination);
-        sync_directory(parent)
+        sync(parent).map_err(|error| {
+            format!(
+                "complete output was published to {}, but directory synchronization failed: {error}; publication durability is uncertain; retain and verify the output before retrying",
+                destination.display()
+            )
+        })
     }
 }
 
@@ -184,6 +202,50 @@ pub fn create_export_directory(path: &Path) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cleanup_failure_reports_already_published_complete_output() {
+        let root = TempDirectory::new();
+        let destination = root.path("result.wasm");
+        let bytes = b"\0asm\x02\0\0\0opaque";
+        let mut staged = StagedOutput::new(&root.0, bytes).unwrap();
+        let error = staged
+            .publish_with(
+                &destination,
+                |_| Err(std::io::Error::other("injected unlink failure")),
+                |_| panic!("sync cannot run before cleanup succeeds"),
+            )
+            .unwrap_err();
+        assert!(error.contains("complete output was published"));
+        assert!(error.contains("staging cleanup failed"));
+        assert_eq!(fs::read(&destination).unwrap(), bytes);
+        drop(staged);
+        assert_eq!(fs::read_dir(&root.0).unwrap().count(), 1);
+        assert!(write_new_file(&destination, b"replacement").is_err());
+        assert_eq!(fs::read(&destination).unwrap(), bytes);
+    }
+
+    #[test]
+    fn sync_failure_reports_uncertain_durability_without_removing_output() {
+        let root = TempDirectory::new();
+        let destination = root.path("result.wasm");
+        let bytes = b"\0asm\x01\0\0\0";
+        let mut staged = StagedOutput::new(&root.0, bytes).unwrap();
+        let error = staged
+            .publish_with(
+                &destination,
+                |path| fs::remove_file(path),
+                |_| Err("injected directory sync failure".into()),
+            )
+            .unwrap_err();
+        assert!(error.contains("complete output was published"));
+        assert!(error.contains("durability is uncertain"));
+        drop(staged);
+        assert_eq!(fs::read(&destination).unwrap(), bytes);
+        assert_eq!(fs::read_dir(&root.0).unwrap().count(), 1);
+        assert!(write_new_file(&destination, b"replacement").is_err());
+        assert_eq!(fs::read(&destination).unwrap(), bytes);
+    }
 
     struct TempDirectory(PathBuf);
 

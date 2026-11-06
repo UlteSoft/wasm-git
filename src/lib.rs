@@ -217,8 +217,52 @@ enum DiffFormat {
     Json,
 }
 
+fn cli_error(error: &str) {
+    use std::io::Write;
+    // Filenames, server responses and custom names can contain terminal control
+    // sequences. Keep diagnostics printable even when stderr itself is closed.
+    let _ = writeln!(
+        std::io::stderr().lock(),
+        "error: {}",
+        report::safe_text(error)
+    );
+}
+
+fn cli_args() -> Vec<String> {
+    std::env::args_os()
+        .enumerate()
+        .map(|(index, value)| {
+            value.into_string().unwrap_or_else(|_| {
+                cli_error(&format!("argument {index} is not valid UTF-8"));
+                std::process::exit(1);
+            })
+        })
+        .collect()
+}
+
+fn cli_stdout(output: &str, newline: bool) {
+    use std::io::Write;
+    let mut stdout = std::io::stdout().lock();
+    let result = stdout.write_all(output.as_bytes()).and_then(|()| {
+        if newline {
+            stdout.write_all(b"\n")?;
+        }
+        stdout.flush()
+    });
+    match result {
+        Ok(()) => (),
+        // A closed consumer is expected (for example `... | head`). The caller
+        // still determines the command's exit status, including conflicts.
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => (),
+        Err(error) => {
+            cli_error(&format!("write command output: {error}"));
+            std::process::exit(1);
+        }
+    }
+}
+
 pub fn client_main() {
-    let mut args: Vec<String> = std::env::args().collect();
+    let mut args = cli_args();
     if args
         .get(1)
         .is_some_and(|arg| arg == "--threads" || arg.starts_with("--threads="))
@@ -236,7 +280,7 @@ pub fn client_main() {
             .map_err(|_| "--threads requires an integer".to_owned())
             .and_then(parallel::configure);
         if let Err(error) = result {
-            eprintln!("error: {error}");
+            cli_error(&error);
             std::process::exit(1);
         }
     }
@@ -246,7 +290,7 @@ pub fn client_main() {
     }
     if args[1] == "cat-file" && object_batch::requested(&args[1..]) {
         if let Err(error) = object_batch::run(&args[1..]) {
-            eprintln!("error: {error}");
+            cli_error(&error);
             std::process::exit(1);
         }
         return;
@@ -289,21 +333,13 @@ pub fn client_main() {
         };
         match output {
             Ok(output) => {
-                use std::io::Write;
-                let mut stdout = std::io::stdout().lock();
-                if let Err(error) = stdout
-                    .write_all(output.stdout.as_bytes())
-                    .and_then(|_| stdout.flush())
-                {
-                    eprintln!("error: {error}");
-                    std::process::exit(1);
-                }
+                cli_stdout(&output.stdout, false);
                 if output.exit_code != 0 {
                     std::process::exit(output.exit_code);
                 }
             }
             Err(error) => {
-                eprintln!("error: {error}");
+                cli_error(&error);
                 std::process::exit(if args[1] == "merge-base" { 2 } else { 1 });
             }
         }
@@ -377,7 +413,7 @@ pub fn client_main() {
             Ok(String::new())
         }
         other => {
-            eprintln!("unknown command: {other}");
+            cli_error(&format!("unknown command: {other}"));
             print_usage();
             std::process::exit(1);
         }
@@ -389,7 +425,7 @@ pub fn client_main() {
                 "merge" | "pull" | "cherry-pick" | "revert" | "rebase"
             ) && serde_json::from_str::<Value>(&output)
                 .is_ok_and(|report| report["status"] == "conflict" || report["status"] == "empty");
-            println!("{output}");
+            cli_stdout(&output, true);
             if conflict {
                 std::process::exit(2);
             }
@@ -406,7 +442,7 @@ pub fn client_main() {
         }
         Ok(_) => {}
         Err(error) => {
-            eprintln!("error: {error}");
+            cli_error(&error);
             std::process::exit(1);
         }
     }
@@ -1030,122 +1066,121 @@ fn cmd_trace(args: &[String]) -> Result<String, String> {
 }
 
 fn print_usage() {
-    println!("Additional storage commands: clone --depth/--filter; fetch --deepen/--unshallow; clone-status; hydrate; promisor; keygen; trust-author; untrust-author; commit-signed; sign-commit; verify-commit; pool attach/status/sync/release; pr URL create/list/show/update/comment/review/check/diff/merge/recover. Signing supports --format native|ssh|openpgp. Use COMMAND --help.");
-    eprintln!("usage: wasm-git <command> [<args>]\n");
-    eprintln!("  version [--build-options]");
-    eprintln!("  features [FEATURE] [--standard STANDARD] [--json]");
-    eprintln!(
-        "  blame <DIR> <REV> [--file PATH] [--range START:END|--path REGION] [--first-parent]"
+    use std::io::Write;
+    let mut stderr = std::io::stderr().lock();
+    let mut line = |text: &str| {
+        let _ = writeln!(stderr, "{text}");
+    };
+    line("Additional storage commands: clone --depth/--filter; fetch --deepen/--unshallow; clone-status; hydrate; promisor; keygen; trust-author; untrust-author; commit-signed; sign-commit; verify-commit; pool attach/status/sync/release; pr URL create/list/show/update/comment/review/check/diff/merge/recover. Signing supports --format native|ssh|openpgp. Use COMMAND --help.");
+    line("usage: wasm-git <command> [<args>]\n");
+    line("  version [--build-options]");
+    line("  features [FEATURE] [--standard STANDARD] [--json]");
+    line("  blame <DIR> <REV> [--file PATH] [--range START:END|--path REGION] [--first-parent]");
+    line("  hash-object <DIR> [-w] [-t wasm|tree|commit] (--stdin|FILE) | mktree <DIR> [-z]");
+    line("  write-tree <DIR> | read-tree <DIR> <REV|--empty> | commit-tree <DIR> <TREE> [-p PARENT]... -m MESSAGE");
+    line("  update-ref <DIR> [-d] [-m MESSAGE] <REF> [NEW] [OLD] | rev-list <DIR> [OPTIONS] [REVISIONS...]");
+    line("  merge-base <DIR> [-a] [--octopus|--independent|--is-ancestor|--fork-point] <REVISIONS...> [--text|--json]");
+    line(
+        "  symbolic-ref <DIR> [--short] HEAD [refs/heads/BRANCH] | check-ref-format [--branch] REF",
     );
-    eprintln!("  hash-object <DIR> [-w] [-t wasm|tree|commit] (--stdin|FILE) | mktree <DIR> [-z]");
-    eprintln!("  write-tree <DIR> | read-tree <DIR> <REV|--empty> | commit-tree <DIR> <TREE> [-p PARENT]... -m MESSAGE");
-    eprintln!("  update-ref <DIR> [-d] [-m MESSAGE] <REF> [NEW] [OLD] | rev-list <DIR> [OPTIONS] [REVISIONS...]");
-    eprintln!("  merge-base <DIR> [-a] [--octopus|--independent|--is-ancestor|--fork-point] <REVISIONS...> [--text|--json]");
-    eprintln!(
-        "  symbolic-ref <DIR> [--short] HEAD [refs/heads/BRANCH] | check-ref-format [--branch] REF"
+    line("  diff-files <DIR> | diff-index <DIR> <REV> [--cached] | diff-tree <DIR> <OLD> <NEW> [OPTIONS]");
+    line("  cat-file <DIR> --batch|--batch-check|--batch-command [--buffer] [-z|-Z]");
+    line(
+        "  clean <DIR> -n|-f [-d] [-x|-X] [-e PATTERN] [-- PATH...] | gc <DIR> [--prune=now] [-n]",
     );
-    eprintln!("  diff-files <DIR> | diff-index <DIR> <REV> [--cached] | diff-tree <DIR> <OLD> <NEW> [OPTIONS]");
-    eprintln!("  cat-file <DIR> --batch|--batch-check|--batch-command [--buffer] [-z|-Z]");
-    eprintln!(
-        "  clean <DIR> -n|-f [-d] [-x|-X] [-e PATTERN] [-- PATH...] | gc <DIR> [--prune=now] [-n]"
+    line("  maintenance <DIR> run [--task verify|gc] | worktree <DIR> add|list|remove|move|lock|unlock|prune|repair [OPTIONS]");
+    line("  notes <DIR> [--ref NAMESPACE] list|show|add|append|copy|remove [OPTIONS]");
+    line("  shortlog <DIR> [REV] [--group path|subject] [-s] [-n] | range-diff <DIR> <BASE..TIP> <BASE..TIP>");
+    line(
+        "  mergetool <DIR> --output NEW_DIR [--tool PROGRAM --stage] [--delete PATH] [-- PATH...]",
     );
-    eprintln!("  maintenance <DIR> run [--task verify|gc] | worktree <DIR> add|list|remove|move|lock|unlock|prune|repair [OPTIONS]");
-    eprintln!("  notes <DIR> [--ref NAMESPACE] list|show|add|append|copy|remove [OPTIONS]");
-    eprintln!("  shortlog <DIR> [REV] [--group path|subject] [-s] [-n] | range-diff <DIR> <BASE..TIP> <BASE..TIP>");
-    eprintln!(
-        "  mergetool <DIR> --output NEW_DIR [--tool PROGRAM --stage] [--delete PATH] [-- PATH...]"
-    );
-    eprintln!(
+    line(
         "  inspect <FILE|REV> [--repo DIR] [--file PATH] [--json] [--standard core1|core2|core3|all-known]"
     );
-    eprintln!("  debug-map <FILE|REV> [--repo DIR] [--file PATH] [--offset N|--code-offset N|--symbol NAME|--function N|--source PATH [--line N]] [--json]");
-    eprintln!(
+    line("  debug-map <FILE|REV> [--repo DIR] [--file PATH] [--offset N|--code-offset N|--symbol NAME|--function N|--source PATH [--line N]] [--json]");
+    line(
         "  diff <OLD> <NEW> [--repo DIR] [--file PATH] [--section SELECTOR]... [--short] [--format text|json] [--standard STANDARD]"
     );
-    eprintln!("  diff <DIR> [--cached] [--file PATH] [--short] [--format text|json] [--standard STANDARD]");
-    eprintln!("  patch <OLD> <NEW> --output NEW_PATCH [--repo DIR --file PATH]");
-    eprintln!(
+    line("  diff <DIR> [--cached] [--file PATH] [--short] [--format text|json] [--standard STANDARD]");
+    line("  patch <OLD> <NEW> --output NEW_PATCH [--repo DIR --file PATH]");
+    line(
         "  apply <OLD> <PATCH> (--check | --output NEW_WASM) [--repo DIR --file PATH] [--standard STANDARD]"
     );
-    eprintln!(
+    line(
         "  trace <DIR> <REV> [--file PATH] (--range START:END | --path PATH) [--max-edges N] [--max-bytes N]"
     );
-    eprintln!("  init <DIR> | commit <DIR> <WASM> -m <MESSAGE> | log <DIR> [REV]");
-    eprintln!("  show <DIR> <REV> [--file PATH] [--output NEW_FILE] | checkout <DIR> <REV> <NEW_FILE> [--file PATH]");
-    eprintln!("  checkout <DIR> <BRANCH> | checkout <DIR> -b <NAME> [REV]");
-    eprintln!("  checkout <DIR> [REV] -- <PATH>...");
-    eprintln!("  branch <DIR> [NAME [REV]|-r|-a|-M [OLD] NEW|-c [OLD] NEW|-C [OLD] NEW|-f NAME [REV]] | switch <DIR> <NAME|-> [or --detach REV|--orphan NAME]");
-    eprintln!("  branch <DIR> -u <REMOTE/BRANCH> [NAME] | branch <DIR> --unset-upstream [NAME] | branch <DIR> -vv");
-    eprintln!("  clone <SOURCE_DIR> <NEW_DIR> | bundle <DIR> <NEW_BUNDLE_FILE>");
-    eprintln!("  unbundle <DIR> <BUNDLE> <BRANCH> | fsck <DIR>");
-    eprintln!("  merge <DIR> <REV> -m <MESSAGE> | merge-base <DIR> <LEFT> <RIGHT>");
-    eprintln!("  merge <DIR> <REV> --ff-only [-m MESSAGE]");
-    eprintln!("  merge <DIR> <TARGET_ID> -m <MESSAGE> --resolved-index --expect-head <HEAD_ID> [--expect-branch NAME]");
-    eprintln!("  add <DIR> <RELATIVE_WASM>... | status <DIR> | commit <DIR> -m <MESSAGE>");
-    eprintln!("  restore <DIR> [--source REV] | reset <DIR> [--soft|--mixed|--hard] [REV]");
-    eprintln!(
+    line("  init <DIR> | commit <DIR> <WASM> -m <MESSAGE> | log <DIR> [REV]");
+    line("  show <DIR> <REV> [--file PATH] [--output NEW_FILE] | checkout <DIR> <REV> <NEW_FILE> [--file PATH]");
+    line("  checkout <DIR> <BRANCH> | checkout <DIR> -b <NAME> [REV]");
+    line("  checkout <DIR> [REV] -- <PATH>...");
+    line("  branch <DIR> [NAME [REV]|-r|-a|-M [OLD] NEW|-c [OLD] NEW|-C [OLD] NEW|-f NAME [REV]] | switch <DIR> <NAME|-> [or --detach REV|--orphan NAME]");
+    line("  branch <DIR> -u <REMOTE/BRANCH> [NAME] | branch <DIR> --unset-upstream [NAME] | branch <DIR> -vv");
+    line("  clone <SOURCE_DIR> <NEW_DIR> | bundle <DIR> <NEW_BUNDLE_FILE>");
+    line("  unbundle <DIR> <BUNDLE> <BRANCH> | fsck <DIR>");
+    line("  merge <DIR> <REV> -m <MESSAGE> | merge-base <DIR> <LEFT> <RIGHT>");
+    line("  merge <DIR> <REV> --ff-only [-m MESSAGE]");
+    line("  merge <DIR> <TARGET_ID> -m <MESSAGE> --resolved-index --expect-head <HEAD_ID> [--expect-branch NAME]");
+    line("  add <DIR> <RELATIVE_WASM>... | status <DIR> | commit <DIR> -m <MESSAGE>");
+    line("  restore <DIR> [--source REV] | reset <DIR> [--soft|--mixed|--hard] [REV]");
+    line(
         "  rm <DIR> [--cached] [FILE...] | mv <DIR> <OLD> <NEW> | stash <DIR> [push|list|apply|pop|drop]"
     );
-    eprintln!("  tag <DIR> [NAME [REV]|-d NAME] | reflog <DIR> | rev-parse <DIR> <REV>");
-    eprintln!("  cat-file <DIR> <REV> | ls-files <DIR> | config <DIR> [KEY [VALUE]]");
-    eprintln!("  ls-files <DIR> [-s|--unmerged] [-m|-d|-o|-i|-k] [-t|-v|-f] [--exclude-standard] [-z|--json|--format STR] [-- PATHSPEC...]");
-    eprintln!("  checkout-index <DIR> [-a] [-f] [-n] [--prefix STR] [--stage 1|2|3|all] [--temp] [--ignore-skip-worktree-bits] [--stdin] [-z] [-- PATH...]");
-    eprintln!("  write-tree <DIR> [--prefix DIR/]");
-    eprintln!("  read-tree <DIR> [-m BASE [OURS] THEIRS|--empty|TREE] [-u] [-n] [--prefix DIR/]");
-    eprintln!("  update-index <DIR> [--add|--remove|--force-remove] PATH... | --cacheinfo MODE,ID,PATH | --index-info | --stdin [-z]");
-    eprintln!("  update-index <DIR> --[no-]assume-unchanged|--[no-]skip-worktree|--[no-]fsmonitor-valid PATH...");
-    eprintln!(
-        "  update-index <DIR> --refresh|--really-refresh [--ignore-missing] [--unmerged] [PATH...]"
+    line("  tag <DIR> [NAME [REV]|-d NAME] | reflog <DIR> | rev-parse <DIR> <REV>");
+    line("  cat-file <DIR> <REV> | ls-files <DIR> | config <DIR> [KEY [VALUE]]");
+    line("  ls-files <DIR> [-s|--unmerged] [-m|-d|-o|-i|-k] [-t|-v|-f] [--exclude-standard] [-z|--json|--format STR] [-- PATHSPEC...]");
+    line("  checkout-index <DIR> [-a] [-f] [-n] [--prefix STR] [--stage 1|2|3|all] [--temp] [--ignore-skip-worktree-bits] [--stdin] [-z] [-- PATH...]");
+    line("  write-tree <DIR> [--prefix DIR/]");
+    line("  read-tree <DIR> [-m BASE [OURS] THEIRS|--empty|TREE] [-u] [-n] [--prefix DIR/]");
+    line("  update-index <DIR> [--add|--remove|--force-remove] PATH... | --cacheinfo MODE,ID,PATH | --index-info | --stdin [-z]");
+    line("  update-index <DIR> --[no-]assume-unchanged|--[no-]skip-worktree|--[no-]fsmonitor-valid PATH...");
+    line(
+        "  update-index <DIR> --refresh|--really-refresh [--ignore-missing] [--unmerged] [PATH...]",
     );
-    eprintln!("  add <DIR> -N|--intent-to-add PATH... | add <DIR> --sparse PATH... | commit <DIR> -a -m MESSAGE");
-    eprintln!("  merge-index <DIR> --all|-- PATHSPEC... [--dry-run] | restore <DIR> --ours|--theirs|--merge|-m|--ignore-unmerged -- PATHSPEC...");
-    eprintln!("  ls-tree <DIR> <REV> [-r] [--json|--name-only|--object-only] [-z] [-- PATH...]");
-    eprintln!("  show-ref <DIR> [--head] [--heads|--tags] [--verify] [--quiet|--hash|--json] [PATTERN...]");
-    eprintln!("  branch <DIR> --list [-r|-a] [--contains [REV]] [--merged [REV]] [--points-at OBJECT] [--format STR|--json] [PATTERN...] | branch <DIR> --show-current");
-    eprintln!(
-        "  for-each-ref <DIR> [--json|--format STR] [--sort KEY]... [--count N] [PATTERN...]"
-    );
-    eprintln!(
-        "  count-objects <DIR> [-v] [-H] | ls-remote <URL|DIR [REMOTE]> [--json] [PATTERN...]"
-    );
-    eprintln!(
+    line("  add <DIR> -N|--intent-to-add PATH... | add <DIR> --sparse PATH... | commit <DIR> -a -m MESSAGE");
+    line("  merge-index <DIR> --all|-- PATHSPEC... [--dry-run] | restore <DIR> --ours|--theirs|--merge|-m|--ignore-unmerged -- PATHSPEC...");
+    line("  ls-tree <DIR> <REV> [-r] [--json|--name-only|--object-only] [-z] [-- PATH...]");
+    line("  show-ref <DIR> [--head] [--heads|--tags] [--verify] [--quiet|--hash|--json] [PATTERN...]");
+    line("  branch <DIR> --list [-r|-a] [--contains [REV]] [--merged [REV]] [--points-at OBJECT] [--format STR|--json] [PATTERN...] | branch <DIR> --show-current");
+    line("  for-each-ref <DIR> [--json|--format STR] [--sort KEY]... [--count N] [PATTERN...]");
+    line("  count-objects <DIR> [-v] [-H] | ls-remote <URL|DIR [REMOTE]> [--json] [PATTERN...]");
+    line(
         "  cherry-pick|revert <DIR> <REV>... [--sequence|--stdin] [-n] [--reverse] | rebase <DIR> <UPSTREAM> [--onto REV]"
     );
-    eprintln!("  cherry-pick|revert <DIR> REV... [--mainline N] [-m MESSAGE] [--empty stop|drop|keep] [--allow-empty] [--ff] [-x]");
-    eprintln!("  cherry-pick|revert <DIR> <TARGET_ID> [--mainline N] --resolved-index --expect-head <HEAD_ID> [--expect-branch NAME] [-m MESSAGE]");
-    eprintln!(
-        "  merge|cherry-pick|revert <DIR> <REV> --record-conflict [-m MESSAGE] [--mainline N]"
-    );
-    eprintln!("  merge|cherry-pick|revert <DIR> --continue --resolved-index | --abort | --quit");
-    eprintln!("  cherry-pick|revert <DIR> --skip");
-    eprintln!("  rebase <DIR> <UPSTREAM> [--onto REV] --record-conflict");
-    eprintln!("  rebase <DIR> --continue --resolved-index | --abort | --skip | --quit");
-    eprintln!("  remote <DIR> [add NAME URL|remove NAME|-v] | fetch <DIR> [REMOTE]");
-    eprintln!("  push <DIR> [REMOTE] [SRC:DST] | pull <DIR> [REMOTE] [BRANCH] -m <MESSAGE>");
-    eprintln!("  push <DIR> [REMOTE] [LOCAL_BRANCH:REMOTE_BRANCH] --set-upstream");
-    eprintln!("  pull <DIR> [REMOTE] [BRANCH] --ff-only [-m MESSAGE]");
-    eprintln!("  clone <http(s)://HOST/REPO|ssh://USER@HOST/ROOT/REPO> <NEW_DIR>");
-    eprintln!("  describe <DIR> [REV] [--tags] [--exact-match] [--always] [--long] [--first-parent] [--abbrev N]");
-    eprintln!("  archive <DIR> <REV> --output NEW_TAR [--format tar] [--prefix PREFIX/] [--legacy-path NAME] [-- PATH...]");
-    eprintln!("  bisect <DIR> start [--no-checkout] [--first-parent] <BAD> <GOOD>...");
-    eprintln!("  bisect <DIR> good|skip [REV...] | bad [REV] | status | next | log | reset");
-    eprintln!("  server --root <DIR> [--listen ADDRESS] [--token-file FILE --allow-write]");
-    eprintln!("  server --stdio --root <DIR> [--allow-force]");
+    line("  cherry-pick|revert <DIR> REV... [--mainline N] [-m MESSAGE] [--empty stop|drop|keep] [--allow-empty] [--ff] [-x]");
+    line("  cherry-pick|revert <DIR> <TARGET_ID> [--mainline N] --resolved-index --expect-head <HEAD_ID> [--expect-branch NAME] [-m MESSAGE]");
+    line("  merge|cherry-pick|revert <DIR> <REV> --record-conflict [-m MESSAGE] [--mainline N]");
+    line("  merge|cherry-pick|revert <DIR> --continue --resolved-index | --abort | --quit");
+    line("  cherry-pick|revert <DIR> --skip");
+    line("  rebase <DIR> <UPSTREAM> [--onto REV] --record-conflict");
+    line("  rebase <DIR> --continue --resolved-index | --abort | --skip | --quit");
+    line("  remote <DIR> [add NAME URL|remove NAME|-v] | fetch <DIR> [REMOTE]");
+    line("  push <DIR> [REMOTE] [SRC:DST] | pull <DIR> [REMOTE] [BRANCH] -m <MESSAGE>");
+    line("  push <DIR> [REMOTE] [LOCAL_BRANCH:REMOTE_BRANCH] --set-upstream");
+    line("  pull <DIR> [REMOTE] [BRANCH] --ff-only [-m MESSAGE]");
+    line("  clone <http(s)://HOST/REPO|ssh://USER@HOST/ROOT/REPO> <NEW_DIR>");
+    line("  describe <DIR> [REV] [--tags] [--exact-match] [--always] [--long] [--first-parent] [--abbrev N]");
+    line("  archive <DIR> <REV> --output NEW_TAR [--format tar] [--prefix PREFIX/] [--legacy-path NAME] [-- PATH...]");
+    line("  bisect <DIR> start [--no-checkout] [--first-parent] <BAD> <GOOD>...");
+    line("  bisect <DIR> good|skip [REV...] | bad [REV] | status | next | log | reset");
+    line("  server --root <DIR> [--listen ADDRESS] [--token-file FILE --allow-write]");
+    line("  server --stdio --root <DIR> [--allow-force]");
 }
 
 /// Standalone server entry point. No client command dispatch is linked here.
 #[cfg(feature = "server")]
 pub fn server_main() {
-    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = cli_args().into_iter().skip(1).collect();
     if args.first().is_some_and(|a| a == "server" || a == "serve") {
         args.remove(0);
     }
     args.insert(0, "server".to_owned());
     match server::run(&args) {
-        Ok(output) if !output.is_empty() => println!("{output}"),
+        Ok(output) if !output.is_empty() => {
+            cli_stdout(&output, true);
+        }
         Ok(_) => (),
         Err(error) => {
-            eprintln!("error: {error}");
+            cli_error(&error);
             std::process::exit(1);
         }
     }

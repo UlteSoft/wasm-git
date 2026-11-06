@@ -196,7 +196,7 @@ fn dylink_fields_and_unknown_subsections_are_audited_without_loading_them() {
     let b = module(&[custom("dylink.0", &[1, 4, 2, 0, 2, 0, 99, 2, 255, 1])]);
     let d = compare(&a, &b);
     let c = &d.custom_changes[0];
-    assert_eq!(c.old.as_ref().unwrap().interpretation, "decoded");
+    assert_eq!(c.old.as_ref().unwrap().interpretation, "partially_decoded");
     assert_eq!(c.decoded_changes.len(), 2);
     assert!(c
         .decoded_changes
@@ -204,7 +204,34 @@ fn dylink_fields_and_unknown_subsections_are_audited_without_loading_them() {
         .any(|c| c.path.ends_with("memory_size")));
     assert!(c.decoded_changes.iter().any(|c| c.path.ends_with("opaque")));
     let link = module(&[custom("linking", &[2, 99, 1, 255])]);
-    assert_eq!(audit::inspect(&link).unwrap().sections[0].status, "decoded");
+    assert_eq!(
+        audit::inspect(&link).unwrap().sections[0].status,
+        "partially_decoded"
+    );
+    for (old, new) in [
+        (&a, &b),
+        (&link, &module(&[custom("linking", &[2, 99, 1, 254])])),
+    ] {
+        let selected = audit::section::compare(
+            old,
+            new,
+            wasm_git::standard::Standard::AllKnown,
+            &[audit::section::Selector::Opaque],
+        )
+        .unwrap();
+        assert!(selected.selected_content_changed);
+        assert_eq!(selected.changes.len(), 1);
+        assert_eq!(selected.old.sections[0].status, "partially_decoded");
+        assert!(selected
+            .old
+            .diagnostics
+            .iter()
+            .any(|entry| entry.code == "custom_partial"));
+        assert!(audit::inspect(old)
+            .unwrap()
+            .validation
+            .starts_with("valid_"));
+    }
 }
 const WSEA: &[u8] = &[0x84, 1, 0x41, 0xa0, 0x41, 0xb0, 0x41, 0xc0];
 #[test]

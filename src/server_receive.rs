@@ -294,7 +294,9 @@ pub(super) fn publish(
         Err(_) => "rejected",
     };
     if let Err(error) = audit(settings, name, updates, &transaction, outcome, options) {
-        eprintln!("receive {transaction} {outcome}; audit completion failed: {error}");
+        crate::cli_error(&format!(
+            "receive {transaction} {outcome}; audit completion failed: {error}"
+        ));
     }
     if result.is_ok() {
         notify_received(settings, name, repo, updates, options, &transaction);
@@ -339,7 +341,9 @@ fn notify_received(
                     Err(error) => Err(error.clone()),
                 };
                 if let Err(error) = outcome {
-                    eprintln!("published receive {transaction}; {phase} hook failed: {error}");
+                    crate::cli_error(&format!(
+                        "published receive {transaction}; {phase} hook failed: {error}"
+                    ));
                     let _ = audit(
                         settings,
                         name,
@@ -463,7 +467,9 @@ pub(super) fn publish_selective(
             options,
             reasons,
         ) {
-            eprintln!("receive {transaction} {outcome}; audit completion failed: {error}");
+            crate::cli_error(&format!(
+                "receive {transaction} {outcome}; audit completion failed: {error}"
+            ));
         }
         if let Ok(reasons) = &result {
             let accepted: Vec<_> = updates
@@ -541,7 +547,7 @@ pub(super) fn fork(
         &format!("{outcome}:{destination}"),
         &[],
     ) {
-        eprintln!("fork audit: {error}");
+        crate::cli_error(&format!("fork audit: {error}"));
     }
     result.map_err(|message| ReceiveError {
         message,

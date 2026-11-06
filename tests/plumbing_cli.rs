@@ -38,12 +38,20 @@ fn execute(args: &[&str], input: Option<&[u8]>) -> Output {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = command.spawn().unwrap();
-    if let Some(input) = input {
-        child.stdin.take().unwrap().write_all(input).unwrap();
+    let written = if let Some(input) = input {
+        child.stdin.take().unwrap().write_all(input)
     } else {
         drop(child.stdin.take());
+        Ok(())
+    };
+    let output = child.wait_with_output().unwrap();
+    if let Err(error) = written {
+        // Invalid options can be rejected before stdin is consumed. Keep that
+        // expected early rejection distinct from a successful truncated input.
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+        assert!(!output.status.success());
     }
-    child.wait_with_output().unwrap()
+    output
 }
 fn ok(args: &[&str], input: Option<&[u8]>) -> String {
     let output = execute(args, input);

@@ -682,7 +682,7 @@ fn push_binding_text(bindings: &[CallBindingDelta], lines: &mut Vec<String>) {
 
 // Names in Wasm are arbitrary UTF-8. Preserve them without allowing embedded
 // terminal controls to forge report lines or color escapes.
-fn safe_text(text: &str) -> String {
+pub(crate) fn safe_text(text: &str) -> String {
     text.chars()
         .map(|ch| {
             if ch.is_control()

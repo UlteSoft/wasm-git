@@ -23,13 +23,17 @@ def main():
     temporary = scratch / "temp"
     temporary.mkdir()
     group = None
+    keeper = None
     created = False
     result = 1
     try:
         subprocess.run(["systemd-run", "--user", f"--unit={name}",
                         "--property=MemoryMax=68719476736", "--property=MemorySwapMax=0",
-                        "--property=Delegate=yes", "/usr/bin/sleep", "infinity"], check=True)
+                        "--property=Delegate=yes", "--property=KillMode=process",
+                        "/usr/bin/sleep", "infinity"], check=True)
         created = True
+        keeper = subprocess.check_output(["systemctl", "--user", "show", name,
+                                          "--property=MainPID", "--value"], text=True).strip()
         relative = subprocess.check_output(["systemctl", "--user", "show", name,
                                             "--property=ControlGroup", "--value"], text=True).strip()
         group = Path("/sys/fs/cgroup") / relative.lstrip("/")
@@ -55,7 +59,19 @@ def main():
             print(stats, flush=True)
             print(f"resource evidence: {scratch / 'resources.txt'}", flush=True)
         if created:
-            subprocess.run(["systemctl", "--user", "stop", name], check=True)
+            # Another task may have joined this delegated group. Do not kill
+            # unknown processes (including reparented descendants) on cleanup.
+            # A successful workload need not imply that the group is empty.
+            # KillMode=process also protects a process joining after this check.
+            members = set()
+            if group and group.exists():
+                for path in group.rglob("cgroup.procs"):
+                    members.update(path.read_text().split())
+            if members - {keeper}:
+                print(f"cgroup still has live processes; left running: {name}; "
+                      f"pids={','.join(sorted(members - {keeper}))}", flush=True)
+            else:
+                subprocess.run(["systemctl", "--user", "stop", name], check=True)
     raise SystemExit(result if result >= 0 else 128 - result)
 
 

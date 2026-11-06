@@ -170,6 +170,7 @@ pub struct TraceReport {
     pub frontier: Vec<TraceFrontier>,
 }
 
+#[cfg(test)]
 const HEADER: &[u8; 8] = b"\0asm\x01\0\0\0";
 
 fn span(start: usize, end: usize) -> Span {
@@ -230,12 +231,11 @@ fn order(history: &HistorySnapshot, absent: &BTreeSet<String>) -> Result<Vec<Str
                 .blobs
                 .get(&node.wasm)
                 .ok_or_else(|| format!("missing Wasm blob {} for commit {id}", node.wasm))?;
-            if !bytes.starts_with(HEADER) {
-                return Err(format!(
-                    "blob {} does not have a core WebAssembly version-1 header",
-                    node.wasm
-                ));
-            }
+            // Trace follows physical bytes, just like storage and patches.
+            // Component/future encodings retain opaque evidence; accepting
+            // their header does not claim that their semantics were decoded.
+            audit::section::check_header(bytes)
+                .map_err(|error| format!("invalid Wasm blob {}: {error}", node.wasm))?;
         }
         colors.insert(id.clone(), 1);
         stack.push((id, true));
@@ -1232,7 +1232,7 @@ mod tests {
                 "missing_blob" => {
                     history.blobs.remove("old");
                 }
-                "bad_header" => history.blobs.get_mut("old").unwrap()[4] = 2,
+                "bad_header" => history.blobs.get_mut("old").unwrap()[0] = 2,
                 "cycle" => history
                     .commits
                     .get_mut("a")
@@ -1244,6 +1244,39 @@ mod tests {
             assert!(
                 trace(&history, span(0, bytes.len()), limits).is_err(),
                 "{kind}"
+            );
+        }
+    }
+
+    #[test]
+    fn component_and_future_headers_keep_physical_trace_and_budget_evidence() {
+        for header in [*b"\0asm\x0d\0\x01\0", *b"\0asm\x02\0\0\0"] {
+            let mut old = custom(b"before");
+            old[..8].copy_from_slice(&header);
+            let mut new = old.clone();
+            *new.last_mut().unwrap() ^= 1;
+            let history = pair(&old, &new);
+            let report = run(&history, span(0, new.len()));
+            assert!(report.complete);
+            assert!(report.identity_unproven);
+            assert_eq!(
+                report.edges[0].parent_validation.as_deref(),
+                Some("not_validated")
+            );
+            assert!(!report.edges[0].events.is_empty());
+            let limits = TraceLimits {
+                max_edges: 0,
+                ..TraceLimits::default()
+            };
+            let stopped = trace(&history, span(0, new.len()), limits).unwrap();
+            assert!(!stopped.complete);
+            assert!(!stopped.frontier.is_empty());
+            assert_eq!(
+                crate::patch::create(&old, &new)
+                    .unwrap()
+                    .apply(&old)
+                    .unwrap(),
+                new
             );
         }
     }

@@ -480,18 +480,37 @@ operations, not a substitute for independent backups or reference consensus.
 
 - **Existing destination:** choose a new patch/export/clone/fork path. Do not
   remove a useful file merely to satisfy a command.
+- **Output publication failure:** a failure before publication does not create
+  the destination. If cleanup or directory synchronization fails after the
+  atomic publication, the error explicitly says that the complete output was
+  published. Keep and verify that file before retrying; a synchronization
+  failure means crash durability is uncertain, not that the file is absent.
 - **Busy or stale repository lock:** check all writers and linked worktrees.
   Remove a persistent writer/index lock only after confirming no operation owns
   it. Do not delete an active object-pool lock inode.
 - **Unknown grammar or disabled feature:** inspect the raw audit, selected
   standard, and feature coverage; changing a display profile does not implement
-  missing semantics.
+  missing semantics. Recognized custom framing with uninterpreted subsections
+  is `partially_decoded` with a `custom_partial` diagnostic, and is included by
+  `--section opaque`. Known fields remain available. A custom payload outside
+  its recognized convention remains opaque and does not invalidate Core Wasm.
 - **Promised object unavailable:** restore access to an authorized source or add
   an explicit fallback; do not substitute an empty module.
 - **Lease or workspace mismatch:** fetch/query current state and review again.
   A stale expected ID is evidence that the review no longer binds current state.
 - **Incomplete trace or alignment:** examine the reported frontier and budget.
+  Component and future-version Wasm retain physical byte history, with
+  `not_validated` where Core validation does not apply. Budget exhaustion keeps
+  an explicit incomplete frontier; it never reports a complete traversal.
   Exact byte restoration and complete explanatory correspondence are independent.
+- **Terminal or pipeline failure:** diagnostics escape embedded terminal controls
+  and bidirectional formatting characters. Non-UTF-8 command arguments produce
+  an error instead of a panic. A closed output consumer does not panic or erase
+  a command's difference/conflict exit status; other output I/O errors still
+  fail the command. Closed diagnostic streams do not cause a second panic.
+  Server logging failures cannot turn an accepted publication into a failed
+  protocol response. Failure to write the HTTP readiness announcement returns
+  a controlled startup error before entering the accept loop.
 
 For deployment limits and backup recovery, see
 [server administration](SERVER_ADMINISTRATION.eu_US.md). For exact storage

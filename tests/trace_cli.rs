@@ -1,5 +1,5 @@
 //! Physical-byte history queries. All repositories, fixtures and outputs stay
-//! in /tmp; no Wasm fixture is executed.
+//! in the configured temporary directory; no Wasm fixture is executed.
 
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -1126,4 +1126,41 @@ fn locked_or_corrupt_history_is_rejected_without_cleaning_someone_elses_files() 
         .status
         .success());
     assert_eq!(snapshot(&history.directory), before);
+}
+
+#[test]
+fn component_and_future_versions_keep_repository_byte_history_queryable() {
+    for (label, header) in [
+        ("component", *b"\0asm\x0d\0\x01\0"),
+        ("future", *b"\0asm\x02\0\0\0"),
+    ] {
+        let mut history = History::new(label);
+        let (mut old, _) = custom(b"before");
+        old[..8].copy_from_slice(&header);
+        let mut new = old.clone();
+        *new.last_mut().unwrap() ^= 1;
+        history.commit(&old, "base");
+        let tip = history.commit(&new, "update");
+        let report = history.trace(&tip, 0, new.len());
+        assert_eq!(report["trace"]["complete"], true);
+        assert_eq!(
+            report["trace"]["edges"][0]["parent_validation"],
+            "not_validated"
+        );
+        assert!(!report["trace"]["edges"][0]["events"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        let limited = history.query(&[
+            "trace",
+            &history.repo,
+            &tip,
+            "--range",
+            &format!("0:{}", new.len()),
+            "--max-edges",
+            "0",
+        ]);
+        assert_eq!(limited["trace"]["complete"], false);
+        assert!(!limited["trace"]["frontier"].as_array().unwrap().is_empty());
+    }
 }
