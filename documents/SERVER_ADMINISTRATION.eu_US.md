@@ -327,8 +327,20 @@ primarily useful for finite tests.
 
 Current bounds include 64 MiB per RPC packet, 64 KiB metadata, 1 MiB transfer
 chunks, 4 GiB per bundle, 32 pending uploads, and an 8 GiB staged-upload reservation
-budget per repository. Upload expiry is 24 hours. Header and direct request/hook
-deadlines are bounded; audit rendering also has a cumulative size limit. These
+budget per repository. Upload expiry is 24 hours. Each HTTP connection has a
+15-second cumulative I/O budget. Processing after a complete request is buffered
+does not consume that budget, so verification and durable storage on a slow host
+do not prevent an otherwise completed publication from returning its receipt.
+Tiny reads do not renew the budget. Server processing is bounded by request sizes
+and concurrency, rather than cancelled at a wall-clock deadline. Hook groups have
+their separate deadlines described above.
+
+The client allows 300 seconds per HTTP/SSH RPC by default. Set
+`UWGIT_RPC_TIMEOUT_SECONDS` to an integer from 1 through 3600 to change it. A large
+transfer comprises multiple RPCs, each with its own budget. Connection setup has
+a 10-second timeout; process and pipe cleanup allows five additional seconds.
+A client timeout after publication remains an uncertain result: inspect the
+remote refs before retrying. Audit rendering also has a cumulative size limit. These
 limits are not memory-use guarantees. Full snapshot and closure verification can
 load substantial history. Capacity-test representative data and concurrent users.
 

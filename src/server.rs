@@ -672,14 +672,24 @@ fn read_headers<R: Read>(reader: &mut R) -> Result<BTreeMap<String, String>, Str
     Ok(headers)
 }
 
-/// One wall-clock I/O budget covers the entire connection. Per-read socket
-/// timeouts alone allow a client making tiny progress to retain a worker forever.
+/// One I/O budget covers the connection, excluding processing after the complete
+/// request is buffered. Tiny reads never renew a slow peer's remaining budget.
 struct DeadlineStream {
     stream: TcpStream,
     deadline: Instant,
 }
 
 impl DeadlineStream {
+    fn exclude_processing(&mut self, elapsed: Duration) -> io::Result<()> {
+        self.deadline = self.deadline.checked_add(elapsed).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "HTTP processing duration overflow",
+            )
+        })?;
+        Ok(())
+    }
+
     fn remaining(&self) -> io::Result<Duration> {
         self.deadline
             .checked_duration_since(Instant::now())
@@ -840,7 +850,15 @@ fn http_request(stream: &mut DeadlineStream, settings: &Settings) -> Result<(), 
             false,
         );
     }
-    let bytes = rpc(settings, &body)?;
+    let started = Instant::now();
+    let bytes = rpc(settings, &body);
+    // Verification/fsync may exceed the network budget on a slow host. A
+    // completed publication still needs its acknowledgement; only the time
+    // spent processing this fully buffered request is excluded from I/O time.
+    stream
+        .exclude_processing(started.elapsed())
+        .map_err(|e| e.to_string())?;
+    let bytes = bytes?;
     http_response(stream, "200 OK", &bytes, true)
 }
 
@@ -1159,6 +1177,32 @@ mod tests {
             reader.write(b"late").unwrap_err().kind(),
             io::ErrorKind::TimedOut
         );
+    }
+
+    #[test]
+    fn slow_processing_preserves_the_remaining_io_budget_for_publication_receipts() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let (server, _) = listener.accept().unwrap();
+        let mut writer = DeadlineStream {
+            stream: server,
+            deadline: Instant::now().checked_sub(Duration::from_secs(30)).unwrap(),
+        };
+        assert_eq!(
+            writer.write(b"receipt").unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+        // Model 35 seconds of server processing without a sleeping test. Five
+        // seconds of I/O remain; processing does not grant a fresh 15 seconds.
+        writer.exclude_processing(Duration::from_secs(35)).unwrap();
+        assert!(writer.remaining().unwrap() <= Duration::from_secs(5));
+        writer.write_all(b"receipt").unwrap();
+        let mut bytes = [0; 7];
+        client.read_exact(&mut bytes).unwrap();
+        assert_eq!(&bytes, b"receipt");
     }
 
     #[test]

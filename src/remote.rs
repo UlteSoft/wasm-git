@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 const MAX_TRANSFER: usize = protocol::MAX_PACKET_BYTES;
 const MAX_CONFIG: u64 = 1024 * 1024;
 const MAX_TRACKING: u64 = 64 * 1024 * 1024;
-const TIMEOUT: Duration = Duration::from_secs(35);
+const DEFAULT_RPC_TIMEOUT: Duration = Duration::from_secs(300);
 const USAGE: &str = "selective clone/fetch: --depth N, --deepen N, --unshallow, --branch NAME, --filter all|blob:none|blob:limit=N|path:PATH; clone-status DIR; hydrate DIR; promisor DIR SOURCE...; remote <DIR> [add <NAME> <URL>|remove <NAME>|rename <OLD> <NEW>|-v|show <NAME>]; fetch <DIR> [REMOTE]; push <DIR> [REMOTE] [SOURCE:DESTINATION] [-u|--set-upstream] [--force-with-lease <OLD_ID|absent>]; push <DIR> [REMOTE] --tags|--all|--mirror [--atomic]; push supports --dry-run, --force/-f, +SOURCE:DESTINATION, and -o/--push-option VALUE; push <DIR> REMOTE SOURCE:DESTINATION [SOURCE:DESTINATION ...] [--atomic]; push <DIR> [REMOTE] --delete <BRANCH|refs/tags/TAG> [--force-with-lease <OLD_ID>]; pull <DIR> [REMOTE] [BRANCH] [--ff-only] [-m <MESSAGE>] (message required unless --ff-only); clone <URL> <NEW_DIR>; HTTP URLs are http(s)://HOST/REPOSITORY; SSH URLs are ssh://USER@HOST/ABSOLUTE/ROOT/REPOSITORY; --allow-insecure-http explicitly permits non-loopback cleartext HTTP";
 const LS_REMOTE_USAGE: &str = "ls-remote URL [PATTERN...] [--heads|--branches] [--tags] [--symref] [--refs] [--exit-code] [--json] [--allow-insecure-http]; ls-remote DIR [REMOTE [PATTERN...]] [OPTIONS]. DIR alone reads the existing origin configuration. Patterns match full refs or slash-delimited tails with * and ?; [] and backslash escapes are unsupported. -- ends options. Only HTTP(S) and SSH advertisements are queried; no objects are downloaded or verified, and no local repository metadata is written. --refs suppresses HEAD and its symbolic target. --exit-code returns 2 when no matching object-ID reference is advertised, including an unborn HEAD even if --symref prints its target.";
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -697,8 +697,25 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-fn subprocess(command: Command, input: Vec<u8>, label: &str) -> RepositoryResult<Vec<u8>> {
-    subprocess_deadline(command, input, label, TIMEOUT)
+fn rpc_timeout(value: Option<&str>) -> RepositoryResult<Duration> {
+    match value {
+        None => Ok(DEFAULT_RPC_TIMEOUT),
+        Some(value) => value
+            .parse::<u64>()
+            .ok()
+            .filter(|n| (1..=3600).contains(n))
+            .map(Duration::from_secs)
+            .ok_or_else(|| "UWGIT_RPC_TIMEOUT_SECONDS must be an integer in 1..=3600".into()),
+    }
+}
+
+fn subprocess(
+    command: Command,
+    input: Vec<u8>,
+    label: &str,
+    timeout: Duration,
+) -> RepositoryResult<Vec<u8>> {
+    subprocess_deadline(command, input, label, timeout + Duration::from_secs(5))
 }
 
 /// The budget covers process exit and all three pipes. In particular, a proxy
@@ -816,6 +833,16 @@ fn exchange(
     payload: &[u8],
     allow_http: bool,
 ) -> RepositoryResult<(Response, Vec<u8>)> {
+    let configured_timeout = std::env::var("UWGIT_RPC_TIMEOUT_SECONDS")
+        .map(Some)
+        .or_else(|e| {
+            if matches!(e, std::env::VarError::NotPresent) {
+                Ok(None)
+            } else {
+                Err(e.to_string())
+            }
+        })?;
+    let timeout = rpc_timeout(configured_timeout.as_deref())?;
     if payload.len() > MAX_TRANSFER / 2
         && matches!(
             &operation,
@@ -891,6 +918,7 @@ fn exchange(
             }
             let header = secret_header()?;
             let mut command = Command::new("curl");
+            let timeout_text = timeout.as_secs().to_string();
             command.args([
                 "-q",
                 "--noproxy",
@@ -903,7 +931,7 @@ fn exchange(
                 "--connect-timeout",
                 "10",
                 "--max-time",
-                "30",
+                &timeout_text,
                 "--max-filesize",
                 "67108864",
                 "--request",
@@ -924,7 +952,7 @@ fn exchange(
                 .arg("--url")
                 .arg(endpoint)
                 .env_remove("UWGIT_REMOTE_TOKEN");
-            subprocess(command, encoded, "HTTP").map_err(uncertain)?
+            subprocess(command, encoded, "HTTP", timeout).map_err(uncertain)?
         }
         Endpoint::Ssh {
             host, port, root, ..
@@ -949,7 +977,7 @@ fn exchange(
                     shell_quote(&root)
                 ))
                 .env_remove("UWGIT_REMOTE_TOKEN");
-            subprocess(command, encoded, "SSH").map_err(uncertain)?
+            subprocess(command, encoded, "SSH", timeout).map_err(uncertain)?
         }
     };
     let mut cursor = std::io::Cursor::new(&bytes);
@@ -2181,6 +2209,31 @@ pub fn run(args: &[String]) -> RepositoryResult<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rpc_timeout_is_bounded_and_defaults_to_five_minutes() {
+        assert_eq!(rpc_timeout(None).unwrap(), Duration::from_secs(300));
+        for seconds in [1, 30, 300, 3600] {
+            assert_eq!(
+                rpc_timeout(Some(&seconds.to_string())).unwrap(),
+                Duration::from_secs(seconds)
+            );
+        }
+        for invalid in [
+            "",
+            "0",
+            "3601",
+            "-1",
+            " 30",
+            "30 ",
+            "1.5",
+            "never",
+            "18446744073709551616",
+        ] {
+            assert!(rpc_timeout(Some(invalid)).unwrap_err().contains("1..=3600"));
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn process_exit_does_not_disable_the_pipe_deadline() {
