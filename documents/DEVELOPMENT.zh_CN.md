@@ -1,6 +1,6 @@
 # uwgit 开发与验证指南
 
-**版本：** 2026-11-06 · [English](DEVELOPMENT.eu_US.md) · [文档目录](README.zh_CN.md)
+**版本：** 2026-11-07 · [English](DEVELOPMENT.eu_US.md) · [文档目录](README.zh_CN.md)
 
 ## 1. 源码与产物规则
 
@@ -103,6 +103,24 @@ C++ 测试需要 Clang/LLD、本机 C++、Node 和 WABT；调试测试还需 Rus
 覆盖 C/C++ DWARF 变体及带/不带 name 的 Rust/TinyGo 元数据。
 这些是可选工具，不是普通库测试依赖。
 运行结果与静态审计分开记录；运行时不支持某编码时，静态映射成功不能当成执行验证。
+
+`tools/test-debug-languages.py` 增加真实 Objective-C/Objective-C++、MoonBit 普通 Wasm 与
+WasmGC、AssemblyScript、普通 Go，以及可选的 Zig。提供已安装的 `--clang`、`--moon`、
+`--moon-home`、`--asc`、`--node`、`--go`，可选 `--zig`，同时指定 `--uwgit` 和全新的
+`.tmp/` `--output` 目录；脚本不安装依赖。Objective-C 样例核对方法符号和受控方法修改，
+不链接或执行 Objective-C 运行时。source-map 与 Zig 样例还会执行导出的测试函数。
+所有样例核对原字节还原、单/多线程 diff 一致性。Go 样例将 Wasm 函数索引入口提升到虚拟 PC
+坐标后，用 Go 自带的独立 `debug/gosym` 对每个源码范围的首末 PC 交叉验证。
+
+`debug_language_formats` 覆盖 DWARF 语言编号（含未知编号）、所有 name 索引空间、补齐长度、
+source-map 未映射边界/索引映射/data URL、外部文件绑定及失败行为，以及四代 Go pclntab。
+额外定时测试先以 release 模式编译该测试，找到测试可执行文件，然后运行
+`tools/cgroup-run.py -- python3 tools/fuzz-debug-languages.py --test-binary PATH
+--output .tmp/debug-fuzz-1 --seconds 600`。需要可用的 16–31 号 E-core CPU，以及 64 GiB、
+零 swap cgroup。16 个独立确定性 worker 覆盖十类变异；每例验证生成的 Core 模块合法性，
+解析元数据、检查查询范围及双向字节补丁还原。记录种子、源码/二进制哈希、耗时、分组计数
+与 cgroup 资源证据。使用 `-C instrument-coverage` 编译可采集各 worker 的 LLVM profile。
+通过测试是针对这些输入的证据，不是对所有可能编译器输出的证明。
 
 ## 6. 随机与覆盖引导测试
 

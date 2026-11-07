@@ -1,6 +1,6 @@
 # uwgit Development and Verification Guide
 
-**Edition:** 2026-11-06 · [简体中文](DEVELOPMENT.zh_CN.md) · [Library](README.eu_US.md)
+**Edition:** 2026-11-07 · [简体中文](DEVELOPMENT.zh_CN.md) · [Library](README.eu_US.md)
 
 ## 1. Source and artifact policy
 
@@ -134,6 +134,31 @@ names. These optional tools are not dependencies of ordinary library tests.
 Runtime checks are distinct from static audit checks. A runtime that cannot
 execute a proposal encoding cannot certify its execution merely because static
 mapping succeeds.
+
+`tools/test-debug-languages.py` extends this with real Objective-C/Objective-C++,
+MoonBit classic Wasm and WasmGC, AssemblyScript, ordinary Go and optional Zig.
+Supply installed `--clang`, `--moon`, `--moon-home`, `--asc`, `--node`, `--go` and
+optionally `--zig`, plus `--uwgit` and a fresh `.tmp/` `--output`. It never installs
+dependencies. The Objective-C cases check method symbols and controlled method
+edits without linking/executing an Objective-C runtime. Source-map and Zig cases
+also execute the exported test function. Every pair checks exact byte replay and
+identical single/multiple-worker diffs. Go source ranges are cross-checked at
+both interval endpoints with Go's independent `debug/gosym` implementation after
+lifting Wasm function-index table entries into virtual PC coordinates.
+
+`debug_language_formats` covers DWARF language numbers (including unknown ones),
+all name index spaces, padded names, source-map fences/indexed maps/data URLs,
+sidecar binding and failure behavior, and four Go pclntab generations. To run
+the additional timed campaign, compile this test in release mode, locate its
+test executable, then run `tools/cgroup-run.py -- python3 tools/fuzz-debug-languages.py
+--test-binary PATH --output .tmp/debug-fuzz-1 --seconds 600`. This requires 16
+available E-core CPUs numbered 16–31 and a 64 GiB, zero-swap cgroup. Sixteen
+independent deterministic workers cover ten mutation families; each validates
+the generated Core module, parses its metadata, checks query ranges and both
+directions of byte-patch restoration. The receipts record seeds, source/binary
+hashes, elapsed time, per-family counts and cgroup resource evidence. Compile
+with `-C instrument-coverage` to collect per-worker LLVM profiles. A successful
+campaign is evidence for those inputs, not a proof for every possible compiler.
 
 ## 6. Random and coverage-guided testing
 

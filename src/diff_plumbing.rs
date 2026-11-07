@@ -175,6 +175,8 @@ pub fn run(args: &[String]) -> RepositoryResult<QueryOutput> {
             sections: options.sections,
             repo: None,
             file: None,
+            old_debug_file: vec![],
+            new_debug_file: vec![],
             standard: options.standard,
         };
         let output = crate::tree_output::render_files(&parsed, rows, old_origin, new_origin)?;

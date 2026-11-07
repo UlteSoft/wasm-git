@@ -224,6 +224,8 @@ fn labels(parsed: &DiffArgs, format: DiffFormat) -> DiffArgs {
         sections: parsed.sections.clone(),
         repo: None,
         file: None,
+        old_debug_file: parsed.old_debug_file.clone(),
+        new_debug_file: parsed.new_debug_file.clone(),
         standard: parsed.standard,
     }
 }
@@ -252,6 +254,11 @@ pub fn render_files(
             };
             return render_pair(parsed, old, new);
         }
+    }
+    if !parsed.old_debug_file.is_empty() || !parsed.new_debug_file.is_empty() {
+        return Err(
+            "external debug inputs require --file with an existing module on both sides".into(),
+        );
     }
     let mut files = Vec::new();
     let (mut added, mut deleted, mut modified, mut unchanged) = (0, 0, 0, 0);

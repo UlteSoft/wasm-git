@@ -237,7 +237,13 @@ pub fn diff_short(report: &DiffReport) -> String {
 fn push_summary_lines(report: &DiffReport, lines: &mut Vec<String>) {
     for (side, debug) in ["old", "new"].into_iter().zip(&report.debug_context) {
         if debug.status != "absent" || !debug.diagnostics.is_empty() {
-            lines.push(format!("  debug {side}: {} symbols={} source_ranges={} (advisory; source identity and intent unproven)", debug.status, debug.symbols, debug.source_ranges));
+            lines.push(format!("  debug {side}: {} symbols={} source_ranges={} go_virtual_source_ranges={} (advisory; source identity and intent unproven)", debug.status, debug.symbols, debug.source_ranges, debug.go_virtual_source_ranges));
+            for input in &debug.inputs {
+                lines.push(format!(
+                    "    debug input {:?}: {} sha256={} binding={}",
+                    input.name, input.format, input.sha256, input.binding
+                ));
+            }
             for note in &debug.diagnostics {
                 lines.push(format!("    debug {side} note: {}", safe_text(note)));
             }
@@ -507,7 +513,24 @@ fn push_change_text(change: &DiffChange, lines: &mut Vec<String>) {
                 for (side, point) in [("old", &annotation.old), ("new", &annotation.new)] {
                     if let Some(point) = point {
                         for source in &point.sources {
-                            lines.push(format!("    debug {side} edit[{}] @{} source={:?}:{:?}:{:?} discriminator={} (compiler claim)", annotation.change_index, point.file_offset, source.location.file, source.location.line, source.location.column, source.discriminator));
+                            lines.push(format!("    debug {side} edit[{}] @{} source={:?}:{:?}:{:?} discriminator={} origin={} input={:?} (compiler claim)", annotation.change_index, point.file_offset, source.location.file.as_deref().unwrap_or("<unknown>"), source.location.line, source.location.column, source.discriminator, source.origin, source.metadata_source));
+                        }
+                        for symbol in point.symbols.iter().filter(|s| {
+                            matches!(
+                                s.kind,
+                                "go_function" | "symbol_map_function" | "source_map_name"
+                            )
+                        }) {
+                            lines.push(format!(
+                                "    debug {side} symbol={:?} kind={} function={:?} input={:?}",
+                                symbol.name,
+                                symbol.kind,
+                                symbol.function_index,
+                                symbol.metadata_source
+                            ));
+                            if let Some(entry) = &symbol.go_entry_source {
+                                lines.push(format!("      Go entry virtual PC {:?} source={:?}:{:?} (function entry context; no instruction-line mapping)", entry.virtual_pc, entry.location.file.as_deref().unwrap_or("<unknown>"), entry.location.line));
+                            }
                         }
                         for symbol in point
                             .symbols

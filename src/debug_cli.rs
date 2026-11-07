@@ -7,6 +7,9 @@ use std::fmt::Write;
 #[derive(Parser)]
 struct Args {
     input: String,
+    /// Explicit source map, separate DWARF Wasm, or index:name symbol map; repeatable.
+    #[arg(long)]
+    debug_file: Vec<String>,
     #[arg(long)]
     repo: Option<String>,
     #[arg(long)]
@@ -17,6 +20,9 @@ struct Args {
     /// Byte offset relative to the code section payload (DWARF PC).
     #[arg(long)]
     code_offset: Option<usize>,
+    /// Go runtime virtual PC (decimal), distinct from a Wasm byte offset.
+    #[arg(long)]
+    go_pc: Option<u64>,
     /// Exact name or linkage name. All candidates are returned.
     #[arg(long)]
     symbol: Option<String>,
@@ -42,6 +48,7 @@ pub(crate) fn run(args: &[String]) -> Result<String, String> {
     if [
         args.offset.is_some(),
         args.code_offset.is_some(),
+        args.go_pc.is_some(),
         args.symbol.is_some(),
         args.function.is_some(),
         args.source.is_some(),
@@ -52,7 +59,7 @@ pub(crate) fn run(args: &[String]) -> Result<String, String> {
         > 1
     {
         return Err(
-            "choose one query: --offset, --code-offset, --symbol, --function, or --source [--line]"
+            "choose one query: --offset, --code-offset, --go-pc, --symbol, --function, or --source [--line]"
                 .into(),
         );
     }
@@ -63,6 +70,7 @@ pub(crate) fn run(args: &[String]) -> Result<String, String> {
         crate::read_inputs(&[&args.input], args.repo.as_deref(), args.file.as_deref())?;
     let input = inputs.pop().ok_or("missing module input")?;
     let mut debug = debug_info::read(&input.bytes);
+    attach_files(&mut debug, &input.bytes, &args.debug_file)?;
     let offset = args.offset.or(args
         .code_offset
         .map(|n| {
@@ -91,6 +99,7 @@ pub(crate) fn run(args: &[String]) -> Result<String, String> {
     };
     let summary = debug.summary();
     if let Some(symbol) = &args.symbol {
+        debug.names.retain(|n| n.name == *symbol);
         debug
             .symbols
             .retain(|s| s.name.as_ref() == Some(symbol) || s.linkage_name.as_ref() == Some(symbol));
@@ -101,12 +110,36 @@ pub(crate) fn run(args: &[String]) -> Result<String, String> {
                     .any(|r| intersects(r.file_span, l.range.file_span))
             })
         });
+        debug.go_lines.retain(|l| {
+            debug
+                .symbols
+                .iter()
+                .any(|s| s.function_index == Some(l.function_index))
+        });
     } else if let Some(index) = args.function {
+        debug.names.retain(|n| {
+            (n.index_space == "function" && n.index == index)
+                || (matches!(n.index_space, "local" | "label") && n.scope_index == Some(index))
+        });
         debug.symbols.retain(|s| s.function_index == Some(index));
         debug.lines.retain(|l| l.range.function_index == index);
+        debug.go_lines.retain(|l| l.function_index == index);
+    } else if let Some(pc) = args.go_pc {
+        debug
+            .go_lines
+            .retain(|l| l.virtual_pc[0] <= pc && pc < l.virtual_pc[1]);
+        debug.symbols.retain(|s| {
+            s.origin == "go_pclntab"
+                && debug
+                    .go_lines
+                    .iter()
+                    .any(|l| Some(l.function_index) == s.function_index)
+        });
+        debug.lines.clear();
+        debug.names.clear();
     } else if let Some(source) = &args.source {
         let matches = |location: &crate::debug_info::SourceLocation| {
-            location.file.as_ref() == source
+            location.file.as_deref() == Some(source.as_str())
                 && args.line.is_none_or(|line| location.line == Some(line))
         };
         let calls: Vec<_> = debug
@@ -115,16 +148,22 @@ pub(crate) fn run(args: &[String]) -> Result<String, String> {
             .filter(|s| s.call_site.as_ref().is_some_and(matches))
             .flat_map(|s| s.ranges.iter().map(|r| r.file_span))
             .collect();
+        debug.go_lines.retain(|l| matches(&l.location));
         debug.lines.retain(|l| {
             matches(&l.location) || calls.iter().any(|r| intersects(*r, l.range.file_span))
         });
         debug.symbols.retain(|s| {
-            s.ranges.iter().any(|r| {
-                debug
-                    .lines
-                    .iter()
-                    .any(|l| intersects(r.file_span, l.range.file_span))
-            })
+            debug
+                .go_lines
+                .iter()
+                .any(|l| Some(l.function_index) == s.function_index)
+                || s.declaration.as_ref().is_some_and(matches)
+                || s.ranges.iter().any(|r| {
+                    debug
+                        .lines
+                        .iter()
+                        .any(|l| intersects(r.file_span, l.range.file_span))
+                })
         });
     }
     if args.json {
@@ -153,8 +192,31 @@ fn intersects(a: crate::audit::Span, b: crate::audit::Span) -> bool {
     a.start < b.end && b.start < a.end
 }
 fn render(debug: &DebugInfo, out: &mut String) {
+    for line in &debug.go_lines {
+        let _ = writeln!(out, "Go virtual PC [{}..{}) function={} source {:?}:{:?} (resume-point coordinates; no instruction offset inferred)", line.virtual_pc[0], line.virtual_pc[1], line.function_index, line.location.file.as_deref().unwrap_or("<unknown>"), line.location.line);
+    }
+    for unit in &debug.units {
+        let _ = writeln!(
+            out,
+            "unit {:?} DWARF{} language={:?} ({:?}) producer={:?} metadata@{} input={:?}",
+            unit.name,
+            unit.dwarf_version,
+            unit.language,
+            unit.language_code,
+            unit.producer,
+            unit.metadata_offset,
+            unit.metadata_source
+        );
+    }
+    for name in &debug.names {
+        let _ = writeln!(
+            out,
+            "name {} {:?}/{} {:?} metadata@{}",
+            name.index_space, name.scope_index, name.index, name.name, name.metadata_offset
+        );
+    }
     for s in &debug.symbols {
-        let _ = writeln!(out, "{} {:?} linkage={:?} function={:?} origin={} metadata@{} declaration={:?} inline_call={:?}", s.kind, s.name, s.linkage_name, s.function_index, s.origin, s.metadata_offset, s.declaration, s.call_site);
+        let _ = writeln!(out, "{} {:?} linkage={:?} function={:?} origin={} metadata@{:?} declaration={:?} inline_call={:?}", s.kind, s.name, s.linkage_name, s.function_index, s.origin, s.metadata_offset, s.declaration, s.call_site);
         for r in &s.ranges {
             let _ = writeln!(
                 out,
@@ -185,7 +247,7 @@ fn render(debug: &DebugInfo, out: &mut String) {
         let _ = writeln!(
             out,
             "source {:?}:{:?}:{:?} file [{}..{}) function={} discriminator={}",
-            line.location.file,
+            line.location.file.as_deref().unwrap_or("<unknown>"),
             line.location.line,
             line.location.column,
             line.range.file_span.start,
@@ -196,5 +258,55 @@ fn render(debug: &DebugInfo, out: &mut String) {
     }
     for diagnostic in &debug.diagnostics {
         let _ = writeln!(out, "note: {}", diagnostic.escape_debug());
+    }
+}
+
+/// Only explicitly selected files are read. Malformed conventions are visible
+/// diagnostics and cannot disable the authoritative original-byte audit.
+pub(crate) fn attach_files(
+    debug: &mut DebugInfo,
+    wasm: &[u8],
+    paths: &[String],
+) -> Result<(), String> {
+    use std::io::Read;
+    if paths.len() > 32 {
+        return Err("at most 32 explicit debug inputs are allowed".into());
+    }
+    let mut remaining = 128 * 1024 * 1024;
+    for path in paths {
+        let file = std::fs::File::open(path).map_err(|e| format!("debug input {path:?}: {e}"))?;
+        if !file.metadata().map_err(|e| e.to_string())?.is_file() {
+            return Err(format!("debug input {path:?} is not a regular file"));
+        }
+        let mut data = Vec::new();
+        file.take(remaining as u64 + 1)
+            .read_to_end(&mut data)
+            .map_err(|e| format!("debug input {path:?}: {e}"))?;
+        if data.len() > remaining {
+            return Err("explicit debug inputs exceed the aggregate 128 MiB budget".into());
+        }
+        remaining -= data.len();
+        if let Err(e) = debug.attach_debug_file(wasm, &data, path) {
+            debug.note(format!(
+                "explicit debug input {path:?}: {e}; no mappings inferred from this input"
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn merge_module(module: &mut crate::ir::ModuleIr, extra: DebugInfo) {
+    if extra.inputs.is_empty() && extra.diagnostics.is_empty() {
+        return;
+    }
+    let debug = std::sync::Arc::make_mut(&mut module.debug_info);
+    debug.merge_external(extra);
+    for (index, name) in debug.function_hints() {
+        if let std::collections::btree_map::Entry::Vacant(entry) =
+            module.function_names.entry(index)
+        {
+            entry.insert(name);
+            module.function_symbol_sources.insert(index, "debug_symbol");
+        }
     }
 }

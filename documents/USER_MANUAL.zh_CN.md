@@ -1,6 +1,6 @@
 # uwgit 使用手册
 
-**版本：** 2026-11-06 · [English](USER_MANUAL.eu_US.md) · [文档目录](README.zh_CN.md)
+**版本：** 2026-11-07 · [English](USER_MANUAL.eu_US.md) · [文档目录](README.zh_CN.md)
 
 ## 1. 约定与准备
 
@@ -99,6 +99,82 @@ code-section 坐标基准。能够建立全局索引时，函数索引包含 imp
 核对模块 SHA-256、坐标基准、状态、诊断及范围解释。
 不会通过执行 Wasm 或获取外部 URL 来补全缺失行表、不支持表达式或冲突 section。
 完整 diff 自动附带可用映射；映射缺失不影响字节证据。
+
+### 按格式支持语言
+
+调试信息按实际格式解析，不设置源语言白名单。DWARF 2–5 编译单元展示 `language_code`、
+DWARF 语言名称、`producer`、源文件名称、版本与地址大小。C、Objective-C、C++、
+Objective-C++、Rust、TinyGo 及其他输出 DWARF 的 Wasm 工具链共用范围、内联作用域与
+变量位置解析器。未知语言编号保留为数值证据，不因此停止解析其可读 DWARF 内容。
+
+`name` 视图保留 module、function、local、label、type、table、memory、global、element、
+data、field、tag 名称。local/label 保留函数作用域，field 保留类型作用域。
+支持包括 Go 链接器输出在内的补齐 Wasm LEB 长度。重复标签保留为候选；有歧义的函数名称表
+不会被选作确定的身份提示。
+
+source-map v3 支持平面映射、内嵌索引映射、source/name 表、未映射边界，以及 base64 或
+百分号编码的 `data:application/json` 引用。generated column 是 **Wasm 文件绝对偏移**，
+generated line 为零；展示的源码行列从一开始。只有真实指令或函数体边界能够形成源码范围，
+不会把一个函数的最后一条映射延伸到没有映射点的后续函数。索引映射中的 URL 子项不会被获取。
+源码路径只是记录标签，不打开或执行源码文件、`sourcesContent`。空来源名称保留为 null，
+路径标签保留 sourceRoot 前缀，不规范化 URL，也不根据本地外部文件路径暗中补全来源。
+
+当前 MoonBit `wasm-gc` 后端及 AssemblyScript 在启用对应选项后输出 source map；
+MoonBit 普通 `wasm` 后端当前只输出名称，不输出源码映射。已有名称可查询，缺失行信息不补猜。
+实际存在的元数据取决于编译器版本、后端和编译参数。
+
+### 显式调试文件与来源
+
+```sh
+wasm-git debug-map app.wasm --debug-file app.wasm.map --source /source/main.mbt --line 12 --json
+wasm-git inspect app.wasm --debug-file app.debug.wasm --json
+wasm-git diff old.wasm new.wasm --old-debug-file old.wasm.map --new-debug-file new.wasm.map --format json
+```
+
+`debug-map`、`inspect` 可重复使用 `--debug-file`；diff 可分别重复使用
+`--old-debug-file`、`--new-debug-file`。接受 source-map JSON、包含 DWARF 的 Wasm 文件、
+以及 `函数索引:名称` 的数字索引符号表。仓库文件树需要 `--file`，树 diff 的两侧均需存在该模块。
+仅 section 的 diff 不能组合这些外部调试选项。
+
+每个成功接入的文件记录名称、字节数、SHA-256、格式和关联依据。
+`matching_code_payload` 表示独立 DWARF 文件的 code payload 与原模块完全相同，不表示作者签名。
+不含 code 的 DWARF、source map、符号表标记为 `explicit_input_unverified`：关联由调用者提供，
+uwgit 无法证明编译器为当前模块生成了它。`embedded_reference` 表示映射内嵌于原 Wasm。
+DWARF PC 仍使用原模块 code payload 基址，`metadata_source` 标识元数据偏移所属的外部文件。
+source-map 名称没有伪造的 JSON 字节偏移。格式不匹配时记录诊断，原始字节审计继续；
+显式指定的文件不存在则报告 I/O 错误。内嵌引用不会触发文件或网络访问。
+
+这些 JSON 是**编译器输入和面向用户的展示格式**，不是仓库内部存储。
+对象、历史、索引和 pack 继续使用现有二进制格式。
+
+### 普通 Go 的运行时符号
+
+```sh
+wasm-git debug-map go.wasm --symbol main.calculate --json
+wasm-git debug-map go.wasm --go-pc 268435456 --json
+```
+
+普通 Go 的 Wasm 目标关闭 DWARF，将运行时 `pclntab` 放在线性内存数据中。
+支持 Go 1.2、1.16、1.18、1.20 表布局，以及当前 Go 使用的函数索引入口编码。
+解析时有界还原 active data 段之间被省略的零字节，核对函数表与原函数布局，并保留原符号名称。
+
+`go_lines` 使用 `go_wasm_virtual_pc`：`PC_F << 16 | 恢复点`，其中
+`PC_F = 0x1000 + 已定义函数序号`。仅在输出 Wasm 函数索引时加上 import 函数数量。
+这些数值**不是 Wasm 指令字节偏移**。函数符号可以定位原文件中的函数范围，
+`go_entry_source` 单独标明虚拟入口位置。Go 行表不会被放进物理指令源码范围索引。
+通过 `--go-pc`、`--function`、`--symbol`、`--source` 查询，避免伪造逐指令的源码精度。
+导入内存、重叠初始化、不支持的偏移表达式、有歧义的候选表或未知后续格式均产生约定诊断。
+
+解释设有资源上限：128 MiB 调试输入/初始化内存跨度、每表 200,000 条记录、两百万遍历步、
+16 KiB 字符串、最多 32 个显式输入。未知、被裁剪、不支持或厂商私有的元数据仍受精确字节与
+custom-section 审计覆盖。支持某种格式不等于所有语言都会输出调试信息，也不等于能够证明
+优化前的源码意图。
+
+互操作依据包括社区 [Wasm 调试约定](https://github.com/WebAssembly/tool-conventions/blob/main/Debugging.md)、
+[ECMA-426 source map](https://tc39.es/ecma426/)、
+[Go 链接器表](https://github.com/golang/go/blob/master/src/cmd/link/internal/ld/pcln.go)、
+[MoonBit 后端能力](https://github.com/moonbitlang/moon/blob/main/crates/moonutil/src/target.rs)。
+这些 custom-section 约定是可选元数据格式，不增加 Core Wasm 的合法性要求。
 
 ## 6. 创建与应用二进制补丁
 

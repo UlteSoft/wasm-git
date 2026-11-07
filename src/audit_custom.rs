@@ -266,36 +266,33 @@ pub(crate) fn function_names(bytes: &[u8]) -> BTreeMap<u32, String> {
                 return None;
             }
             seen = true;
-            let mut r = ConventionReader::new(
+            // Go and other linkers reserve padded u32 encodings in name
+            // subsection lengths. The name convention uses Wasm u32 LEBs;
+            // canonical-only custom-region rendering must not discard these
+            // valid function labels used as advisory matching hints.
+            let reader = wasmparser::NameSectionReader::new(BinaryReader::new(
                 &data[outer.original_position() - start..],
                 outer.original_position(),
-            );
+            ));
             let mut found = false;
-            while !r.eof() {
-                let id = r.byte().ok()?;
-                let size = r.u32().ok()? as usize;
-                let mut sub = r.take(size).ok()?;
-                if id != 1 {
-                    continue;
-                }
-                if found {
-                    return None;
-                }
-                found = true;
-                let count = sub.u32().ok()?;
-                let mut previous = None;
-                for _ in 0..count {
-                    let i = sub.u32().ok()?;
-                    if previous.is_some_and(|p| i <= p) {
+            for part in reader {
+                if let wasmparser::Name::Function(entries) = part.ok()? {
+                    if found {
                         return None;
                     }
-                    previous = Some(i);
-                    let name = sub.string().ok()?;
-                    if !name.is_empty() {
-                        names.insert(i, name.to_owned());
+                    found = true;
+                    let mut previous = None;
+                    for entry in entries {
+                        let entry = entry.ok()?;
+                        if previous.is_some_and(|p| entry.index <= p) {
+                            return None;
+                        }
+                        previous = Some(entry.index);
+                        if !entry.name.is_empty() {
+                            names.insert(entry.index, entry.name.to_owned());
+                        }
                     }
                 }
-                sub.finish().ok()?;
             }
         }
         Some(names)

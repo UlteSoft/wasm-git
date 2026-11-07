@@ -65,6 +65,9 @@ use wasm_git::standard::Standard;
 #[derive(Debug, Parser)]
 struct InspectArgs {
     filepath: String,
+    /// Explicit compiler sidecar; repeatable. Never follows embedded URLs.
+    #[arg(long)]
+    debug_file: Vec<String>,
     #[arg(long)]
     json: bool,
     /// Read a committed revision instead of a filesystem path.
@@ -100,6 +103,12 @@ struct DiffArgs {
     /// Select allowed features without changing instruction boundary decoding.
     #[arg(long, default_value = "all-known")]
     standard: Standard,
+    /// Source map, DWARF Wasm, or symbol map for the old module; repeatable.
+    #[arg(long, conflicts_with = "sections")]
+    old_debug_file: Vec<String>,
+    /// Explicit compiler sidecar for the new module; repeatable.
+    #[arg(long, conflicts_with = "sections")]
+    new_debug_file: Vec<String>,
 }
 
 #[derive(Debug, Parser)]
@@ -121,6 +130,12 @@ struct WorktreeDiffArgs {
     sections: Vec<audit::section::Selector>,
     #[arg(long, default_value = "all-known")]
     standard: Standard,
+    /// Source map, DWARF Wasm, or symbol map for the old module; repeatable.
+    #[arg(long, conflicts_with = "sections")]
+    old_debug_file: Vec<String>,
+    /// Explicit compiler sidecar for the new module; repeatable.
+    #[arg(long, conflicts_with = "sections")]
+    new_debug_file: Vec<String>,
 }
 
 #[derive(Debug, Parser)]
@@ -472,26 +487,55 @@ fn cmd_inspect(args: &[String]) -> Result<String, String> {
             .next()
             .ok_or("missing revision snapshot")?;
         if parsed.file.is_none() && revision.legacy.is_none() {
+            if !parsed.debug_file.is_empty() {
+                return Err("--debug-file on a file tree requires --file".into());
+            }
             return tree_output::inspect_tree(&parsed.filepath, revision, parsed.standard);
         }
         let input = tree_output::select_input(&parsed.filepath, revision, parsed.file.as_deref())?;
-        return serde_json::to_string_pretty(&inspect_input(&input, parsed.standard)?)
-            .map_err(|e| e.to_string());
+        return serde_json::to_string_pretty(&inspect_input_with_debug(
+            &input,
+            parsed.standard,
+            &parsed.debug_file,
+        )?)
+        .map_err(|e| e.to_string());
     }
     let inputs = read_inputs(&[&parsed.filepath], None, None)?;
     let input = &inputs[0];
-    serde_json::to_string_pretty(&inspect_input(input, parsed.standard)?).map_err(|e| e.to_string())
+    serde_json::to_string_pretty(&inspect_input_with_debug(
+        input,
+        parsed.standard,
+        &parsed.debug_file,
+    )?)
+    .map_err(|e| e.to_string())
 }
 
 fn inspect_input(input: &Input, standard: Standard) -> Result<Value, String> {
+    inspect_input_with_debug(input, standard, &[])
+}
+
+fn inspect_input_with_debug(
+    input: &Input,
+    standard: Standard,
+    paths: &[String],
+) -> Result<Value, String> {
     let audit = audit::inspect_with_standard(&input.bytes, standard)
         .map_err(|error| format!("wasm parse error: {error}"))?;
-    let (mut output, status) = match normalize_bytes(&input.bytes, &audit) {
-        Ok(module) => (report::inspect_value(&module), json!({"available": true})),
-        Err(error) => (
-            json!({"module": null, "summary": null, "debug_info": debug_info::read(&input.bytes)}),
-            json!({"available": false, "reason": error}),
-        ),
+    let mut extra = debug_info::DebugInfo::default();
+    debug_cli::attach_files(&mut extra, &input.bytes, paths)?;
+    let (mut output, status) = match normalize_bytes_with_debug_names(&input.bytes, &audit, true) {
+        Ok(mut module) => {
+            debug_cli::merge_module(&mut module.module, extra);
+            (report::inspect_value(&module), json!({"available": true}))
+        }
+        Err(error) => {
+            let mut debug = debug_info::read(&input.bytes);
+            debug.merge_external(extra);
+            (
+                json!({"module": null, "summary": null, "debug_info": debug}),
+                json!({"available": false, "reason": error}),
+            )
+        }
     };
     output["schema_version"] = json!(1);
     output["function_analysis"] = analysis_scope(status, standard);
@@ -523,6 +567,8 @@ fn cmd_diff(args: &[String]) -> Result<String, String> {
             short: parsed.short,
             compact: parsed.compact,
             sections: parsed.sections,
+            old_debug_file: parsed.old_debug_file,
+            new_debug_file: parsed.new_debug_file,
             repo: None,
             file: parsed.file,
             standard: parsed.standard,
@@ -604,8 +650,17 @@ fn render_diff(parsed: &DiffArgs, inputs: &[Input]) -> Result<String, String> {
     };
     let audit = audit::compare_with_standard(old, new, parsed.standard)
         .map_err(|error| format!("wasm parse error: {error}"))?;
-    let comparison = normalize_bytes(old, &audit.old).and_then(|old_module| {
-        normalize_bytes(new, &audit.new).map(|new_module| {
+    // Read explicit inputs before normalization so I/O errors never disappear
+    // inside the optional semantic comparison.
+    let mut old_debug = debug_info::DebugInfo::default();
+    let mut new_debug = debug_info::DebugInfo::default();
+    debug_cli::attach_files(&mut old_debug, old, &parsed.old_debug_file)?;
+    debug_cli::attach_files(&mut new_debug, new, &parsed.new_debug_file)?;
+    let external_context = [old_debug.summary(), new_debug.summary()];
+    let comparison = normalize_bytes(old, &audit.old).and_then(|mut old_module| {
+        normalize_bytes(new, &audit.new).map(|mut new_module| {
+            debug_cli::merge_module(&mut old_module.module, old_debug);
+            debug_cli::merge_module(&mut new_module.module, new_debug);
             diff::diff_modules(&parsed.old_path, &old_module, &parsed.new_path, &new_module)
         })
     });
@@ -640,7 +695,7 @@ fn render_diff(parsed: &DiffArgs, inputs: &[Input]) -> Result<String, String> {
                 ),
                 Err(error) => (
                     json!({"old": parsed.old_path, "new": parsed.new_path,
-                        "summary": null, "function_matches": [], "changes": [],
+                        "summary": null, "function_matches": [], "changes": [], "debug_context": external_context,
                         "call_binding_notes": [], "export_binding_notes": [],
                         "export_dependency_graph": null}),
                     json!({"available": false, "reason": error}),
@@ -863,6 +918,14 @@ fn normalize_bytes(
     bytes: &[u8],
     audit: &audit::AuditModule,
 ) -> Result<ir::NormalizedModule, String> {
+    normalize_bytes_with_debug_names(bytes, audit, false)
+}
+
+fn normalize_bytes_with_debug_names(
+    bytes: &[u8],
+    audit: &audit::AuditModule,
+    names: bool,
+) -> Result<ir::NormalizedModule, String> {
     if !bytes.starts_with(b"\0asm\x01\0\0\0") {
         return Err("typed function analysis is available for Core version 1 only; other Wasm encodings retain lossless byte/outer-section audit".into());
     }
@@ -887,9 +950,13 @@ fn normalize_bytes(
             entry.path, entry.span.start, entry.span.end
         ));
     }
-    parse::parse_module(bytes)
-        .map(|parsed| parsed.resolve().normalize())
-        .map_err(|error| error.to_string())
+    (if names {
+        parse::parse_module_with_debug_names(bytes)
+    } else {
+        parse::parse_module(bytes)
+    })
+    .map(|parsed| parsed.resolve().normalize())
+    .map_err(|error| error.to_string())
 }
 
 fn parse_trace_range(value: &str) -> Result<audit::Span, String> {

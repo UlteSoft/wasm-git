@@ -68,6 +68,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3bc62ac97cc33321f50863d514c3bc38a453947a8f9e781137e47c7401020aed"
 
 [[package]]
+name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+
+[[package]]
 name = "base64ct"
 version = "1.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -823,8 +829,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-git"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
+ "base64",
  "bincode",
  "clap",
  "colored",
@@ -840,6 +847,7 @@ dependencies = [
  "sha2",
  "similar",
  "wasmparser",
+ "windows-sys 0.61.2",
  "zeroize",
  "zstd",
 ]

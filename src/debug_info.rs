@@ -15,6 +15,15 @@ use wasmparser::{
 };
 
 type R<'a> = EndianSlice<'a, LittleEndian>;
+#[path = "debug_external.rs"]
+mod external;
+#[path = "debug_go.rs"]
+mod go;
+#[path = "debug_names.rs"]
+mod names;
+#[path = "debug_source_map.rs"]
+mod source_map;
+pub use go::{GoSourceRange, GoTable};
 const MAX_DEBUG_BYTES: usize = 128 * 1024 * 1024;
 const MAX_RECORDS: usize = 200_000;
 const MAX_STEPS: usize = 2_000_000;
@@ -22,7 +31,8 @@ const MAX_STRING: usize = 16 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SourceLocation {
-    pub file: Arc<str>,
+    /// Source maps may explicitly carry a null (unknown) source name.
+    pub file: Option<Arc<str>>,
     /// Compiler-supplied checksum, if the line table carries one. Not verified.
     pub file_md5: Option<String>,
     pub line: Option<u64>,
@@ -46,9 +56,15 @@ pub struct DebugSymbol {
     pub function_index: Option<u32>,
     pub origin: &'static str,
     /// Absolute byte location of the DIE/symbol entry in the original Wasm.
-    pub metadata_offset: usize,
+    pub metadata_offset: Option<usize>,
+    /// When present, metadata offsets refer to this explicitly supplied input.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata_source: Option<String>,
     pub parent_offset: Option<usize>,
     pub declaration: Option<SourceLocation>,
+    /// Go's entry source uses a runtime virtual PC, not this symbol's byte range.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub go_entry_source: Option<GoSourceRange>,
     pub call_site: Option<SourceLocation>,
     pub ranges: Vec<CodeRange>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -85,6 +101,48 @@ pub struct SourceRange {
     pub discriminator: u64,
     pub is_statement: bool,
     pub unit_offset: usize,
+    pub origin: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata_source: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CompilationUnit {
+    pub metadata_offset: usize,
+    pub dwarf_version: u16,
+    pub address_size: u8,
+    pub language_code: Option<u16>,
+    pub language: Option<String>,
+    pub producer: Option<String>,
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata_source: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DebugName {
+    pub index_space: &'static str,
+    pub index: u32,
+    pub scope_index: Option<u32>,
+    pub name: String,
+    pub metadata_offset: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DebugReference {
+    pub kind: &'static str,
+    pub uri: String,
+    pub metadata_offset: usize,
+    pub embedded: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DebugInput {
+    pub name: String,
+    pub sha256: String,
+    pub byte_len: usize,
+    pub format: &'static str,
+    pub binding: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -102,9 +160,23 @@ pub struct DebugInfo {
     pub sections: Vec<DebugSection>,
     pub symbols: Vec<DebugSymbol>,
     pub lines: Vec<SourceRange>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub names: Vec<DebugName>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub units: Vec<CompilationUnit>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<DebugReference>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<DebugInput>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub go_tables: Vec<GoTable>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub go_lines: Vec<GoSourceRange>,
     pub diagnostics: Vec<String>,
     #[serde(skip)]
     functions: Vec<FunctionLayout>,
+    #[serde(skip)]
+    byte_len: usize,
     #[serde(skip)]
     symbol_index: IntervalIndex,
     #[serde(skip)]
@@ -121,8 +193,15 @@ impl Default for DebugInfo {
             sections: vec![],
             symbols: vec![],
             lines: vec![],
+            names: vec![],
+            units: vec![],
+            references: vec![],
+            inputs: vec![],
+            go_tables: vec![],
+            go_lines: vec![],
             diagnostics: vec![],
             functions: vec![],
+            byte_len: 0,
             symbol_index: IntervalIndex::default(),
             line_index: IntervalIndex::default(),
         }
@@ -189,6 +268,11 @@ pub struct Summary {
     pub module_sha256: Option<String>,
     pub symbols: usize,
     pub source_ranges: usize,
+    pub names: usize,
+    pub compilation_units: usize,
+    pub go_virtual_source_ranges: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<DebugInput>,
     pub diagnostics: Vec<String>,
     pub advisory: bool,
 }
@@ -221,7 +305,13 @@ pub(crate) fn annotate_changes(
         a.symbols.retain(|s| {
             matches!(
                 s.kind,
-                "subprogram" | "inlined_subroutine" | "linking_function" | "function_name"
+                "subprogram"
+                    | "inlined_subroutine"
+                    | "linking_function"
+                    | "function_name"
+                    | "go_function"
+                    | "symbol_map_function"
+                    | "source_map_name"
             )
         });
         for symbol in &mut a.symbols {
@@ -250,12 +340,60 @@ pub(crate) fn annotate_changes(
 }
 
 impl DebugInfo {
+    pub(crate) fn note(&mut self, message: String) {
+        self.diagnostics.push(message);
+        self.index();
+    }
+    pub(crate) fn merge_external(&mut self, other: Self) {
+        if other.inputs.is_empty() && other.diagnostics.is_empty() {
+            return;
+        }
+        if self.symbols.len() + other.symbols.len() > MAX_RECORDS
+            || self.lines.len() + other.lines.len() > MAX_RECORDS
+            || self.units.len() + other.units.len() > MAX_RECORDS
+        {
+            self.note(
+                "aggregate debug record budget exceeded; external mappings not attached".into(),
+            );
+            return;
+        }
+        if self.functions.is_empty() {
+            self.functions = other.functions;
+        }
+        if self.module_sha256.is_none() {
+            self.module_sha256 = other.module_sha256;
+        }
+        self.symbols.extend(other.symbols);
+        self.lines.extend(other.lines);
+        self.units.extend(other.units);
+        self.inputs.extend(other.inputs);
+        self.diagnostics.extend(other.diagnostics);
+        self.index();
+    }
+    fn module_byte_len(&self) -> usize {
+        self.byte_len
+    }
+
+    /// Attach an explicitly supplied source map, DWARF container, or numeric
+    /// function symbol map. This API performs no filesystem or network access.
+    pub fn attach_debug_file(
+        &mut self,
+        wasm: &[u8],
+        data: &[u8],
+        name: &str,
+    ) -> Result<(), String> {
+        external::attach(self, wasm, data, name)
+    }
     pub fn summary(&self) -> Summary {
         Summary {
             status: self.status,
             module_sha256: self.module_sha256.clone(),
             symbols: self.symbols.len(),
             source_ranges: self.lines.len(),
+            names: self.names.len(),
+            compilation_units: self.units.len(),
+            go_virtual_source_ranges: self.go_lines.len(),
+            inputs: self.inputs.clone(),
             diagnostics: self.diagnostics.clone(),
             advisory: true,
         }
@@ -304,7 +442,10 @@ impl DebugInfo {
     pub(crate) fn function_hints(&self) -> BTreeMap<u32, String> {
         let mut candidates = BTreeMap::<u32, BTreeSet<String>>::new();
         for s in &self.symbols {
-            if !matches!(s.kind, "subprogram" | "linking_function") {
+            if !matches!(
+                s.kind,
+                "subprogram" | "linking_function" | "symbol_map_function" | "go_function"
+            ) {
                 continue;
             }
             let Some(name) = s
@@ -352,7 +493,12 @@ impl DebugInfo {
                 .map(|(i, r)| (r.range.file_span.start, r.range.file_span.end, i))
                 .collect(),
         );
-        self.status = if self.symbols.is_empty() && self.lines.is_empty() {
+        self.status = if self.symbols.is_empty()
+            && self.lines.is_empty()
+            && self.names.is_empty()
+            && self.units.is_empty()
+            && self.inputs.is_empty()
+        {
             if self.sections.is_empty() {
                 "absent"
             } else {
@@ -372,6 +518,7 @@ struct Sections<'a> {
     code: Option<(&'a [u8], usize)>,
     imports: Option<(&'a [u8], usize)>,
     debug_relocations: bool,
+    go: bool,
 }
 
 fn sections<'a>(bytes: &'a [u8], out: &mut DebugInfo) -> Result<Sections<'a>, String> {
@@ -385,6 +532,7 @@ fn sections<'a>(bytes: &'a [u8], out: &mut DebugInfo) -> Result<Sections<'a>, St
         code: None,
         imports: None,
         debug_relocations: false,
+        go: false,
     };
     let mut debug_ordinals = BTreeSet::new();
     let mut relocation_targets = Vec::new();
@@ -401,6 +549,22 @@ fn sections<'a>(bytes: &'a [u8], out: &mut DebugInfo) -> Result<Sections<'a>, St
             let name = std::str::from_utf8(r.read_bytes(n).map_err(err)?).map_err(err)?;
             let offset = r.original_position();
             let payload = &data[offset - start..];
+            if name == "go:buildid" {
+                result.go = true;
+            }
+            if name == "producers" {
+                if let Ok(fields) =
+                    wasmparser::ProducersSectionReader::new(BinaryReader::new(payload, offset))
+                {
+                    for field in fields.into_iter().flatten() {
+                        result.go |= field
+                            .values
+                            .into_iter()
+                            .flatten()
+                            .any(|v| v.name == "Go cmd/compile");
+                    }
+                }
+            }
             if name.starts_with(".debug_")
                 || matches!(
                     name,
@@ -468,10 +632,7 @@ fn find_function(functions: &[FunctionLayout], index: u32) -> Option<&FunctionLa
         .map(|i| &functions[i])
 }
 
-fn layouts(
-    sections: &Sections<'_>,
-    parsed: Option<&[FunctionIr]>,
-) -> Result<Vec<FunctionLayout>, String> {
+fn imported_functions(sections: &Sections<'_>) -> Result<u32, String> {
     let mut imports = 0u32;
     if let Some((data, start)) = sections.imports {
         for import in ImportSectionReader::new(BinaryReader::new(data, start))
@@ -486,6 +647,14 @@ fn layouts(
             }
         }
     }
+    Ok(imports)
+}
+
+fn layouts(
+    sections: &Sections<'_>,
+    parsed: Option<&[FunctionIr]>,
+) -> Result<Vec<FunctionLayout>, String> {
+    let imports = imported_functions(sections)?;
     let Some((code, start)) = sections.code else {
         return Ok(Vec::new());
     };
@@ -613,17 +782,22 @@ fn code_range(
 pub fn read(bytes: &[u8]) -> DebugInfo {
     read_impl(bytes, None, true)
 }
-pub(crate) fn read_for_module(bytes: &[u8], functions: &[FunctionIr]) -> DebugInfo {
-    read_impl(bytes, Some(functions), false)
+pub(crate) fn read_for_module(bytes: &[u8], functions: &[FunctionIr], names: bool) -> DebugInfo {
+    read_impl(bytes, Some(functions), names)
 }
 
 fn read_impl(bytes: &[u8], parsed: Option<&[FunctionIr]>, include_names: bool) -> DebugInfo {
-    let mut out = DebugInfo::default();
+    let mut out = DebugInfo {
+        byte_len: bytes.len(),
+        ..DebugInfo::default()
+    };
     let result = (|| {
         let sections = sections(bytes, &mut out)?;
         let has_dwarf = sections.custom.keys().any(|n| n.starts_with(".debug_"));
         let has_linking = sections.custom.contains_key("linking");
-        if !has_dwarf && !has_linking && !include_names {
+        let has_references = sections.custom.contains_key("sourceMappingURL")
+            || sections.custom.contains_key("external_debug_info");
+        if !has_dwarf && !has_linking && !has_references && !sections.go && !include_names {
             out.sections.clear();
             return Ok(());
         }
@@ -633,6 +807,19 @@ fn read_impl(bytes: &[u8], parsed: Option<&[FunctionIr]>, include_names: bool) -
             if sections.duplicates.contains("name") {
                 out.diagnostics
                     .push("repeated name sections: name hints not selected".into());
+            }
+            if !sections.duplicates.contains("name") {
+                if let Some(&(data, offset)) = sections.custom.get("name") {
+                    match names::read(data, offset) {
+                        Ok((names, diagnostics)) => {
+                            out.names = names;
+                            out.diagnostics.extend(diagnostics);
+                        }
+                        Err(error) => out
+                            .diagnostics
+                            .push(format!("name convention: {error}; original bytes retained")),
+                    }
+                }
             }
             let names = crate::audit::function_names(bytes);
             let mut offsets = BTreeMap::new();
@@ -659,9 +846,11 @@ fn read_impl(bytes: &[u8], parsed: Option<&[FunctionIr]>, include_names: bool) -
                             linkage_name: None,
                             function_index: Some(index),
                             origin: "name",
-                            metadata_offset: offsets.get(&index).copied().unwrap_or(0),
+                            metadata_offset: offsets.get(&index).copied(),
+                            metadata_source: None,
                             parent_offset: None,
                             declaration: None,
+                            go_entry_source: None,
                             call_site: None,
                             ranges: vec![range],
                             locations: Vec::new(),
@@ -683,10 +872,13 @@ fn read_impl(bytes: &[u8], parsed: Option<&[FunctionIr]>, include_names: bool) -
                 }
             }
         }
-        if sections.custom.contains_key("sourceMappingURL")
-            || sections.custom.contains_key("external_debug_info")
-        {
-            out.diagnostics.push("external debug/source-map references are reported by the custom audit; files and URLs are not fetched, embedded DWARF (if present) is explicitly the only mapping source".into());
+        source_map::embedded(&sections, &mut out);
+        if sections.go {
+            if let Err(e) = go::read(bytes, &mut out) {
+                out.diagnostics.push(format!(
+                    "Go runtime symbol convention: {e}; original data retained"
+                ));
+            }
         }
         if has_dwarf {
             if sections.duplicates.iter().any(|n| n.starts_with(".debug_")) {
@@ -703,6 +895,7 @@ fn read_impl(bytes: &[u8], parsed: Option<&[FunctionIr]>, include_names: bool) -
                             out.symbols.extend(part.symbols);
                             out.lines.extend(part.lines);
                             out.diagnostics.extend(part.diagnostics);
+                            out.units.extend(part.units);
                         }
                     }
                     Err(e) => out.diagnostics.push(format!(
@@ -717,7 +910,7 @@ fn read_impl(bytes: &[u8], parsed: Option<&[FunctionIr]>, include_names: bool) -
         out.diagnostics.push(e);
     }
     out.index();
-    if !out.sections.is_empty() {
+    if !out.sections.is_empty() || !out.symbols.is_empty() || !out.go_tables.is_empty() {
         use sha2::{Digest, Sha256};
         out.module_sha256 = Some(format!("{:x}", Sha256::digest(bytes)));
     }
@@ -774,9 +967,11 @@ fn linking_symbols(
                     linkage_name: None,
                     function_index: index,
                     origin: "linking",
-                    metadata_offset,
+                    metadata_offset: Some(metadata_offset),
+                    metadata_source: None,
                     parent_offset: None,
                     declaration: None,
+                    go_entry_source: None,
                     call_site: None,
                     ranges,
                     locations: Vec::new(),
@@ -819,6 +1014,7 @@ impl Budget {
 }
 #[derive(Default)]
 struct UnitResult {
+    units: Vec<CompilationUnit>,
     symbols: Vec<DebugSymbol>,
     lines: Vec<SourceRange>,
     diagnostics: Vec<String>,
@@ -1050,7 +1246,7 @@ fn location(
         return Ok(None);
     };
     Ok(Some(SourceLocation {
-        file: file_path(dwarf, unit, program.header(), index)?,
+        file: Some(file_path(dwarf, unit, program.header(), index)?),
         file_md5: file_md5(program.header(), index),
         line: line.and_then(|v| v.udata_value()).filter(|n| *n != 0),
         column: column.and_then(|v| v.udata_value()).filter(|n| *n != 0),
@@ -1214,6 +1410,29 @@ fn decode_unit(
         while parents.last().is_some_and(|(d, _)| *d >= depth) {
             parents.pop();
         }
+        if depth == 0 {
+            budget.record()?;
+            let language = match entry.attr_value(gimli::DW_AT_language) {
+                Some(Av::Language(language)) => Some(language),
+                _ => None,
+            };
+            out.units.push(CompilationUnit {
+                metadata_offset: info_base + unit_offset + entry.offset().0,
+                dwarf_version: unit.header.version(),
+                address_size: unit.header.address_size(),
+                language_code: language.map(|language| language.0),
+                language: language.map(|language| language.to_string()),
+                producer: entry
+                    .attr_value(gimli::DW_AT_producer)
+                    .map(|v| string(dwarf, unit, v))
+                    .transpose()?,
+                name: entry
+                    .attr_value(gimli::DW_AT_name)
+                    .map(|v| string(dwarf, unit, v))
+                    .transpose()?,
+                metadata_source: None,
+            });
+        }
         let kind = match entry.tag() {
             gimli::DW_TAG_subprogram => "subprogram",
             gimli::DW_TAG_inlined_subroutine => "inlined_subroutine",
@@ -1225,7 +1444,7 @@ fn decode_unit(
         budget.record()?;
         let metadata_offset = info_base + unit_offset + entry.offset().0;
         let parent = parents.last().map(|(_, i)| *i);
-        let parent_offset = parent.map(|i| out.symbols[i].metadata_offset);
+        let parent_offset = parent.and_then(|i| out.symbols[i].metadata_offset);
         let decoded_name = (|| {
             let [name, linkage, mips_linkage, file, line, column] = inherited(unit, entry, budget)?;
             Ok::<_, String>((
@@ -1316,9 +1535,11 @@ fn decode_unit(
             linkage_name,
             function_index,
             origin: "dwarf",
-            metadata_offset,
+            metadata_offset: Some(metadata_offset),
+            metadata_source: None,
             parent_offset,
             declaration,
+            go_entry_source: None,
             call_site,
             ranges,
             locations,
@@ -1343,6 +1564,8 @@ fn decode_unit(
                             discriminator,
                             is_statement,
                             unit_offset,
+                            origin: "dwarf",
+                            metadata_source: None,
                         }),
                         Err(e) => {
                             if out.diagnostics.len() < 32 {
@@ -1371,7 +1594,7 @@ fn decode_unit(
                     previous = Some((
                         row.address(),
                         SourceLocation {
-                            file,
+                            file: Some(file),
                             file_md5: file_md5(header, index),
                             line: Some(line.get()),
                             column: match row.column() {

@@ -1,6 +1,6 @@
 # uwgit User Manual
 
-**Edition:** 2026-11-06 · [简体中文](USER_MANUAL.zh_CN.md) · [Library](README.eu_US.md)
+**Edition:** 2026-11-07 · [简体中文](USER_MANUAL.zh_CN.md) · [Library](README.eu_US.md)
 
 ## 1. Conventions and prerequisites
 
@@ -122,6 +122,103 @@ SHA-256, coordinate basis, status, diagnostics, and range interpretation. Missin
 line tables, unsupported expressions, and conflicting sections are not resolved
 by executing Wasm or fetching an external debug URL. Full diff automatically
 attaches available mappings; absent mappings do not suppress byte evidence.
+
+### Language-independent formats
+
+Debug interpretation is selected by the emitted format, not a source-language
+allowlist. DWARF 2–5 compilation units expose `language_code`, its DWARF name,
+`producer`, source name, version and address size. C, Objective-C, C++,
+Objective-C++, Rust, TinyGo and other DWARF-producing Wasm toolchains therefore
+use the same range, inline-scope and variable-location decoder. Unknown language
+numbers remain numeric evidence; they do not disable otherwise readable DWARF.
+
+The `name` view preserves module, function, local, label, type, table, memory,
+global, element, data, field and tag names. Locals/labels retain their function
+scope; fields retain their type scope. Padded Wasm LEB lengths, including Go's
+linker output, are accepted. Duplicate labels remain candidates, while ambiguous
+function-name maps do not supply a selected identity hint.
+
+Source-map v3 supports flat mappings, embedded indexed maps, source/name tables,
+unmapped fences, and base64 or percent-encoded `data:application/json` references.
+Generated columns are **absolute Wasm file offsets** and generated lines are
+zero; reported source lines and columns are one-based. Only actual instruction
+or function-body boundaries become source ranges. Mappings never extend into a
+later function without a mapping point for that function. Indexed URL children
+are not fetched. Source paths are recorded labels; files and `sourcesContent`
+are never evaluated or opened. Null source names remain null. Path labels preserve the
+sourceRoot prefix without URL normalization or implicit resolution against a local
+sidecar path.
+
+MoonBit's current `wasm-gc` backend and AssemblyScript emit source maps when
+enabled. MoonBit's classic `wasm` backend currently emits names without source
+maps; those names are available, but missing line information is not invented.
+Compiler flags and backend versions determine which metadata actually exists.
+
+### Explicit sidecars and provenance
+
+```sh
+wasm-git debug-map app.wasm --debug-file app.wasm.map --source /source/main.mbt --line 12 --json
+wasm-git inspect app.wasm --debug-file app.debug.wasm --json
+wasm-git diff old.wasm new.wasm --old-debug-file old.wasm.map --new-debug-file new.wasm.map --format json
+```
+
+`--debug-file` is repeatable for `debug-map` and `inspect`; diff accepts repeatable
+`--old-debug-file` and `--new-debug-file`. Accepted sidecars are source-map JSON,
+Wasm containers carrying DWARF, and numeric `function-index:name` symbol maps.
+Repository tree inputs require `--file`; tree diff sidecars require that module
+on both sides. Section-only diff cannot be combined with sidecar options.
+
+Every accepted input records its name, byte length, SHA-256, format and binding.
+`matching_code_payload` means the separate DWARF container has the exact original
+code payload. It is not an author signature. Containers without code, source maps
+and symbol maps use `explicit_input_unverified`: the caller supplies the
+association, and uwgit cannot prove that the compiler produced it for this module.
+`embedded_reference` identifies a map embedded in the original Wasm. DWARF PCs
+still use the original code-payload base, while `metadata_source` identifies the
+sidecar owning metadata offsets. Source-map names have no fabricated JSON byte
+offset. Bad formats produce diagnostics without disabling the byte audit; missing
+explicit files produce an I/O error. Embedded references never trigger filesystem
+or network reads.
+
+These JSON files are **compiler inputs and user-facing views**, not repository
+storage. Objects, history, indexes and packs retain their existing binary formats.
+
+### Ordinary Go runtime symbols
+
+```sh
+wasm-git debug-map go.wasm --symbol main.calculate --json
+wasm-git debug-map go.wasm --go-pc 268435456 --json
+```
+
+Ordinary Go disables DWARF on its Wasm targets and keeps runtime `pclntab` data in
+linear memory. The decoder recognizes Go 1.2, 1.16, 1.18 and 1.20 table layouts,
+including the function-index entry encoding used by current Go. It reconstructs
+bounded zero-filled gaps between active data segments, verifies function-table
+entries against original function layouts, and preserves original symbol names.
+
+`go_lines` uses `go_wasm_virtual_pc`: `PC_F << 16 | resume_point`, with
+`PC_F = 0x1000 + defined-function ordinal`. Import functions are added only when
+reporting the Wasm function index. These values are **not Wasm instruction byte
+offsets**. Function symbols can identify physical function spans; `go_entry_source`
+is separately labelled virtual entry context. No Go line table is inserted into
+the physical instruction-source index. `--go-pc`, `--function`, `--symbol` and
+`--source` expose this evidence without inventing instruction-level precision.
+Imported memory, overlapping initialization, unsupported offsets, ambiguous table
+candidates or unrecognized future formats produce a convention diagnostic.
+
+Interpretation is bounded (128 MiB debug inputs/initialized-memory span, 200,000
+records per table, two million traversal steps, 16 KiB strings, at most 32 explicit
+inputs). Unknown, stripped, unsupported or proprietary metadata remains covered
+by the exact byte/custom-section audit. Format support does not imply that every
+language supplies debug information, or that optimized source intent is provable.
+
+The interoperability references are the community
+[Wasm debugging conventions](https://github.com/WebAssembly/tool-conventions/blob/main/Debugging.md),
+[ECMA-426 source maps](https://tc39.es/ecma426/),
+[Go linker tables](https://github.com/golang/go/blob/master/src/cmd/link/internal/ld/pcln.go),
+and [MoonBit backend capabilities](https://github.com/moonbitlang/moon/blob/main/crates/moonutil/src/target.rs).
+Custom-section conventions are optional metadata contracts, not additional Core
+Wasm validity requirements.
 
 ## 6. Create and apply a binary patch
 

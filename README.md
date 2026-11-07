@@ -30,6 +30,7 @@ wasm-git diff old.wasm new.wasm --compact
 wasm-git diff old.wasm new.wasm --section code --format json
 wasm-git patch old.wasm new.wasm --output change.uwgp
 wasm-git apply old.wasm change.uwgp --output restored.wasm
+wasm-git debug-map app.wasm --debug-file app.wasm.map --json
 ```
 
 ## Documentation
@@ -40,6 +41,10 @@ manual, server administration manual, binary-format reference, and development
 and verification guide. The [WasmHub guide](documents/WASMHUB.eu_US.md) covers
 SSH/OpenPGP signatures, PR review/check gates, branch protection and merge recovery.
 Each document has matching English and Chinese editions.
+
+The [debug mapping guide](documents/USER_MANUAL.eu_US.md#5-map-debug-information-to-the-original-binary)
+describes language-independent DWARF, all name index spaces, source maps,
+explicit sidecars and Go runtime symbols, including their distinct address bases.
 
 The [release guide](documents/RELEASE.eu_US.md) ([中文版](documents/RELEASE.zh_CN.md))
 documents the Linux, Windows, macOS and WASIp1 MVP/Core 2.0 packages, CI gates,

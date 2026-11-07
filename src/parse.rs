@@ -49,6 +49,14 @@ impl From<wasmparser::BinaryReaderError> for ParseError {
 }
 
 pub fn parse_module(bytes: &[u8]) -> Result<ParsedModule, ParseError> {
+    parse_module_impl(bytes, false)
+}
+
+pub(crate) fn parse_module_with_debug_names(bytes: &[u8]) -> Result<ParsedModule, ParseError> {
+    parse_module_impl(bytes, true)
+}
+
+fn parse_module_impl(bytes: &[u8], debug_names: bool) -> Result<ParsedModule, ParseError> {
     let mut module = ModuleIr::new();
     let mut defined_type_indices = Vec::new();
     let mut next_function_index = 0_u32;
@@ -360,7 +368,7 @@ pub fn parse_module(bytes: &[u8]) -> Result<ParsedModule, ParseError> {
         .function_names
         .retain(|i, _| (*i as usize) < module.functions.len());
     module.function_symbol_sources = module.function_names.keys().map(|i| (*i, "name")).collect();
-    let debug = crate::debug_info::read_for_module(bytes, &module.functions);
+    let debug = crate::debug_info::read_for_module(bytes, &module.functions, debug_names);
     for (index, name) in debug.function_hints() {
         if let std::collections::btree_map::Entry::Vacant(entry) =
             module.function_names.entry(index)

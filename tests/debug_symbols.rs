@@ -105,7 +105,10 @@ fn source_rows_inline_origin_and_original_offsets_agree() {
     let p = d.lookup(ops[1] + 1); // immediate byte; retain containing instruction.
     assert_eq!(p.code_offset, Some(ops[1] + 1 - base));
     assert_eq!(p.instruction_span.unwrap().start, ops[1]);
-    assert_eq!(p.sources[0].location.file.as_ref(), "/source/sample.c");
+    assert_eq!(
+        p.sources[0].location.file.as_deref(),
+        Some("/source/sample.c")
+    );
     assert_eq!(p.sources[0].location.line, Some(11));
     assert_eq!(p.symbols.len(), 4);
     let inline = p
@@ -115,7 +118,7 @@ fn source_rows_inline_origin_and_original_offsets_agree() {
         .unwrap();
     assert_eq!(inline.name.as_deref(), Some("calculate"));
     assert_eq!(inline.call_site.as_ref().unwrap().line, Some(12));
-    assert_eq!(inline.parent_offset, Some(p.symbols[0].metadata_offset));
+    assert_eq!(inline.parent_offset, p.symbols[0].metadata_offset);
     assert!(d.lookup(end).sources.is_empty());
     assert!(d.lookup(base).sources.is_empty());
     assert_eq!(d.module_sha256.as_ref().unwrap().len(), 64);

@@ -273,6 +273,8 @@ fn diff(
                 sections,
                 repo: Some(remote.url.clone()),
                 file: Some(selected.path.clone()),
+                old_debug_file: vec![],
+                new_debug_file: vec![],
                 standard: crate::standard::Standard::AllKnown,
             },
             &[
