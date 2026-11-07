@@ -19,7 +19,7 @@ struct Temp {
 impl Temp {
     fn new() -> Self {
         let base = std::env::temp_dir().join(format!(
-            "uwgit-pending-{}-{}",
+            "wasm-git-pending-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -51,7 +51,7 @@ impl Temp {
         self.head()
     }
     fn pending(&self) -> PathBuf {
-        self.path(".uwgit/pending.bin")
+        self.path(".wasm-git/pending.bin")
     }
     fn record(&self, operation: &str, target: &str) -> Value {
         let output = invoke(&[
@@ -152,7 +152,7 @@ fn snapshot(root: &Path) -> BTreeMap<PathBuf, Entry> {
 fn worktree(t: &Temp) -> BTreeMap<PathBuf, Entry> {
     snapshot(&t.repo)
         .into_iter()
-        .filter(|(path, _)| !path.starts_with(".uwgit"))
+        .filter(|(path, _)| !path.starts_with(".wasm-git"))
         .collect()
 }
 fn rejected(t: &Temp, args: &[&str]) -> String {
@@ -204,11 +204,11 @@ fn recording_is_explicit_and_populates_original_stages_without_changing_history(
         assert_eq!(t.head(), head);
         assert!(t.pending().is_file());
         let mut recorded = snapshot(&t.repo);
-        recorded.remove(Path::new(".uwgit/pending.bin"));
+        recorded.remove(Path::new(".wasm-git/pending.bin"));
         let mut expected = before.clone();
         expected.insert(
-            PathBuf::from(".uwgit/index"),
-            recorded[Path::new(".uwgit/index")].clone(),
+            PathBuf::from(".wasm-git/index"),
+            recorded[Path::new(".wasm-git/index")].clone(),
         );
         assert_eq!(recorded, expected);
         assert_eq!(
@@ -297,7 +297,7 @@ fn recorded_merge_reuses_fast_forwards_and_preserves_two_parents_for_divergent_e
     t.stage("a.wasm", &module(1));
     let target = t.commit("source");
     ok(&["switch", t.root(), "main"]);
-    let objects = snapshot(&t.path(".uwgit/objects"));
+    let objects = snapshot(&t.path(".wasm-git/objects"));
     let report = value(&[
         "merge",
         t.root(),
@@ -308,7 +308,7 @@ fn recorded_merge_reuses_fast_forwards_and_preserves_two_parents_for_divergent_e
     ]);
     assert_eq!(report["steps"][0]["action"], "fast-forward");
     assert_eq!(t.head(), target);
-    assert_eq!(snapshot(&t.path(".uwgit/objects")), objects);
+    assert_eq!(snapshot(&t.path(".wasm-git/objects")), objects);
     let report = value(&[
         "merge",
         t.root(),
@@ -357,7 +357,7 @@ fn continue_uses_the_complete_index_and_correct_parents_without_touching_work_fi
         t.write("a.wasm", b"unfinished editor data\0\xff");
         fs::remove_file(t.path("new/unknown.wasm")).unwrap();
         t.write("private.txt", b"private untracked bytes");
-        let raw = fs::read(t.path(".uwgit/index")).unwrap();
+        let raw = fs::read(t.path(".wasm-git/index")).unwrap();
         let working = worktree(&t);
         rejected(&t, &[operation, t.root(), "--continue"]);
         let report = value(&[operation, t.root(), "--continue", "--resolved-index"]);
@@ -386,7 +386,7 @@ fn continue_uses_the_complete_index_and_correct_parents_without_touching_work_fi
         assert_eq!(commit["message"], "--help");
         assert_eq!(t.stored("a.wasm"), resolved);
         assert_eq!(t.stored("new/unknown.wasm"), UNKNOWN);
-        assert_eq!(fs::read(t.path(".uwgit/index")).unwrap(), raw);
+        assert_eq!(fs::read(t.path(".wasm-git/index")).unwrap(), raw);
         assert_eq!(worktree(&t), working);
         assert!(!t.pending().exists());
         assert!(value(&["status", t.root()]).get("pending").is_none());
@@ -406,7 +406,7 @@ fn abort_restores_the_exact_baseline_and_skip_reverts_only_its_source_while_pres
     ] {
         let t = Temp::new();
         let (head, target) = conflicting_history(&t, operation);
-        let raw = fs::read(t.path(".uwgit/index")).unwrap();
+        let raw = fs::read(t.path(".wasm-git/index")).unwrap();
         let original_a = fs::read(t.path("a.wasm")).unwrap();
         t.record(operation, &target);
         t.stage("a.wasm", UNKNOWN);
@@ -426,7 +426,7 @@ fn abort_restores_the_exact_baseline_and_skip_reverts_only_its_source_while_pres
         );
         assert_eq!(t.head(), head);
         if control == "--abort" {
-            assert_eq!(fs::read(t.path(".uwgit/index")).unwrap(), raw);
+            assert_eq!(fs::read(t.path(".wasm-git/index")).unwrap(), raw);
         } else {
             assert_eq!(value(&["status", t.root()])["staged"], false);
             assert!(ok(&["ls-files", t.root(), "--unmerged"]).is_empty());
@@ -476,11 +476,11 @@ fn quit_forgets_only_the_operation_and_the_default_index_remains_absent_on_abort
     t.record("merge", &target);
     t.stage("a.wasm", UNKNOWN);
     t.write("a.wasm", b"dirty editor bytes");
-    let index = fs::read(t.path(".uwgit/index")).unwrap();
+    let index = fs::read(t.path(".wasm-git/index")).unwrap();
     let working = worktree(&t);
     value(&["merge", t.root(), "--quit"]);
     assert_eq!(t.head(), head);
-    assert_eq!(fs::read(t.path(".uwgit/index")).unwrap(), index);
+    assert_eq!(fs::read(t.path(".wasm-git/index")).unwrap(), index);
     assert_eq!(worktree(&t), working);
     ok(&[
         "restore",
@@ -490,13 +490,13 @@ fn quit_forgets_only_the_operation_and_the_default_index_remains_absent_on_abort
         "--staged",
         "--worktree",
     ]);
-    fs::remove_file(t.path(".uwgit/index")).unwrap();
+    fs::remove_file(t.path(".wasm-git/index")).unwrap();
     t.record("merge", &target);
     rejected(&t, &["merge", t.root(), "--continue", "--resolved-index"]);
     t.stage("new.wasm", UNKNOWN);
     let working = worktree(&t);
     value(&["merge", t.root(), "--abort"]);
-    assert!(!t.path(".uwgit/index").exists());
+    assert!(!t.path(".wasm-git/index").exists());
     assert_eq!(worktree(&t), working);
     assert_eq!(t.head(), head);
 }
@@ -571,7 +571,7 @@ fn immutable_target_is_retained_and_wrong_operation_or_changed_head_cannot_resum
     t.record("merge", &target);
     let foreign = ok(&["rev-parse", t.root(), "topic"]);
     fs::write(
-        t.path(".uwgit/refs/main"),
+        t.path(".wasm-git/refs/main"),
         native::reference(foreign.trim()),
     )
     .unwrap();
@@ -585,7 +585,7 @@ fn immutable_target_is_retained_and_wrong_operation_or_changed_head_cannot_resum
     let (head, target) = conflicting_history(&t, "merge");
     t.record("merge", &target);
     ok(&["branch", t.root(), "same-tip", "HEAD"]);
-    fs::write(t.path(".uwgit/HEAD"), native::reference("same-tip")).unwrap();
+    fs::write(t.path(".wasm-git/HEAD"), native::reference("same-tip")).unwrap();
     assert_eq!(value(&["status", t.root()])["pending"]["stale"], true);
     rejected(&t, &["merge", t.root(), "--continue", "--resolved-index"]);
     rejected(&t, &["merge", t.root(), "--abort"]);
@@ -619,11 +619,11 @@ fn invalid_control_forms_help_and_locks_do_not_change_pending_or_tracked_bytes()
         rejected(&t, &args);
     }
     for lock in ["index.lock", "write.lock"] {
-        t.write(&format!(".uwgit/{lock}"), b"occupied");
+        t.write(&format!(".wasm-git/{lock}"), b"occupied");
         rejected(&t, &["merge", t.root(), "--abort"]);
         rejected(&t, &["merge", t.root(), "--continue", "--resolved-index"]);
         rejected(&t, &["merge", t.root(), "--quit"]);
-        fs::remove_file(t.path(&format!(".uwgit/{lock}"))).unwrap();
+        fs::remove_file(t.path(&format!(".wasm-git/{lock}"))).unwrap();
     }
     let before = snapshot(&t.repo);
     ok(&["merge", t.root(), "--continue", "--help"]);
@@ -666,12 +666,12 @@ fn corrupt_or_redirected_pending_metadata_cannot_authorize_a_history_write() {
 fn pending_status_reports_an_unavailable_index_without_claiming_a_clean_tree() {
     let t = Temp::new();
     let (_, target) = conflicting_history(&t, "merge");
-    let original = fs::read(t.path(".uwgit/index")).unwrap();
-    fs::write(t.path(".uwgit/index"), b"broken index").unwrap();
+    let original = fs::read(t.path(".wasm-git/index")).unwrap();
+    fs::write(t.path(".wasm-git/index"), b"broken index").unwrap();
     rejected(&t, &["status", t.root()]);
-    fs::write(t.path(".uwgit/index"), &original).unwrap();
+    fs::write(t.path(".wasm-git/index"), &original).unwrap();
     t.record("merge", &target);
-    fs::write(t.path(".uwgit/index"), b"broken index").unwrap();
+    fs::write(t.path(".wasm-git/index"), b"broken index").unwrap();
     let before = snapshot(&t.repo);
     let report = value(&["status", t.root()]);
     assert_eq!(report["index_available"], false);
@@ -684,5 +684,5 @@ fn pending_status_reports_an_unavailable_index_without_claiming_a_clean_tree() {
     assert_eq!(snapshot(&t.repo), before);
     rejected(&t, &["merge", t.root(), "--continue", "--resolved-index"]);
     value(&["merge", t.root(), "--abort"]);
-    assert_eq!(fs::read(t.path(".uwgit/index")).unwrap(), original);
+    assert_eq!(fs::read(t.path(".wasm-git/index")).unwrap(), original);
 }

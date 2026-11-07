@@ -27,14 +27,15 @@ fn run(args: &[&str]) -> Vec<u8> {
 }
 #[test]
 fn objects_index_state_and_patch_use_raw_binary_and_restore_exact_originals() {
-    let t = Temp(std::env::temp_dir().join(format!("uwgit-native-storage-{}", std::process::id())));
+    let t =
+        Temp(std::env::temp_dir().join(format!("wasm-git-native-storage-{}", std::process::id())));
     fs::create_dir(&t.0).unwrap();
     let repo = t.0.join("repo");
     let r = repo.to_str().unwrap();
     run(&["init", r]);
     assert_eq!(
-        fs::read(repo.join(".uwgit/format")).unwrap(),
-        b"UWGRPO\0\x03"
+        fs::read(repo.join(".wasm-git/format")).unwrap(),
+        b"WGTRPO\0\x03"
     );
     let mut old =
         wat::parse_str("(module (func (export \"f\") (result i32) i32.const 1))").unwrap();
@@ -47,22 +48,22 @@ fn objects_index_state_and_patch_use_raw_binary_and_restore_exact_originals() {
         .unwrap()
         .trim()
         .to_owned();
-    let raw = fs::read(repo.join(".uwgit/objects").join(&head)).unwrap();
-    assert!(raw.starts_with(b"UWGO\0\0\0\x02\x02"));
+    let raw = fs::read(repo.join(".wasm-git/objects").join(&head)).unwrap();
+    assert!(raw.starts_with(b"WGTO\0\0\0\x02\x02"));
     let commit = Commit::from_bytes(&raw[17..]).unwrap();
     let tree_bytes = fs::read(
-        repo.join(".uwgit/objects")
+        repo.join(".wasm-git/objects")
             .join(commit.tree.as_ref().unwrap()),
     )
     .unwrap();
     let tree = Tree::from_bytes(&tree_bytes[17..]).unwrap();
     assert_eq!(tree_bytes.len(), 17 + 4 + 4 + 6 + 32);
     assert_eq!(
-        fs::read(repo.join(".uwgit/objects").join(&tree.entries["a.wasm"])).unwrap()[17..],
+        fs::read(repo.join(".wasm-git/objects").join(&tree.entries["a.wasm"])).unwrap()[17..],
         old
     );
-    let index = fs::read(repo.join(".uwgit/index")).unwrap();
-    assert!(index.starts_with(b"UWGITIDX\x06UWGM\0\0\0\x01"));
+    let index = fs::read(repo.join(".wasm-git/index")).unwrap();
+    assert!(index.starts_with(b"WASMGIDX\x06WGTM\0\0\0\x01"));
     assert_eq!(
         binary::decode::<native::Index>(&index[9..]).unwrap().files["a.wasm"],
         old
@@ -72,9 +73,9 @@ fn objects_index_state_and_patch_use_raw_binary_and_restore_exact_originals() {
     run(&["remote", r, "add", "origin", "http://localhost:1/project"]);
     for path in ["config", "reflog", "remotes/origin.bin"] {
         assert!(
-            fs::read(repo.join(".uwgit").join(path))
+            fs::read(repo.join(".wasm-git").join(path))
                 .unwrap()
-                .starts_with(b"UWGM\0\0\0\x01"),
+                .starts_with(b"WGTM\0\0\0\x01"),
             "{path}"
         );
     }
@@ -82,16 +83,16 @@ fn objects_index_state_and_patch_use_raw_binary_and_restore_exact_originals() {
     *new.last_mut().unwrap() ^= 1;
     fs::write(repo.join("a.wasm"), &new).unwrap();
     run(&["stash", r, "push", "-m", "raw snapshot"]);
-    assert!(fs::read(repo.join(".uwgit/stash"))
+    assert!(fs::read(repo.join(".wasm-git/stash"))
         .unwrap()
-        .starts_with(b"UWGM\0\0\0\x01"));
+        .starts_with(b"WGTM\0\0\0\x01"));
     run(&["stash", r, "apply", "0"]);
     assert_eq!(fs::read(repo.join("a.wasm")).unwrap(), new);
     let patch = wasm_git::patch::create(&old, &new)
         .unwrap()
         .to_bytes()
         .unwrap();
-    assert!(patch.starts_with(b"UWGPAT01"));
+    assert!(patch.starts_with(b"WGTPAT01"));
     assert_eq!(patch.len(), 126);
     assert_eq!(
         BytePatch::from_bytes(&patch).unwrap().apply(&old).unwrap(),
@@ -112,13 +113,13 @@ fn objects_index_state_and_patch_use_raw_binary_and_restore_exact_originals() {
         }
     }
     // A pre-release JSON repository is rejected without rewriting its marker.
-    let marker = repo.join(".uwgit/format");
-    fs::write(&marker, b"uwgit-repository-v1\n").unwrap();
+    let marker = repo.join(".wasm-git/format");
+    fs::write(&marker, b"wasm-git-repository-v1\n").unwrap();
     assert!(!Command::new(env!("CARGO_BIN_EXE_wasm-git"))
         .args(["fsck", r])
         .output()
         .unwrap()
         .status
         .success());
-    assert_eq!(fs::read(marker).unwrap(), b"uwgit-repository-v1\n");
+    assert_eq!(fs::read(marker).unwrap(), b"wasm-git-repository-v1\n");
 }

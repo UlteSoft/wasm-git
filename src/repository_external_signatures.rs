@@ -34,7 +34,7 @@ pub(super) struct ExternalSignature {
 struct Workspace(PathBuf);
 impl Workspace {
     fn new() -> RepositoryResult<Self> {
-        let path = std::env::temp_dir().join(unique_name("uwgit-signature"));
+        let path = std::env::temp_dir().join(unique_name("wasm-git-signature"));
         let builder = fs::DirBuilder::new();
         #[cfg(unix)]
         let builder = {
@@ -232,7 +232,7 @@ pub(super) fn key_id(version: u32, public: &[u8]) -> RepositoryResult<[u8; 32]> 
         return Err("external public key exceeds bounds".into());
     }
     let mut digest = Sha256::new();
-    digest.update(b"uwgit.external.author.key.v1\0");
+    digest.update(b"wasm-git.external.author.key.v1\0");
     digest.update(version.to_be_bytes());
     match version {
         2 => {
@@ -382,7 +382,7 @@ pub(super) fn verify(
             let allowed = work.put(
                 "allowed-signers",
                 format!(
-                    "uwgit-author namespaces=\"{NAMESPACE}\" {}\n",
+                    "wasm-git-author namespaces=\"{NAMESPACE}\" {}\n",
                     ssh_public_text(public)?
                 )
                 .as_bytes(),
@@ -390,7 +390,15 @@ pub(super) fn verify(
             let sig = work.put("signature", &armor(&envelope.signature))?;
             let mut command = Command::new("ssh-keygen");
             command
-                .args(["-Y", "verify", "-n", NAMESPACE, "-I", "uwgit-author", "-f"])
+                .args([
+                    "-Y",
+                    "verify",
+                    "-n",
+                    NAMESPACE,
+                    "-I",
+                    "wasm-git-author",
+                    "-f",
+                ])
                 .arg(allowed)
                 .arg("-s")
                 .arg(sig);

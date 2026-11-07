@@ -1,10 +1,10 @@
-# uwgit Server Administration Manual
+# wasm-git Server Administration Manual
 
 **Edition:** 2026-11-06 · [简体中文](SERVER_ADMINISTRATION.zh_CN.md) · [Library](README.eu_US.md)
 
 ## 1. Deployment model
 
-`wasm-git-server` serves existing uwgit repositories beneath a configured root.
+`wasm-git-server` serves existing wasm-git repositories beneath a configured root.
 Repositories can use namespaces such as `team/project` or `team/users/fork`.
 Each component is 1–128 ASCII characters, starts with an alphanumeric character,
 and otherwise allows letters, digits, `-`, `_`, and `.`. A repository path is
@@ -35,8 +35,8 @@ merge publication and recovery. It also lists hosting features still absent.
 A typical installation separates executable code, repositories, and configuration:
 
 - `/usr/local/bin/wasm-git` and `/usr/local/bin/wasm-git-server`: installed binaries.
-- `/srv/uwgit/project/`: one repository, including its `.uwgit/` metadata.
-- `/etc/uwgit/`: authorization policy, token, and author trust configuration.
+- `/srv/wasm-git/project/`: one repository, including its `.wasm-git/` metadata.
+- `/etc/wasm-git/`: authorization policy, token, and author trust configuration.
 - An operator-managed backup destination independent of the live storage volume.
 
 Run the service as a dedicated unprivileged account with write permission only
@@ -44,9 +44,9 @@ where required. Initialize repositories as that account. These commands assume
 the account and directories have already been provisioned:
 
 ```sh
-sudo -u uwgit /usr/local/bin/wasm-git init /srv/uwgit/project
-sudo -u uwgit /usr/local/bin/wasm-git fsck /srv/uwgit/project
-wasm-git-server --root /srv/uwgit --listen 127.0.0.1:9419
+sudo -u wasm-git /usr/local/bin/wasm-git init /srv/wasm-git/project
+sudo -u wasm-git /usr/local/bin/wasm-git fsck /srv/wasm-git/project
+wasm-git-server --root /srv/wasm-git --listen 127.0.0.1:9419
 ```
 
 The last command is an illustrative foreground launch and must also run under the
@@ -59,15 +59,15 @@ to the location of production repositories.
 For a single transport identity, provision a private token file and launch:
 
 ```sh
-wasm-git-server --root /srv/uwgit --listen 127.0.0.1:9419 \
-  --token-file /etc/uwgit/token --allow-write
+wasm-git-server --root /srv/wasm-git --listen 127.0.0.1:9419 \
+  --token-file /etc/wasm-git/token --allow-write
 ```
 
 The token is 1–4096 printable non-whitespace ASCII bytes; one trailing newline is
 accepted in the file. Generate a high-entropy token and restrict file permissions.
 When a token is configured, both reads and writes require bearer authentication.
 Do not put a real token in source, a service command line, or published examples.
-The client reads `UWGIT_REMOTE_TOKEN` from its environment and does not persist it
+The client reads `WASM_GIT_REMOTE_TOKEN` from its environment and does not persist it
 in remote configuration.
 
 Expose public traffic through a TLS reverse proxy that forwards the repository
@@ -95,7 +95,7 @@ write an external JSON policy, then compile it to the binary runtime record:
 
 ```sh
 wasm-git-server compile-policy policy.json policy.bin
-wasm-git-server --root /srv/uwgit --policy policy.bin --allow-write
+wasm-git-server --root /srv/wasm-git --policy policy.bin --allow-write
 ```
 
 Example external input:
@@ -144,7 +144,7 @@ select an SSH principal or the server filesystem root.
 ## 5. SSH transport
 
 ```sh
-wasm-git clone ssh://alice@host.example/srv/uwgit/project ./peer
+wasm-git clone ssh://alice@host.example/srv/wasm-git/project ./peer
 wasm-git fetch ./peer origin
 ```
 
@@ -157,15 +157,15 @@ or a trusted forced-command wrapper with a fixed root, compiled policy, and
 
 For a namespaced repository, use an explicit double-slash boundary between the
 absolute service root and repository path:
-`ssh://alice@host.example/srv/uwgit//team/project`. HTTP needs no such boundary:
+`ssh://alice@host.example/srv/wasm-git//team/project`. HTTP needs no such boundary:
 `https://wasm.example/team/project`.
 
-`UWGIT_REMOTE_PROGRAM` specifies one remote executable path;
-`UWGIT_SSH_PROGRAM` specifies one local SSH executable or wrapper. They are not
+`WASM_GIT_REMOTE_PROGRAM` specifies one remote executable path;
+`WASM_GIT_SSH_PROGRAM` specifies one local SSH executable or wrapper. They are not
 arbitrary shell command strings. SSH uses noninteractive authentication and normal
 host-key checks. HTTP bearer credentials are not forwarded into the SSH process.
 A forced-command wrapper must validate or replace client-requested arguments;
-merely giving a principal broad shell access does not confine it to uwgit policy.
+merely giving a principal broad shell access does not confine it to wasm-git policy.
 
 ## 6. Receive pipeline, hooks, and audit
 
@@ -191,20 +191,20 @@ objects. A corrupt or lost receipt makes every sent update's result unknown.
 Always reconcile refs before retrying.
 
 ```sh
-wasm-git-server --root /srv/uwgit --policy policy.bin --allow-write \
-  --pre-receive /usr/local/libexec/uwgit-pre-receive \
-  --update /usr/local/libexec/uwgit-update \
-  --post-receive /usr/local/libexec/uwgit-post-receive \
-  --post-update /usr/local/libexec/uwgit-post-update
-wasm-git-server audit-log /srv/uwgit/receive-audit.bin
+wasm-git-server --root /srv/wasm-git --policy policy.bin --allow-write \
+  --pre-receive /usr/local/libexec/wasm-git-pre-receive \
+  --update /usr/local/libexec/wasm-git-update \
+  --post-receive /usr/local/libexec/wasm-git-post-receive \
+  --post-update /usr/local/libexec/wasm-git-post-update
+wasm-git-server audit-log /srv/wasm-git/receive-audit.bin
 ```
 
 Hooks are administrator-owned executables, not repository-uploaded scripts.
 They run with the repository as their working directory and receive
-`UWGIT_ACTOR`, `UWGIT_REPOSITORY`, `UWGIT_QUARANTINE_BUNDLE`, and
-`UWGIT_UPDATES_FILE`, `UWGIT_RECEIVE_TRANSACTION`, and `UWGIT_HOOK`.
+`WASM_GIT_ACTOR`, `WASM_GIT_REPOSITORY`, `WASM_GIT_QUARANTINE_BUNDLE`, and
+`WASM_GIT_UPDATES_FILE`, `WASM_GIT_RECEIVE_TRANSACTION`, and `WASM_GIT_HOOK`.
 Repeated client `-o VALUE` / `--push-option VALUE` arguments become
-`UWGIT_PUSH_OPTION_COUNT` and `UWGIT_PUSH_OPTION_0`, `_1`, etc. Options are literal
+`WASM_GIT_PUSH_OPTION_COUNT` and `WASM_GIT_PUSH_OPTION_0`, `_1`, etc. Options are literal
 UTF-8 values: at most 256 and 64 KiB combined, without NUL or LF. Inherited option
 variables are cleared. Options are included in the binary request receipt and audit.
 Standard input contains the same binary update record
@@ -227,9 +227,9 @@ when reconciling outcomes. Audit output is JSON only when explicitly rendered.
 ## 7. Author-signature policy
 
 ```sh
-wasm-git trust-author /etc/uwgit/authors.bin 'Alice <alice@example.org>' alice.pub
-wasm-git-server --root /srv/uwgit --policy policy.bin --allow-write \
-  --signed-authors /etc/uwgit/authors.bin
+wasm-git trust-author /etc/wasm-git/authors.bin 'Alice <alice@example.org>' alice.pub
+wasm-git-server --root /srv/wasm-git --policy policy.bin --allow-write \
+  --signed-authors /etc/wasm-git/authors.bin
 ```
 
 The server verifies newly exposed commits with native Ed25519, OpenSSH SSHSIG or
@@ -249,10 +249,10 @@ a reviewed non-fast-forward update; it never changes bytes under the old ID.
 ## 8. Shared forks and packed storage
 
 ```sh
-wasm-git fork /srv/uwgit/project /srv/uwgit/project-fork
+wasm-git fork /srv/wasm-git/project /srv/wasm-git/project-fork
 wasm-git fork https://wasm.example/project project-fork
-wasm-git repack /srv/uwgit/project
-wasm-git gc /srv/uwgit/project
+wasm-git repack /srv/wasm-git/project
+wasm-git gc /srv/wasm-git/project
 ```
 
 Local same-filesystem forks link immutable packs and maintain independent refs,
@@ -288,10 +288,10 @@ Provision each pool node as an ordinary repository service accessible only to
 appropriate backend identities. Configure source repositories explicitly:
 
 ```sh
-wasm-git pool attach /srv/uwgit/project https://node-a.example/pool https://node-b.example/pool
-wasm-git pool sync /srv/uwgit/project
-wasm-git pool status /srv/uwgit/project
-wasm-git pool sync /srv/uwgit/project --evict
+wasm-git pool attach /srv/wasm-git/project https://node-a.example/pool https://node-b.example/pool
+wasm-git pool sync /srv/wasm-git/project
+wasm-git pool status /srv/wasm-git/project
+wasm-git pool sync /srv/wasm-git/project --evict
 ```
 
 Each owner has a random identity and pins commits through
@@ -341,7 +341,7 @@ and concurrency, rather than cancelled at a wall-clock deadline. Hook groups hav
 their separate deadlines described above.
 
 The client allows 300 seconds per HTTP/SSH RPC by default. Set
-`UWGIT_RPC_TIMEOUT_SECONDS` to an integer from 1 through 3600 to change it. A large
+`WASM_GIT_RPC_TIMEOUT_SECONDS` to an integer from 1 through 3600 to change it. A large
 transfer comprises multiple RPCs, each with its own budget. Connection setup has
 a 10-second timeout; process and pipe cleanup allows five additional seconds.
 A client timeout after publication remains an uncertain result: inspect the

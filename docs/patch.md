@@ -4,9 +4,9 @@
 它不要求认识所有指令或 custom 格式，也不通过 WAT 重编码文件。
 
 ```sh
-wasm-git patch old.wasm new.wasm --output change.uwgp
-wasm-git apply old.wasm change.uwgp --check
-wasm-git apply old.wasm change.uwgp --output restored.wasm
+wasm-git patch old.wasm new.wasm --output change.wgp
+wasm-git apply old.wasm change.wgp --check
+wasm-git apply old.wasm change.wgp --output restored.wasm
 ```
 
 `--check` 返回重新计算的完整审计 JSON，不创建输出文件。
@@ -42,9 +42,9 @@ checkout、bundle 等原有新文件输出也使用相同发布方式。
 ## 与仓库协作
 
 ```sh
-wasm-git patch main incoming --repo ./history --output change.uwgp
-wasm-git apply HEAD change.uwgp --repo ./peer --check
-wasm-git apply HEAD change.uwgp --repo ./peer --output restored.wasm
+wasm-git patch main incoming --repo ./history --output change.wgp
+wasm-git apply HEAD change.wgp --repo ./peer --check
+wasm-git apply HEAD change.wgp --repo ./peer --output restored.wasm
 wasm-git commit ./peer restored.wasm -m 'apply reviewed byte patch'
 ```
 
@@ -52,7 +52,7 @@ wasm-git commit ./peer restored.wasm -m 'apply reviewed byte patch'
 记录实际不可变提交 ID。`diff --repo` 使用同一批读取方式，`HEAD HEAD` 不会因两次读取之间的提交而变成不同输入。
 `inspect --repo` 和 `apply --repo` 也返回实际输入提交 ID。
 释放锁后的计算始终使用已复制的字节；后续引用变化不改变本次输入。
-`--check --repo` 仍会短暂创建和删除 `.uwgit/write.lock`，需要仓库可写且没有其他持锁操作；
+`--check --repo` 仍会短暂创建和删除 `.wasm-git/write.lock`，需要仓库可写且没有其他持锁操作；
 不创建输出文件不等于零文件系统写入。
 
 补丁中的摘要属于完整原始文件，与包含类型和长度 envelope 的仓库对象 ID 不同。
@@ -61,7 +61,7 @@ wasm-git commit ./peer restored.wasm -m 'apply reviewed byte patch'
 
 ## 二进制 v1 编码
 
-文件以 8 字节 `UWGPAT01` 开始，依次保存前后两个原始 32 字节 SHA-256、
+文件以 8 字节 `WGTPAT01` 开始，依次保存前后两个原始 32 字节 SHA-256、
 两个 u64 大端文件长度、u32 大端编辑数量。固定头共 92 字节。
 每项编辑保存四个 u64 大端值 old_start/old_end/new_start/new_end，随后直接保存
 两段原始编辑字节，长度由对应半开区间推导；不保存 JSON、十六进制字符串或语义报告。

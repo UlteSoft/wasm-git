@@ -1,4 +1,4 @@
-# uwgit 技术白皮书
+# wasm-git 技术白皮书
 
 **版本：** 发行前实现，2026-11-06
 **读者：** 审阅人员、编译器工程师、仓库运维人员与集成开发者
@@ -6,7 +6,7 @@
 
 ## 摘要
 
-uwgit 将无损 WebAssembly 更新审计与去中心化内容寻址仓库结合。原始输入字节是主要事实
+wasm-git 将无损 WebAssembly 更新审计与去中心化内容寻址仓库结合。原始输入字节是主要事实
 来源；结构化解释通过 section、函数、控制流、类型化操作数、依赖绑定和可用编译器元数据
 说明这些事实。解释可以不完整或存在歧义，但不能因此丢弃原始字节。
 
@@ -29,7 +29,7 @@ uwgit 将无损 WebAssembly 更新审计与去中心化内容寻址仓库结合�
 4. 哪些对应关系有证据，哪些仍有歧义？
 5. 每个被接受的历史版本是否能够独立于结构解释而准确还原？
 
-uwgit 优先保证证据准确与还原可复现。紧凑显示只是展示方式，不允许从历史中删除原字节。
+wasm-git 优先保证证据准确与还原可复现。紧凑显示只是展示方式，不允许从历史中删除原字节。
 存储效率依赖二进制 schema、压缩和 delta，而不是把可读 diff 当成权威历史对象。
 
 ## 2. 证据与保证模型
@@ -132,7 +132,7 @@ threads 支持指二进制审计与验证，不表示执行线程程序或证明
 不会自动实现新语法。Component Model 保存原字节和已知外层边界，不宣称完整组件语义验证。
 
 Core 规范定义 custom section 的外层容器；payload 约定由工具社区分别建立。
-识别到名称不足以证明其内容遵守预期约定。uwgit 对 name、producers、target features、
+识别到名称不足以证明其内容遵守预期约定。wasm-git 对 name、producers、target features、
 链接元数据、分支提示、源码引用和支持的签名容器提供有界读取器。
 未知、不同约定或约定格式损坏的数据保持精确原字节。约定解析失败本身不能作为拒绝无损
 存储可接受模块的理由。
@@ -155,7 +155,7 @@ ID。报告显示十六进制 ID，热对象索引使用原始 32 字节摘要�
 
 ### 6.2 压缩历史
 
-当前 pack 为 `UWGPACK4`，包含排序对象 ID、256 项 fanout、定长记录、逐项 CRC32、
+当前 pack 为 `WGTPACK4`，包含排序对象 ID、256 项 fanout、定长记录、逐项 CRC32、
 索引 SHA-256 和独立 Zstandard frame。完整对象与块 copy/insert delta 都重建原始 envelope。
 写入器评估有界历史/路径候选及实际压缩长度，不承诺全局最优 pack。
 
@@ -180,7 +180,7 @@ fork 获得独立 pin，源拥有者释放自己的 pin 不代表允许删除 fo
 
 ## 7. 分发与发布
 
-HTTP 与 SSH 交换 uwgit 原生二进制帧和选定对象图。协商省略已验证的现有闭包，使用有界
+HTTP 与 SSH 交换 wasm-git 原生二进制帧和选定对象图。协商省略已验证的现有闭包，使用有界
 delta 和分块压缩。浅历史保留真实父 ID，并显式记录本地边界；部分克隆保留提交/tree，
 对缺失 Wasm 保存承诺标记，不能把承诺解释成已经验证的空 blob。
 
@@ -252,4 +252,4 @@ custom 容器视图可能只报告签名输入变化，并未执行验签。两�
 [WebAssembly DWARF 约定](https://github.com/WebAssembly/tool-conventions/blob/main/Dwarf.md)。
 Git 的 [pack 格式文档](https://git-scm.com/docs/gitformat-pack)和
 [部分克隆设计](https://git-scm.com/docs/partial-clone)为存储与缺失对象工作流提供参考；
-uwgit 自行定义二进制格式与操作合同。
+wasm-git 自行定义二进制格式与操作合同。

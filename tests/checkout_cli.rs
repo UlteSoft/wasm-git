@@ -18,7 +18,7 @@ struct Temp {
 impl Temp {
     fn new() -> Self {
         let base = std::env::temp_dir().join(format!(
-            "uwgit-checkout-{}-{}",
+            "wasm-git-checkout-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -155,14 +155,14 @@ fn unchanged(t: &Temp, args: &[&str]) {
     );
 }
 fn metadata_without_index(t: &Temp) -> BTreeMap<PathBuf, Entry> {
-    let mut result = snapshot(&t.path(".uwgit"));
+    let mut result = snapshot(&t.path(".wasm-git"));
     result.remove(Path::new("index"));
     result
 }
 fn worktree(t: &Temp) -> BTreeMap<PathBuf, Entry> {
     snapshot(&t.repo)
         .into_iter()
-        .filter(|(path, _)| !path.starts_with(".uwgit"))
+        .filter(|(path, _)| !path.starts_with(".wasm-git"))
         .collect()
 }
 
@@ -208,11 +208,11 @@ fn checkout_index_paths_and_revision_paths_preserve_head_and_unselected_staged_b
     t.stage("b.wasm", UNKNOWN);
     t.write("a.wasm", &dirty);
     t.write("b.wasm", b"unselected unfinished bytes");
-    let index = t.read(".uwgit/index");
+    let index = t.read(".wasm-git/index");
     let metadata = metadata_without_index(&t);
     ok(&["checkout", t.root(), "--", "a.wasm"]);
     assert_eq!(t.read("a.wasm"), staged);
-    assert_eq!(t.read(".uwgit/index"), index);
+    assert_eq!(t.read(".wasm-git/index"), index);
     assert_eq!(t.read("b.wasm"), b"unselected unfinished bytes");
     ok(&["checkout", t.root(), &base, "--", "a.wasm"]);
     assert_eq!(t.read("a.wasm"), old);
@@ -279,7 +279,7 @@ fn delimiter_literal_option_paths_never_trigger_help_export_or_branch_creation()
     }
     let head = t.commit("literal option names");
     let metadata = metadata_without_index(&t);
-    let index = t.read(".uwgit/index");
+    let index = t.read(".wasm-git/index");
     for path in paths {
         t.write(path, b"dirty literal path");
     }
@@ -312,7 +312,7 @@ fn delimiter_literal_option_paths_never_trigger_help_export_or_branch_creation()
         assert_eq!(t.read(path), UNKNOWN);
         assert_eq!(t.staged(path), UNKNOWN);
     }
-    assert_eq!(t.read(".uwgit/index"), index);
+    assert_eq!(t.read(".wasm-git/index"), index);
     assert_eq!(t.head(), head);
     assert_eq!(metadata_without_index(&t), metadata);
 }
@@ -351,7 +351,7 @@ fn old_checkout_export_remains_exclusive_and_guards_metadata_with_literal_file_o
     t.stage("a.wasm", HEADER);
     t.stage("--", UNKNOWN);
     t.commit("export tree");
-    let metadata = snapshot(&t.path(".uwgit"));
+    let metadata = snapshot(&t.path(".wasm-git"));
     for (name, selector) in [("selected.wasm", "a.wasm"), ("literal.wasm", "--")] {
         let output = t.base.join(name);
         ok(&["checkout", t.root(), "HEAD", s(&output), "--file", selector]);
@@ -359,7 +359,7 @@ fn old_checkout_export_remains_exclusive_and_guards_metadata_with_literal_file_o
             fs::read(&output).unwrap(),
             if selector == "--" { UNKNOWN } else { HEADER }
         );
-        assert_eq!(snapshot(&t.path(".uwgit")), metadata);
+        assert_eq!(snapshot(&t.path(".wasm-git")), metadata);
         unchanged(
             &t,
             &["checkout", t.root(), "HEAD", s(&output), "--file", selector],
@@ -368,7 +368,7 @@ fn old_checkout_export_remains_exclusive_and_guards_metadata_with_literal_file_o
     let equals = t.base.join("equals.wasm");
     ok(&["checkout", t.root(), "HEAD", s(&equals), "--file=--"]);
     assert_eq!(fs::read(equals).unwrap(), UNKNOWN);
-    let blocked = t.path(".uwgit/index.lock");
+    let blocked = t.path(".wasm-git/index.lock");
     unchanged(
         &t,
         &[
@@ -380,16 +380,16 @@ fn old_checkout_export_remains_exclusive_and_guards_metadata_with_literal_file_o
             "a.wasm",
         ],
     );
-    assert_eq!(snapshot(&t.path(".uwgit")), metadata);
+    assert_eq!(snapshot(&t.path(".wasm-git")), metadata);
     let legacy = Temp::new();
     let input = legacy.base.join("legacy-input.wasm");
     fs::write(&input, UNKNOWN).unwrap();
     ok(&["commit", legacy.root(), s(&input), "-m", "legacy bytes"]);
-    let legacy_metadata = snapshot(&legacy.path(".uwgit"));
+    let legacy_metadata = snapshot(&legacy.path(".wasm-git"));
     let output = legacy.base.join("legacy-export.wasm");
     ok(&["checkout", legacy.root(), "HEAD", s(&output)]);
     assert_eq!(fs::read(&output).unwrap(), UNKNOWN);
-    assert_eq!(snapshot(&legacy.path(".uwgit")), legacy_metadata);
+    assert_eq!(snapshot(&legacy.path(".wasm-git")), legacy_metadata);
     unchanged(&legacy, &["checkout", legacy.root(), "HEAD", s(&output)]);
 }
 
@@ -443,13 +443,13 @@ fn checkout_and_restore_refuse_metadata_and_symlink_paths_without_touching_other
         vec!["checkout", t.root(), "--", "a.wasm", "nested/b.wasm"],
         vec!["checkout", t.root(), &head, "--", "a.wasm", "nested/b.wasm"],
         vec!["restore", t.root(), "--", "a.wasm", "nested/"],
-        vec!["checkout", t.root(), "--", "a.wasm", ".uwgit/HEAD"],
-        vec!["restore", t.root(), "--", "a.wasm", ".UWGIT/index"],
+        vec!["checkout", t.root(), "--", "a.wasm", ".wasm-git/HEAD"],
+        vec!["restore", t.root(), "--", "a.wasm", ".WASM-GIT/index"],
     ] {
         unchanged(&t, &args);
     }
     let metadata_alias = t.repo.join("metadata-alias");
-    symlink(t.path(".uwgit"), &metadata_alias).unwrap();
+    symlink(t.path(".wasm-git"), &metadata_alias).unwrap();
     let blocked = metadata_alias.join("index.lock");
     unchanged(
         &t,
@@ -473,7 +473,7 @@ fn restore_selectors_expand_directories_and_dot_and_preflight_every_argument() {
     t.stage("nested/b.wasm", UNKNOWN);
     t.stage("nested/deep/c.wasm", HEADER);
     let head = t.commit("selectors");
-    let index = t.read(".uwgit/index");
+    let index = t.read(".wasm-git/index");
     t.write("a.wasm", b"dirty root");
     t.write("nested/b.wasm", b"dirty nested");
     t.write("nested/deep/c.wasm", b"dirty deep");
@@ -483,7 +483,7 @@ fn restore_selectors_expand_directories_and_dot_and_preflight_every_argument() {
     assert_eq!(t.read("a.wasm"), b"dirty root");
     ok(&["restore", t.root(), "--", "./"]);
     assert_eq!(t.read("a.wasm"), a);
-    assert_eq!(t.read(".uwgit/index"), index);
+    assert_eq!(t.read(".wasm-git/index"), index);
     t.write("a.wasm", b"dirty root again");
     t.write("nested/b.wasm", b"dirty nested again");
     for args in [

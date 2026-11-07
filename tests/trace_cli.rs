@@ -19,7 +19,7 @@ struct History {
 impl History {
     fn new(label: &str) -> Self {
         let directory = std::env::temp_dir().join(format!(
-            "uwgit-trace-{label}-{}-{}",
+            "wasm-git-trace-{label}-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -1076,7 +1076,7 @@ fn help_never_reads_even_nonexistent_or_locked_repositories() {
         .join("absent")
         .to_string_lossy()
         .into_owned();
-    let lock = Path::new(&history.repo).join(".uwgit/write.lock");
+    let lock = Path::new(&history.repo).join(".wasm-git/write.lock");
     std::fs::write(&lock, b"owned by another writer\n").unwrap();
     let before = snapshot(&history.directory);
     for arguments in [
@@ -1108,7 +1108,7 @@ fn locked_or_corrupt_history_is_rejected_without_cleaning_someone_elses_files() 
     let (bytes, _) = custom(b"evidence");
     let root = history.commit(&bytes, "root");
     let tip = history.commit(&bytes, "same bytes, later commit");
-    let lock = Path::new(&history.repo).join(".uwgit/write.lock");
+    let lock = Path::new(&history.repo).join(".wasm-git/write.lock");
     std::fs::write(&lock, b"another writer\n").unwrap();
     let before = snapshot(&history.directory);
     let output = invoke(&["trace", &history.repo, &tip, "--range", "0:1"]);
@@ -1117,7 +1117,9 @@ fn locked_or_corrupt_history_is_rejected_without_cleaning_someone_elses_files() 
     assert_eq!(snapshot(&history.directory), before);
     std::fs::remove_file(lock).unwrap();
     // A valid tip must not hide corruption in an ancestor outside the range.
-    let ancestor = Path::new(&history.repo).join(".uwgit/objects").join(root);
+    let ancestor = Path::new(&history.repo)
+        .join(".wasm-git/objects")
+        .join(root);
     let mut object = std::fs::read(&ancestor).unwrap();
     *object.last_mut().unwrap() ^= 1;
     std::fs::write(&ancestor, object).unwrap();

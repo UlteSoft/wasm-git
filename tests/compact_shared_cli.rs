@@ -14,7 +14,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new(label: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
-            "uwgit-compact-shared-{label}-{}-{}",
+            "wasm-git-compact-shared-{label}-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -423,7 +423,7 @@ fn profile_diff_and_bidirectional_cli_patches_preserve_original_shared_type_byte
                 let patch: Value =
                     serde_json::to_value(wasm_git::patch::BytePatch::from_bytes(&encoded).unwrap())
                         .unwrap();
-                assert_eq!(patch["format"], "uwgit-byte-patch-binary-v1");
+                assert_eq!(patch["format"], "wasm-git-byte-patch-binary-v1");
                 replay(old, new, &patch["edits"]);
                 let applied = run_json(&["apply", old_path, &patch_path, "--output", &output_path]);
                 assert_eq!(applied["written"], true);

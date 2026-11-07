@@ -89,7 +89,7 @@ impl Rules {
         }
         let mut names = Vec::new();
         if options.exclude_standard {
-            names.extend([".gitignore".into(), ".uwgitignore".into()]);
+            names.extend([".gitignore".into(), ".wasm-gitignore".into()]);
         }
         for name in &options.exclude_per_directory {
             validate_tree_path(name)?;

@@ -16,7 +16,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new(label: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
-            "uwgit-patch-{label}-{}-{}",
+            "wasm-git-patch-{label}-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -115,7 +115,7 @@ fn snapshot(directory: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
 
 fn metadata(patch: &BytePatch) -> Value {
     json!({
-        "format": "uwgit-byte-patch-binary-v1",
+        "format": "wasm-git-byte-patch-binary-v1",
         "old_sha256": patch.old_sha256,
         "new_sha256": patch.new_sha256,
         "old_len": patch.old_len,
@@ -656,10 +656,10 @@ fn unchecked_patch(patch: &BytePatch) -> Vec<u8> {
             .map(|i| u8::from_str_radix(&value[i..i + 2], 16).unwrap())
             .collect::<Vec<_>>()
     };
-    let mut bytes = if patch.format == "uwgit-byte-patch-binary-v1" {
-        b"UWGPAT01".to_vec()
+    let mut bytes = if patch.format == "wasm-git-byte-patch-binary-v1" {
+        b"WGTPAT01".to_vec()
     } else {
-        b"UWGPAT00".to_vec()
+        b"WGTPAT00".to_vec()
     };
     bytes.extend(raw(&patch.old_sha256));
     bytes.extend(raw(&patch.new_sha256));

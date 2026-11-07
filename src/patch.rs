@@ -9,8 +9,8 @@ use crate::audit;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-const FORMAT: &str = "uwgit-byte-patch-binary-v1";
-const MAGIC: &[u8; 8] = b"UWGPAT01";
+const FORMAT: &str = "wasm-git-byte-patch-binary-v1";
+const MAGIC: &[u8; 8] = b"WGTPAT01";
 const CORE_HEADER: &[u8; 8] = b"\0asm\x01\0\0\0";
 
 /// Physical half-open offsets into one original file, independent of host size.
@@ -660,12 +660,12 @@ mod tests {
         bad.push(0);
         assert!(BytePatch::from_bytes(&bad).is_err());
         let mut bad = bytes.clone();
-        bad[..8].copy_from_slice(b"UWGPAT00");
+        bad[..8].copy_from_slice(b"WGTPAT00");
         assert!(BytePatch::from_bytes(&bad).is_err());
         let mut bad = bytes.clone();
         bad[88..92].copy_from_slice(&u32::MAX.to_be_bytes());
         assert!(BytePatch::from_bytes(&bad).is_err());
-        assert!(BytePatch::from_bytes(br#"{"format":"uwgit-byte-patch-v1"}"#).is_err());
+        assert!(BytePatch::from_bytes(br#"{"format":"wasm-git-byte-patch-v1"}"#).is_err());
     }
 
     #[test]

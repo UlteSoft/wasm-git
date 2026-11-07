@@ -463,7 +463,7 @@ mod undo_recovery_tests {
     fn checkpoint_recovery_preserves_v5_undo_at_every_physical_write_prefix() {
         for cut in 0..=3 {
             let root = std::env::temp_dir().join(format!(
-                "uwgit-undo-checkpoint-{}-{}",
+                "wasm-git-undo-checkpoint-{}-{}",
                 std::process::id(),
                 SEQUENCE.fetch_add(1, Ordering::Relaxed)
             ));

@@ -19,7 +19,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
-            "uwgit-remotes-{}-{}",
+            "wasm-git-remotes-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -39,9 +39,9 @@ fn command(args: &[&str]) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_wasm-git"));
     command
         .args(args)
-        .env_remove("UWGIT_REMOTE_TOKEN")
-        .env_remove("UWGIT_SSH_PROGRAM")
-        .env_remove("UWGIT_REMOTE_PROGRAM");
+        .env_remove("WASM_GIT_REMOTE_TOKEN")
+        .env_remove("WASM_GIT_SSH_PROGRAM")
+        .env_remove("WASM_GIT_REMOTE_PROGRAM");
     command
 }
 fn success(output: Output) -> String {
@@ -181,7 +181,7 @@ impl Bridge {
                                 }
                             }
                             Alter::StateMismatch => {
-                                assert_eq!(&response[..8], b"UWGRPC02");
+                                assert_eq!(&response[..8], b"WGTRPC02");
                                 let length = u32::from_be_bytes(response[8..12].try_into().unwrap())
                                     as usize;
                                 let mut metadata: Value =
@@ -235,7 +235,7 @@ fn read_http(stream: &mut TcpStream, token: Option<&str>) -> Vec<u8> {
         assert!(header.len() < 32768);
     }
     let header = String::from_utf8(header).unwrap();
-    assert!(header.starts_with("POST /v1/uwgit HTTP/1.1\r\n"));
+    assert!(header.starts_with("POST /v1/wasm-git HTTP/1.1\r\n"));
     let fields: Vec<_> = header
         .lines()
         .skip(1)
@@ -302,7 +302,7 @@ fn named_remote_configuration_is_strict_and_reversible() {
         "http://example.invalid/repo",
     ]);
     assert!(failure(&["fetch", &repo]).contains("--allow-insecure-http"));
-    let path = Path::new(&repo).join(".uwgit/remotes/origin.bin");
+    let path = Path::new(&repo).join(".wasm-git/remotes/origin.bin");
     let mut metadata = std::fs::read(&path).unwrap();
     metadata.push(0);
     std::fs::write(&path, metadata).unwrap();
@@ -381,7 +381,7 @@ fn http_clone_fetch_pull_push_and_explicit_force_lease_preserve_history() {
     ]);
     assert_eq!(tip(&upstream, "publication"), initial);
     let metadata = String::from_utf8_lossy(
-        &std::fs::read(Path::new(&local).join(".uwgit/remotes/origin.bin")).unwrap(),
+        &std::fs::read(Path::new(&local).join(".wasm-git/remotes/origin.bin")).unwrap(),
     )
     .into_owned();
     assert!(!metadata.contains("Authorization"));
@@ -570,13 +570,13 @@ fn empty_http_clone_authentication_and_rejected_response_leave_no_destination() 
     let destination = temp.path("empty-clone");
     success(
         command(&["clone", &url, &destination])
-            .env("UWGIT_REMOTE_TOKEN", "fixed-private-token")
+            .env("WASM_GIT_REMOTE_TOKEN", "fixed-private-token")
             .output()
             .unwrap(),
     );
     assert_eq!(json(&["fsck", &destination])["commits"], 0);
     assert_eq!(
-        std::fs::read(Path::new(&destination).join(".uwgit/HEAD")).unwrap(),
+        std::fs::read(Path::new(&destination).join(".wasm-git/HEAD")).unwrap(),
         native::reference("main")
     );
     drop(bridge);
@@ -613,7 +613,7 @@ fn invalid_http_tokens_are_rejected_before_network_or_destination_creation() {
         // Port 1 supplies no test service. A token error, rather than a transport
         // connection error, proves malformed authentication never starts curl.
         let output = command(&["clone", "http://127.0.0.1:1/upstream", &destination])
-            .env("UWGIT_REMOTE_TOKEN", token)
+            .env("WASM_GIT_REMOTE_TOKEN", token)
             .output()
             .unwrap();
         assert!(!output.status.success());
@@ -641,17 +641,17 @@ fn ssh_transport_passes_safe_arguments_and_never_forwards_the_http_token() {
     run(&["commit", &upstream, &module, "-m", "over ssh"]);
     let shim = temp.path("ssh-shim");
     let log = temp.path("ssh-argv");
-    std::fs::write(&shim, b"#!/bin/sh\nset -eu\ntest -z \"${UWGIT_REMOTE_TOKEN+x}\"\nprintf '%s\\n' \"$@\" > \"$UWGIT_TEST_SSH_LOG\"\nexec \"$UWGIT_TEST_BINARY\" server --stdio --root \"$UWGIT_TEST_ROOT\" --allow-force\n").unwrap();
+    std::fs::write(&shim, b"#!/bin/sh\nset -eu\ntest -z \"${WASM_GIT_REMOTE_TOKEN+x}\"\nprintf '%s\\n' \"$@\" > \"$WASM_GIT_TEST_SSH_LOG\"\nexec \"$WASM_GIT_TEST_BINARY\" server --stdio --root \"$WASM_GIT_TEST_ROOT\" --allow-force\n").unwrap();
     std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o700)).unwrap();
     let url = format!("ssh://test@localhost:2222{root}/upstream");
     success(
         command(&["clone", &url, &local])
-            .env("UWGIT_SSH_PROGRAM", &shim)
-            .env("UWGIT_REMOTE_PROGRAM", "path with ' quote")
-            .env("UWGIT_TEST_BINARY", env!("CARGO_BIN_EXE_wasm-git"))
-            .env("UWGIT_TEST_ROOT", &root)
-            .env("UWGIT_TEST_SSH_LOG", &log)
-            .env("UWGIT_REMOTE_TOKEN", "must-never-reach-ssh")
+            .env("WASM_GIT_SSH_PROGRAM", &shim)
+            .env("WASM_GIT_REMOTE_PROGRAM", "path with ' quote")
+            .env("WASM_GIT_TEST_BINARY", env!("CARGO_BIN_EXE_wasm-git"))
+            .env("WASM_GIT_TEST_ROOT", &root)
+            .env("WASM_GIT_TEST_SSH_LOG", &log)
+            .env("WASM_GIT_REMOTE_TOKEN", "must-never-reach-ssh")
             .output()
             .unwrap(),
     );
@@ -731,7 +731,7 @@ fn ssh_clone_accepts_server_repository_names_without_widening_remote_config_name
     use std::os::unix::fs::PermissionsExt;
     let temp = Temp::new();
     let shim = temp.path("repository-name-ssh");
-    std::fs::write(&shim, b"#!/bin/sh\nset -eu\nexec \"$UWGIT_NAME_TEST_BINARY\" server --stdio --root \"$UWGIT_NAME_TEST_ROOT\"\n").unwrap();
+    std::fs::write(&shim, b"#!/bin/sh\nset -eu\nexec \"$WASM_GIT_NAME_TEST_BINARY\" server --stdio --root \"$WASM_GIT_NAME_TEST_ROOT\"\n").unwrap();
     std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o700)).unwrap();
     for (index, name) in [
         "project.git".to_owned(),
@@ -761,9 +761,9 @@ fn ssh_clone_accepts_server_repository_names_without_widening_remote_config_name
         let url = format!("ssh://test@localhost{}{separator}{name}", temp.0.display());
         success(
             command(&["clone", &url, &local])
-                .env("UWGIT_SSH_PROGRAM", &shim)
-                .env("UWGIT_NAME_TEST_BINARY", env!("CARGO_BIN_EXE_wasm-git"))
-                .env("UWGIT_NAME_TEST_ROOT", &temp.0)
+                .env("WASM_GIT_SSH_PROGRAM", &shim)
+                .env("WASM_GIT_NAME_TEST_BINARY", env!("CARGO_BIN_EXE_wasm-git"))
+                .env("WASM_GIT_NAME_TEST_ROOT", &temp.0)
                 .output()
                 .unwrap(),
         );
@@ -830,9 +830,9 @@ fn default_pull_tracks_the_current_branch_and_missing_peer_branch_keeps_local_fi
     );
 
     run(&["switch", &consumer, "-c", "local_only"]);
-    let head_path = Path::new(&consumer).join(".uwgit/HEAD");
-    let index_path = Path::new(&consumer).join(".uwgit/index");
-    let local_ref = Path::new(&consumer).join(".uwgit/refs/local_only");
+    let head_path = Path::new(&consumer).join(".wasm-git/HEAD");
+    let index_path = Path::new(&consumer).join(".wasm-git/index");
+    let local_ref = Path::new(&consumer).join(".wasm-git/refs/local_only");
     let before = (
         std::fs::read(&head_path).unwrap(),
         std::fs::read(&index_path).unwrap(),
@@ -1004,10 +1004,10 @@ fn overlapping_fetches_compare_complete_tracking_and_allow_later_remote_rewinds(
                 let path = entry.path();
                 let relative = path.strip_prefix(root).unwrap();
                 if [
-                    ".uwgit/objects",
-                    ".uwgit/tmp",
-                    ".uwgit/remote.lock",
-                    ".uwgit/remotes/origin.tracking.bin",
+                    ".wasm-git/objects",
+                    ".wasm-git/tmp",
+                    ".wasm-git/remote.lock",
+                    ".wasm-git/remotes/origin.tracking.bin",
                 ]
                 .iter()
                 .any(|excluded| relative == Path::new(excluded))
@@ -1059,7 +1059,7 @@ fn overlapping_fetches_compare_complete_tracking_and_allow_later_remote_rewinds(
             run(&["remote", &local, "remove", "origin"]);
             run(&["remote", &local, "add", "origin", &url]);
         }
-        let tracking_path = Path::new(&local).join(".uwgit/remotes/origin.tracking.bin");
+        let tracking_path = Path::new(&local).join(".wasm-git/remotes/origin.tracking.bin");
         assert_eq!(tracking_path.exists(), has_tracking);
 
         // Keep an independently staged edit, a further unstaged edit, a local

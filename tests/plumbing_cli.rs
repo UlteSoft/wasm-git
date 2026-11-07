@@ -13,7 +13,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let root = std::env::temp_dir().join(format!(
-            "uwgit-plumbing-{}-{}",
+            "wasm-git-plumbing-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -73,7 +73,9 @@ fn wasm(value: u8) -> Vec<u8> {
     [b"\0asm\x01\0\0\0".as_slice(), &[0, 3, 1, b'x', value]].concat()
 }
 fn files(root: &Path) -> usize {
-    fs::read_dir(root.join(".uwgit/objects")).unwrap().count()
+    fs::read_dir(root.join(".wasm-git/objects"))
+        .unwrap()
+        .count()
 }
 fn blob(root: &Path, value: u8) -> String {
     ok(
@@ -116,13 +118,13 @@ fn ls_files_filters_original_images_work_changes_ignores_and_structural_obstruct
     fs::write(root.join("ignored.log"), b"log").unwrap();
     fs::write(root.join(".gitignore"), "*.log\nb.wasm\nblocked/\n").unwrap();
     fs::create_dir(root.join("nested")).unwrap();
-    fs::write(root.join("nested/.uwgitignore"), "*.tmp\n!keep.tmp\n").unwrap();
+    fs::write(root.join("nested/.wasm-gitignore"), "*.tmp\n!keep.tmp\n").unwrap();
     fs::write(root.join("nested/ignored.tmp"), b"ignore").unwrap();
     fs::write(root.join("nested/keep.tmp"), b"keep").unwrap();
     fs::create_dir(root.join("blocked")).unwrap();
     fs::write(root.join("blocked/.gitignore"), "!keep.txt\n").unwrap();
     fs::write(root.join("blocked/keep.txt"), b"parent exclusion wins").unwrap();
-    let before = fs::read(root.join(".uwgit/index")).unwrap();
+    let before = fs::read(root.join(".wasm-git/index")).unwrap();
     assert_eq!(ok(&["ls-files", r, "-m"], None), "a.wasm\nb.wasm");
     assert_eq!(ok(&["ls-files", r, "-d", "-t"], None), "R b.wasm");
     assert_eq!(
@@ -145,7 +147,7 @@ fn ls_files_filters_original_images_work_changes_ignores_and_structural_obstruct
     let others = ok(&["ls-files", r, "-o", "--exclude-standard"], None);
     assert_eq!(
         others,
-        ".gitignore\nnested/.uwgitignore\nnested/keep.tmp\nother.txt"
+        ".gitignore\nnested/.wasm-gitignore\nnested/keep.tmp\nother.txt"
     );
     assert_eq!(
         ok(&["ls-files", r, "-i", "-o", "-x", "*.txt"], None),
@@ -162,7 +164,7 @@ fn ls_files_filters_original_images_work_changes_ignores_and_structural_obstruct
         ok(&["ls-files", r, "-k", "-t"], None),
         "K a.wasm/obstruction.txt"
     );
-    assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), before);
+    assert_eq!(fs::read(root.join(".wasm-git/index")).unwrap(), before);
 }
 
 #[test]
@@ -178,7 +180,7 @@ fn ls_files_formats_and_custom_exclude_sources_remain_read_only() {
     fs::write(root.join("a.wasm"), wasm(1)).unwrap();
     fs::write(root.join("one.txt"), b"one").unwrap();
     fs::write(root.join("rules.ignore"), "*.txt\n").unwrap();
-    let before = fs::read(root.join(".uwgit/index")).unwrap();
+    let before = fs::read(root.join(".wasm-git/index")).unwrap();
     let formatted = execute(&["ls-files",r,"--format=%(objectmode) %(objecttype) %(objectname) %(stage) %(objectsize)%x09%(path)%%","-z"],None);
     assert!(formatted.status.success());
     assert_eq!(
@@ -221,7 +223,7 @@ fn ls_files_formats_and_custom_exclude_sources_remain_read_only() {
         &["ls-files", r, "--exclude-per-directory", "../outside"],
         None,
     );
-    assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), before);
+    assert_eq!(fs::read(root.join(".wasm-git/index")).unwrap(), before);
     assert_eq!(fs::read(root.join("a.wasm")).unwrap(), wasm(1));
 }
 
@@ -236,7 +238,7 @@ fn checkout_index_materializes_exact_images_with_complete_preflight_and_no_index
         &["update-index", r, "--index-info"],
         Some(format!("100644 {one}\ta.wasm\n100644 {two}\tb.wasm\n").as_bytes()),
     );
-    let before = fs::read(root.join(".uwgit/index")).unwrap();
+    let before = fs::read(root.join(".wasm-git/index")).unwrap();
     ok(&["checkout-index", r], None);
     assert!(!root.join("a.wasm").exists());
     fs::write(root.join("a.wasm"), b"editor bytes").unwrap();
@@ -269,9 +271,9 @@ fn checkout_index_materializes_exact_images_with_complete_preflight_and_no_index
         &["checkout-index", r, "-q", "--", "unknown.wasm", "a.wasm"],
         None,
     );
-    assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), before);
+    assert_eq!(fs::read(root.join(".wasm-git/index")).unwrap(), before);
     assert_eq!(
-        fs::read(root.join(".uwgit/HEAD")).unwrap(),
+        fs::read(root.join(".wasm-git/HEAD")).unwrap(),
         native::reference("main")
     );
 }
@@ -290,7 +292,7 @@ fn checkout_index_temporary_stages_export_original_bytes_and_absent_sides() {
                 .as_bytes(),
         ),
     );
-    let before = fs::read(root.join(".uwgit/index")).unwrap();
+    let before = fs::read(root.join(".wasm-git/index")).unwrap();
     let inventory = || fs::read_dir(root).unwrap().count();
     let initial = inventory();
     fail(
@@ -325,7 +327,7 @@ fn checkout_index_temporary_stages_export_original_bytes_and_absent_sides() {
     fail(&["checkout-index", r, "--stage=2", "--", "a.wasm"], None);
     ok(&["checkout-index", r, "--stage=3", "--", "a.wasm"], None);
     assert_eq!(fs::read(root.join("a.wasm")).unwrap(), wasm(2));
-    assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), before);
+    assert_eq!(fs::read(root.join(".wasm-git/index")).unwrap(), before);
 }
 
 #[cfg(unix)]
@@ -370,7 +372,7 @@ fn unresolved_index_cannot_be_used_as_a_complete_manual_history_resolution() {
     ok(&["commit", r, "-m", "our side"], None);
     let head = ok(&["rev-parse", r, "HEAD"], None);
     ok(&["read-tree", r, "-m", &base, &ours, &theirs], None);
-    let before = fs::read(root.join(".uwgit/index")).unwrap();
+    let before = fs::read(root.join(".wasm-git/index")).unwrap();
     let objects = files(root);
     for command in ["merge", "cherry-pick", "revert"] {
         fail(
@@ -387,7 +389,7 @@ fn unresolved_index_cannot_be_used_as_a_complete_manual_history_resolution() {
             None,
         );
         assert_eq!(ok(&["rev-parse", r, "HEAD"], None), head);
-        assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), before);
+        assert_eq!(fs::read(root.join(".wasm-git/index")).unwrap(), before);
         assert_eq!(files(root), objects);
     }
     // Saved stashes are complete snapshots. A canonical but unmerged saved
@@ -405,14 +407,14 @@ fn unresolved_index_cannot_be_used_as_a_complete_manual_history_resolution() {
         }],
     };
     fs::write(
-        root.join(".uwgit/stash"),
+        root.join(".wasm-git/stash"),
         wasm_git::binary::encode(&saved).unwrap(),
     )
     .unwrap();
     fail(&["stash", r, "list"], None);
     fail(&["stash", r, "apply", "0"], None);
     assert_eq!(ok(&["rev-parse", r, "HEAD"], None), head);
-    assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), before);
+    assert_eq!(fs::read(root.join(".wasm-git/index")).unwrap(), before);
 }
 
 #[test]
@@ -434,7 +436,7 @@ fn directory_file_conflicts_keep_side_images_and_restore_without_losing_unrelate
     ok(&["read-tree", r, &ours], None);
     fs::write(root.join("module"), wasm(1)).unwrap();
     ok(&["read-tree", r, "-m", "-u", &empty, &ours, &theirs], None);
-    let before = fs::read(root.join(".uwgit/index")).unwrap();
+    let before = fs::read(root.join(".wasm-git/index")).unwrap();
     assert_eq!(
         ok(&["ls-files", r, "-u"], None),
         format!("100644 {one} 2\tmodule\n100644 {two} 3\tmodule/child.wasm")
@@ -444,16 +446,16 @@ fn directory_file_conflicts_keep_side_images_and_restore_without_losing_unrelate
         execute(&["merge-index", r, "--all"], None).status.code(),
         Some(2)
     );
-    assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), before);
+    assert_eq!(fs::read(root.join(".wasm-git/index")).unwrap(), before);
     // A stage must be a valid original tree; invalid batched input is atomic.
     fail(
         &["update-index", r, "--index-info"],
         Some(format!("100644 {two} 2\tmodule/child.wasm\n").as_bytes()),
     );
-    assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), before);
+    assert_eq!(fs::read(root.join(".wasm-git/index")).unwrap(), before);
     ok(&["restore", r, "--theirs", "--", "."], None);
     assert_eq!(fs::read(root.join("module/child.wasm")).unwrap(), wasm(2));
-    assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), before);
+    assert_eq!(fs::read(root.join(".wasm-git/index")).unwrap(), before);
     let status: Value = serde_json::from_str(&ok(&["status", r], None)).unwrap();
     assert_eq!(status["unmerged"].as_array().unwrap().len(), 2);
     ok(
@@ -515,10 +517,10 @@ fn read_tree_update_preserves_unaffected_dirty_bytes_and_rejects_dirty_replaceme
         fs::read(root.join("b.wasm")).unwrap(),
         b"preserve unsaved bytes"
     );
-    let before = fs::read(root.join(".uwgit/index")).unwrap();
+    let before = fs::read(root.join(".wasm-git/index")).unwrap();
     fs::write(root.join("a.wasm"), b"do not discard").unwrap();
     fail(&["read-tree", r, "-u", &base], None);
-    assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), before);
+    assert_eq!(fs::read(root.join(".wasm-git/index")).unwrap(), before);
     assert_eq!(fs::read(root.join("a.wasm")).unwrap(), b"do not discard");
     assert_eq!(
         fs::read(root.join("b.wasm")).unwrap(),
@@ -534,8 +536,8 @@ fn read_tree_unmerged_stages_preserve_each_original_side_until_explicit_resoluti
     let (base, ours, theirs, ids) = three_index_trees(root);
     std::fs::write(root.join("a.wasm"), wasm(9)).unwrap();
     ok(&["read-tree", r, "-m", &base, &ours, &theirs], None);
-    let original = fs::read(root.join(".uwgit/index")).unwrap();
-    assert!(original.starts_with(b"UWGITIDX\x06"));
+    let original = fs::read(root.join(".wasm-git/index")).unwrap();
+    assert!(original.starts_with(b"WASMGIDX\x06"));
     let rows = ok(&["ls-files", r, "--unmerged"], None);
     for (number, id) in ids.iter().enumerate() {
         assert!(rows.contains(&format!("100644 {id} {}\ta.wasm", number + 1)));
@@ -550,7 +552,7 @@ fn read_tree_unmerged_stages_preserve_each_original_side_until_explicit_resoluti
     assert_eq!(files(root), objects);
     ok(&["restore", r, "--ours", "--", "a.wasm"], None);
     assert_eq!(fs::read(root.join("a.wasm")).unwrap(), wasm(2));
-    assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), original);
+    assert_eq!(fs::read(root.join(".wasm-git/index")).unwrap(), original);
     ok(&["checkout", r, "--theirs", "--", "a.wasm"], None);
     assert_eq!(fs::read(root.join("a.wasm")).unwrap(), wasm(3));
     fs::write(root.join("untracked.wasm"), wasm(9)).unwrap();
@@ -586,7 +588,7 @@ fn index_info_binary_framing_and_batch_errors_keep_index_and_work_bytes_unchange
         output.stdout,
         format!("100644 {one} 1\ta.wasm\0100644 {two} 3\ta.wasm\0").into_bytes()
     );
-    let before = fs::read(root.join(".uwgit/index")).unwrap();
+    let before = fs::read(root.join(".wasm-git/index")).unwrap();
     for records in [
         format!("100644 {one}\tb.wasm\n100644 {}\tc.wasm\n", "f".repeat(64)),
         format!("100755 {one}\tb.wasm\n"),
@@ -598,16 +600,19 @@ fn index_info_binary_framing_and_batch_errors_keep_index_and_work_bytes_unchange
             &["update-index", r, "--index-info"],
             Some(records.as_bytes()),
         );
-        assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), before);
+        assert_eq!(fs::read(root.join(".wasm-git/index")).unwrap(), before);
     }
     ok(&["update-index", r, "--index-info"], Some(b"0 0\ta.wasm\n"));
     assert_eq!(ok(&["ls-files", r], None), "");
-    fs::write(root.join(".uwgit/index.lock"), b"held").unwrap();
+    fs::write(root.join(".wasm-git/index.lock"), b"held").unwrap();
     fail(
         &["update-index", r, "--index-info"],
         Some(format!("100644 {one}\ta.wasm\n").as_bytes()),
     );
-    assert_eq!(fs::read(root.join(".uwgit/index.lock")).unwrap(), b"held");
+    assert_eq!(
+        fs::read(root.join(".wasm-git/index.lock")).unwrap(),
+        b"held"
+    );
 }
 
 #[test]
@@ -622,7 +627,7 @@ fn cacheinfo_and_update_index_use_native_images_without_touching_worktree_or_hea
     let id = blob(root, 2);
     let entry = format!("100644,{id},b.wasm");
     fail(&["update-index", r, "--cacheinfo", &entry], None);
-    let before = fs::read(root.join(".uwgit/index")).unwrap();
+    let before = fs::read(root.join(".wasm-git/index")).unwrap();
     ok(
         &[
             "update-index",
@@ -634,7 +639,7 @@ fn cacheinfo_and_update_index_use_native_images_without_touching_worktree_or_hea
         ],
         None,
     );
-    assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), before);
+    assert_eq!(fs::read(root.join(".wasm-git/index")).unwrap(), before);
     ok(&["update-index", r, "--add", "--cacheinfo", &entry], None);
     assert!(!root.join("b.wasm").exists());
     assert_eq!(fs::read(root.join("a.wasm")).unwrap(), wasm(1));
@@ -648,7 +653,7 @@ fn cacheinfo_and_update_index_use_native_images_without_touching_worktree_or_hea
     );
     assert_eq!(ok(&["ls-files", r], None), "");
     assert_eq!(
-        fs::read(root.join(".uwgit/HEAD")).unwrap(),
+        fs::read(root.join(".wasm-git/HEAD")).unwrap(),
         native::reference("main")
     );
 }
@@ -661,9 +666,9 @@ fn read_tree_prefix_dry_run_and_worktree_updates_preflight_all_obstructions() {
     let (base, ours, _, _) = three_index_trees(root);
     ok(&["read-tree", r, &base], None);
     fs::write(root.join("a.wasm"), wasm(1)).unwrap();
-    let before = fs::read(root.join(".uwgit/index")).unwrap();
+    let before = fs::read(root.join(".wasm-git/index")).unwrap();
     ok(&["read-tree", r, "-n", "-u", &ours], None);
-    assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), before);
+    assert_eq!(fs::read(root.join(".wasm-git/index")).unwrap(), before);
     assert_eq!(fs::read(root.join("a.wasm")).unwrap(), wasm(1));
     ok(&["read-tree", r, "-u", &ours], None);
     assert_eq!(fs::read(root.join("a.wasm")).unwrap(), wasm(2));
@@ -674,9 +679,9 @@ fn read_tree_prefix_dry_run_and_worktree_updates_preflight_all_obstructions() {
     let objects = files(root);
     fail(&["write-tree", r, "--prefix=a.wasm"], None);
     assert_eq!(files(root), objects);
-    let before = fs::read(root.join(".uwgit/index")).unwrap();
+    let before = fs::read(root.join(".wasm-git/index")).unwrap();
     fail(&["read-tree", r, "--prefix", "vendor", &ours], None);
-    assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), before);
+    assert_eq!(fs::read(root.join(".wasm-git/index")).unwrap(), before);
     fs::write(root.join("untracked.wasm"), wasm(8)).unwrap();
     let id = blob(root, 3);
     let obstruction = ok(
@@ -684,7 +689,7 @@ fn read_tree_prefix_dry_run_and_worktree_updates_preflight_all_obstructions() {
         Some(format!("100644 wasm {id}\ta.wasm\n100644 wasm {id}\tuntracked.wasm\n").as_bytes()),
     );
     fail(&["read-tree", r, "-u", &obstruction], None);
-    assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), before);
+    assert_eq!(fs::read(root.join(".wasm-git/index")).unwrap(), before);
     assert_eq!(fs::read(root.join("a.wasm")).unwrap(), wasm(2));
     assert_eq!(fs::read(root.join("untracked.wasm")).unwrap(), wasm(8));
 }
@@ -710,19 +715,19 @@ fn merge_index_uses_the_wasm_three_way_engine_and_keeps_unresolved_original_imag
         &["read-tree", r, "-m", &trees[0], &trees[1], &trees[2]],
         None,
     );
-    let before = fs::read(root.join(".uwgit/index")).unwrap();
+    let before = fs::read(root.join(".wasm-git/index")).unwrap();
     ok(&["merge-index", r, "--all", "--dry-run"], None);
-    assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), before);
+    assert_eq!(fs::read(root.join(".wasm-git/index")).unwrap(), before);
     ok(&["merge-index", r, "--all"], None);
     assert_eq!(ok(&["ls-files", r, "--unmerged"], None), "");
     ok(&["restore", r, "--", "a.wasm"], None);
     assert_eq!(fs::read(root.join("a.wasm")).unwrap(), module(2, 2));
     let (base, ours, theirs, _) = three_index_trees(root);
     ok(&["read-tree", r, "-m", &base, &ours, &theirs], None);
-    let before = fs::read(root.join(".uwgit/index")).unwrap();
+    let before = fs::read(root.join(".wasm-git/index")).unwrap();
     let conflict = execute(&["merge-index", r, "--all"], None);
     assert_eq!(conflict.status.code(), Some(2));
-    assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), before);
+    assert_eq!(fs::read(root.join(".wasm-git/index")).unwrap(), before);
 }
 
 #[test]
@@ -731,7 +736,7 @@ fn object_hashes_payloads_and_graphs_roundtrip_without_touching_head() {
     let root = &temp.0;
     let bytes = wasm(7);
     let dry = ok(&["hash-object", path(root), "--stdin"], Some(&bytes));
-    let mut envelope = b"UWGO\0\0\0\x02".to_vec();
+    let mut envelope = b"WGTO\0\0\0\x02".to_vec();
     envelope.push(1);
     envelope.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
     envelope.extend_from_slice(&bytes);
@@ -740,7 +745,7 @@ fn object_hashes_payloads_and_graphs_roundtrip_without_touching_head() {
     let blob = blob(root, 7);
     assert_eq!(blob, dry);
     assert_eq!(
-        fs::read(root.join(".uwgit/objects").join(&blob)).unwrap(),
+        fs::read(root.join(".wasm-git/objects").join(&blob)).unwrap(),
         envelope
     );
     let tree = tree(root, &blob);
@@ -754,11 +759,14 @@ fn object_hashes_payloads_and_graphs_roundtrip_without_touching_head() {
     );
     assert_eq!(fs::read(exported).unwrap(), bytes);
     assert_eq!(
-        fs::read(root.join(".uwgit/HEAD")).unwrap(),
+        fs::read(root.join(".wasm-git/HEAD")).unwrap(),
         native::reference("main")
     );
-    assert!(!root.join(".uwgit/index").exists());
-    assert_eq!(fs::read_dir(root.join(".uwgit/refs")).unwrap().count(), 0);
+    assert!(!root.join(".wasm-git/index").exists());
+    assert_eq!(
+        fs::read_dir(root.join(".wasm-git/refs")).unwrap().count(),
+        0
+    );
     ok(&["fsck", path(root)], None);
 }
 
@@ -816,12 +824,12 @@ fn ref_leases_creation_update_deletion_and_checked_out_protection() {
         &["update-ref", path(root), "refs/heads/topic", &first, &zero],
         None,
     );
-    let before = fs::read(root.join(".uwgit/reflog")).unwrap();
+    let before = fs::read(root.join(".wasm-git/reflog")).unwrap();
     fail(
         &["update-ref", path(root), "refs/heads/topic", &second, &zero],
         None,
     );
-    assert_eq!(fs::read(root.join(".uwgit/reflog")).unwrap(), before);
+    assert_eq!(fs::read(root.join(".wasm-git/reflog")).unwrap(), before);
     ok(
         &[
             "update-ref",
@@ -844,7 +852,10 @@ fn ref_leases_creation_update_deletion_and_checked_out_protection() {
         &["update-ref", path(root), "-d", "refs/heads/topic", &second],
         None,
     );
-    assert_eq!(fs::read_dir(root.join(".uwgit/refs")).unwrap().count(), 0);
+    assert_eq!(
+        fs::read_dir(root.join(".wasm-git/refs")).unwrap().count(),
+        0
+    );
     ok(&["fsck", path(root)], None);
 }
 
@@ -854,17 +865,17 @@ fn read_and_write_tree_leave_work_bytes_and_branch_unchanged() {
     let root = &temp.0;
     fs::write(root.join("a.wasm"), wasm(1)).unwrap();
     ok(&["add", path(root), "a.wasm"], None);
-    let before = fs::read(root.join(".uwgit/index")).unwrap();
+    let before = fs::read(root.join(".wasm-git/index")).unwrap();
     let tree = ok(&["write-tree", path(root)], None);
-    assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), before);
+    assert_eq!(fs::read(root.join(".wasm-git/index")).unwrap(), before);
     fs::write(root.join("a.wasm"), b"dirty work bytes").unwrap();
     ok(&["read-tree", path(root), "--empty"], None);
     assert_eq!(ok(&["ls-files", path(root)], None), "");
     ok(&["read-tree", path(root), &tree], None);
-    assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), before);
+    assert_eq!(fs::read(root.join(".wasm-git/index")).unwrap(), before);
     assert_eq!(fs::read(root.join("a.wasm")).unwrap(), b"dirty work bytes");
     assert_eq!(
-        fs::read(root.join(".uwgit/HEAD")).unwrap(),
+        fs::read(root.join(".wasm-git/HEAD")).unwrap(),
         native::reference("main")
     );
 }
@@ -952,13 +963,13 @@ fn malformed_options_help_literal_messages_and_locks_have_no_side_effects() {
         serde_json::from_str(&ok(&["cat-file", path(root), "-p", &id], None)).unwrap();
     assert_eq!(value["message"], "--help");
     let before = files(root);
-    fs::write(root.join(".uwgit/write.lock"), b"held").unwrap();
+    fs::write(root.join(".wasm-git/write.lock"), b"held").unwrap();
     fail(
         &["hash-object", path(root), "-w", "--stdin"],
         Some(&wasm(9)),
     );
     assert_eq!(files(root), before);
-    fs::remove_file(root.join(".uwgit/write.lock")).unwrap();
+    fs::remove_file(root.join(".wasm-git/write.lock")).unwrap();
     fail(&["rev-list", path(root), "--invented"], None);
     fail(&["read-tree", path(root), "--empty", &tree], None);
     assert_eq!(files(root), before);

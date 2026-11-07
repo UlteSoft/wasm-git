@@ -10,7 +10,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let root = std::env::temp_dir().join(format!(
-            "uwgit-merge-policies-{}-{}",
+            "wasm-git-merge-policies-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -80,13 +80,17 @@ fn no_ff_creates_a_real_two_parent_commit_and_keeps_literal_message_flags() {
     assert_eq!(info["parents"], serde_json::json!([base, tip]));
     assert_eq!(info["message"], "--help");
     assert_eq!(fs::read(root.join("a.wasm")).unwrap(), wasm(2));
-    let before = fs::read_dir(root.join(".uwgit/objects")).unwrap().count();
+    let before = fs::read_dir(root.join(".wasm-git/objects"))
+        .unwrap()
+        .count();
     assert_eq!(
         json(&["merge", p(&root), "topic", "--no-ff", "-m", "again"])["status"],
         "already_up_to_date"
     );
     assert_eq!(
-        fs::read_dir(root.join(".uwgit/objects")).unwrap().count(),
+        fs::read_dir(root.join(".wasm-git/objects"))
+            .unwrap()
+            .count(),
         before
     );
     ok(&["fsck", p(&root)]);
@@ -100,7 +104,7 @@ fn squash_stages_the_target_without_moving_head_and_the_following_commit_has_one
     assert_eq!(report["status"], "squashed");
     assert_eq!(ok(&["rev-parse", p(&root), "HEAD"]), base);
     assert_eq!(fs::read(root.join("a.wasm")).unwrap(), wasm(2));
-    assert!(!root.join(".uwgit/pending.bin").exists());
+    assert!(!root.join(".wasm-git/pending.bin").exists());
     ok(&["commit", p(&root), "-m", "reviewed squash"]);
     let info = json(&["cat-file", p(&root), "HEAD"]);
     assert_eq!(info["parents"], serde_json::json!([base]));
@@ -130,16 +134,20 @@ fn conflicts_dirty_state_untracked_obstructions_and_invalid_policy_combinations_
     let root = temp.path("repo");
     setup(&root);
     commit(&root, "a.wasm", 3);
-    let index = fs::read(root.join(".uwgit/index")).unwrap();
+    let index = fs::read(root.join(".wasm-git/index")).unwrap();
     let head = ok(&["rev-parse", p(&root), "HEAD"]);
-    let count = fs::read_dir(root.join(".uwgit/objects")).unwrap().count();
+    let count = fs::read_dir(root.join(".wasm-git/objects"))
+        .unwrap()
+        .count();
     let out = run(&["merge", p(&root), "topic", "--squash"]);
     assert_eq!(out.status.code(), Some(2));
-    assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), index);
+    assert_eq!(fs::read(root.join(".wasm-git/index")).unwrap(), index);
     assert_eq!(fs::read(root.join("a.wasm")).unwrap(), wasm(3));
     assert_eq!(ok(&["rev-parse", p(&root), "HEAD"]), head);
     assert_eq!(
-        fs::read_dir(root.join(".uwgit/objects")).unwrap().count(),
+        fs::read_dir(root.join(".wasm-git/objects"))
+            .unwrap()
+            .count(),
         count
     );
     for flags in [
@@ -151,7 +159,7 @@ fn conflicts_dirty_state_untracked_obstructions_and_invalid_policy_combinations_
         args.extend(flags);
         args.extend(["-m", "message"]);
         assert!(!run(&args).status.success());
-        assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), index);
+        assert_eq!(fs::read(root.join(".wasm-git/index")).unwrap(), index);
     }
     fs::write(root.join("a.wasm"), b"dirty").unwrap();
     assert!(!run(&["merge", p(&root), "topic", "--squash"])
@@ -209,7 +217,7 @@ fn squash_without_an_index_cannot_overwrite_existing_untracked_work_bytes() {
     let temp = Temp::new();
     let root = temp.path("repo");
     let (base, _) = setup(&root);
-    fs::remove_file(root.join(".uwgit/index")).unwrap();
+    fs::remove_file(root.join(".wasm-git/index")).unwrap();
     fs::write(root.join("a.wasm"), b"untracked local bytes").unwrap();
     assert!(!run(&["merge", p(&root), "topic", "--squash"])
         .status
@@ -218,6 +226,6 @@ fn squash_without_an_index_cannot_overwrite_existing_untracked_work_bytes() {
         fs::read(root.join("a.wasm")).unwrap(),
         b"untracked local bytes"
     );
-    assert!(!root.join(".uwgit/index").exists());
+    assert!(!root.join(".wasm-git/index").exists());
     assert_eq!(ok(&["rev-parse", p(&root), "HEAD"]), base);
 }

@@ -1,4 +1,4 @@
-# uwgit Technical White Paper
+# wasm-git Technical White Paper
 
 **Edition:** pre-release implementation, 2026-11-06
 **Audience:** reviewers, compiler engineers, repository operators, and integrators
@@ -6,7 +6,7 @@
 
 ## Abstract
 
-uwgit combines lossless WebAssembly change auditing with a decentralized,
+wasm-git combines lossless WebAssembly change auditing with a decentralized,
 content-addressed repository. Its primary evidence is the original input byte
 sequence. Structural interpretation explains that evidence through sections,
 functions, control flow, typed operands, dependency bindings, and available
@@ -37,7 +37,7 @@ A useful audit therefore needs several independent answers:
 4. Which relationships are supported by evidence, and which remain ambiguous?
 5. Can every accepted revision be restored without relying on the interpretation?
 
-uwgit prioritizes accurate evidence and reproducible restoration. Compact display
+wasm-git prioritizes accurate evidence and reproducible restoration. Compact display
 is a presentation choice, not permission to discard bytes from history. Efficient
 storage is achieved through binary schemas, compression, and deltas rather than
 by storing a human-readable diff as the authoritative artifact.
@@ -185,7 +185,7 @@ outer framing without claiming complete component semantic validation.
 
 The Core specification defines the custom-section envelope; payload conventions
 are independently established by tool communities. Recognizing a name is not
-sufficient evidence that its payload follows the expected convention. uwgit
+sufficient evidence that its payload follows the expected convention. wasm-git
 provides bounded readers for names, producers, target features, linking metadata,
 branch hints, source references, and supported signature containers. Unknown,
 alternate, or malformed convention payloads remain exact raw data. A convention
@@ -215,7 +215,7 @@ recovery records use versioned binary schemas rather than JSON or text refs.
 
 ### 6.2 Packed history
 
-Current packs use `UWGPACK4`, a sorted object-ID index, a 256-entry fanout, fixed
+Current packs use `WGTPACK4`, a sorted object-ID index, a 256-entry fanout, fixed
 records, per-entry CRC32, index SHA-256, and independently compressed Zstandard
 frames. Full objects and block-copy/insert deltas reconstruct the same original
 envelopes. The writer evaluates bounded history/path candidates and actual
@@ -251,7 +251,7 @@ consensus or an independent tenant-security boundary inside one pool repository.
 
 ## 7. Distribution and publication
 
-HTTP and SSH exchange uwgit-native binary frames and selected object graphs.
+HTTP and SSH exchange wasm-git-native binary frames and selected object graphs.
 Negotiation omits verified existing closure, uses bounded deltas, and compresses
 transfer blocks. Shallow history retains original parent IDs and explicit local
 boundaries. Partial clones retain commit/tree structure and explicit promises for
@@ -350,4 +350,4 @@ recognized [WebAssembly DWARF conventions](https://github.com/WebAssembly/tool-c
 where the payload supplies sufficient evidence. Git's
 [pack-format documentation](https://git-scm.com/docs/gitformat-pack) and
 [partial-clone design](https://git-scm.com/docs/partial-clone) inform the storage
-and missing-object workflows; uwgit defines its own binary formats and contracts.
+and missing-object workflows; wasm-git defines its own binary formats and contracts.

@@ -52,7 +52,7 @@ OpenPGP 选择器必须为完整 40 或 64 位十六进制指纹，可加 `!` �
 CA/KRL 策略、X.509 签名、签名 tag 或 push certificate。
 
 签名绑定作者、声明时间戳、密钥身份、规范未签名提交、原始内容 ID、有序父提交和消息。
-使用 uwgit 专用用途域，不能替代 Git 签名。两个外部格式都存储二进制公钥材料和二进制
+使用 wasm-git 专用用途域，不能替代 Git 签名。两个外部格式都存储二进制公钥材料和二进制
 签名，提交对象内没有 ASCII armor。仓库不保存私钥材料。
 
 普通历史读取和 `fsck` 检查外部签名结构及对象完整性，不执行取钥工具。密码学验证使用
@@ -128,10 +128,10 @@ request-changes 都阻止合并。任一提交改变后，旧审批和检查不�
 
 ```sh
 wasm-git-server compile-protection protection-input.json protection.bin
-wasm-git-server --root /srv/uwgit --policy principals.bin --allow-write \
+wasm-git-server --root /srv/wasm-git --policy principals.bin --allow-write \
   --protection protection.bin --signed-authors authors.bin \
   --merge-author 'Merge service' --merge-signing-format ssh \
-  --merge-signing-key /etc/uwgit/merge-key
+  --merge-signing-key /etc/wasm-git/merge-key
 ```
 
 仓库/分支模式支持精确值或尾部 `*`，分支使用完整 `refs/heads/` 名称。所有匹配规则共同
@@ -153,7 +153,7 @@ wasm-git-server --root /srv/uwgit --policy principals.bin --allow-write \
 
 ## 6. 持久性、保留与恢复
 
-PR 位于共享仓库元数据 `pulls/NUMBER.bin`，格式为 `UWGPR001`、八字节大端解码长度、
+PR 位于共享仓库元数据 `pulls/NUMBER.bin`，格式为 `WGTPR001`、八字节大端解码长度、
 Zstandard 压缩的位置式二进制记录。`counter.bin` 保存二进制递增编号，均不存 JSON。
 更新使用仓库写锁与原子持久替换。失败创建可留下编号空隙，不重用已发编号。
 

@@ -12,7 +12,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let root = std::env::temp_dir().join(format!(
-            "uwgit-ref-batch-{}-{}",
+            "wasm-git-ref-batch-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -103,11 +103,11 @@ fn nested_branches_tags_rename_and_prefix_cleanup_preserve_the_same_native_histo
     let id = seed(&root);
     ok(&["branch", p(&root), "feature/x"]);
     ok(&["tag", p(&root), "release/2026"]);
-    assert!(root.join(".uwgit/refs/feature/x").is_file());
+    assert!(root.join(".wasm-git/refs/feature/x").is_file());
     assert_eq!(ok(&["rev-parse", p(&root), "release/2026"]), id);
     ok(&["branch", p(&root), "-m", "feature/x", "feature/y"]);
     ok(&["branch", p(&root), "-D", "feature/y"]);
-    assert!(!root.join(".uwgit/refs/feature").exists());
+    assert!(!root.join(".wasm-git/refs/feature").exists());
     ok(&["branch", p(&root), "feature"]);
     for name in [
         "a/../b",
@@ -155,14 +155,14 @@ fn symbolic_head_updates_only_the_pointer_and_name_checks_reject_metadata_traver
     let root = temp.path("repo");
     seed(&root);
     ok(&["branch", p(&root), "feature/x"]);
-    let index = fs::read(root.join(".uwgit/index")).unwrap();
+    let index = fs::read(root.join(".wasm-git/index")).unwrap();
     let bytes = fs::read(root.join("a.wasm")).unwrap();
     ok(&["symbolic-ref", p(&root), "HEAD", "refs/heads/feature/x"]);
     assert_eq!(
         ok(&["symbolic-ref", p(&root), "--short", "HEAD"]),
         "feature/x"
     );
-    assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), index);
+    assert_eq!(fs::read(root.join(".wasm-git/index")).unwrap(), index);
     assert_eq!(fs::read(root.join("a.wasm")).unwrap(), bytes);
     assert_eq!(
         ok(&["check-ref-format", "--branch", "feature/x"]),
@@ -212,7 +212,9 @@ fn nul_framing_command_mode_buffers_and_input_failures_do_not_mutate_objects() {
     let temp = Temp::new();
     let root = temp.path("repo");
     seed(&root);
-    let count = fs::read_dir(root.join(".uwgit/objects")).unwrap().count();
+    let count = fs::read_dir(root.join(".wasm-git/objects"))
+        .unwrap()
+        .count();
     let output = execute(
         &["cat-file", p(&root), "--batch-command", "--buffer", "-Z"],
         Some(b"info HEAD\0contents HEAD:a.wasm\0flush\0"),
@@ -236,7 +238,9 @@ fn nul_framing_command_mode_buffers_and_input_failures_do_not_mutate_objects() {
     .status
     .success());
     assert_eq!(
-        fs::read_dir(root.join(".uwgit/objects")).unwrap().count(),
+        fs::read_dir(root.join(".wasm-git/objects"))
+            .unwrap()
+            .count(),
         count
     );
 }

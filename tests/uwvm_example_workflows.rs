@@ -1,7 +1,7 @@
 //! External, ignored acceptance workflows using untouched uwvm2-ros examples.
 //! Run only in the existing SSH Linux cgroup. All generated files and complete
 //! command evidence are retained below the explicitly supplied /tmp roots.
-//! WABT compiles the expected artifacts; no uwgit library is used as an oracle.
+//! WABT compiles the expected artifacts; no wasm-git library is used as an oracle.
 
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -88,8 +88,8 @@ impl Case {
                     .unwrap_or_else(|_| panic!("external ignored workflow requires {name}")),
             )
         };
-        let root = required("UWGIT_UWVM_WORKFLOW_ROOT");
-        let reports = required("UWGIT_UWVM_WORKFLOW_REPORT_DIR");
+        let root = required("WASM_GIT_UWVM_WORKFLOW_ROOT");
+        let reports = required("WASM_GIT_UWVM_WORKFLOW_REPORT_DIR");
         assert!(
             root.is_absolute()
                 && root.starts_with(std::env::temp_dir())
@@ -104,13 +104,13 @@ impl Case {
                     .components()
                     .any(|part| part == std::path::Component::ParentDir)
         );
-        let supplied = required("UWGIT_UWVM_EXAMPLES_ROOT");
+        let supplied = required("WASM_GIT_UWVM_EXAMPLES_ROOT");
         let examples = if supplied.join("examples").is_dir() {
             supplied.join("examples")
         } else {
             supplied
         };
-        let runtime = required("UWGIT_UWVM_BIN");
+        let runtime = required("WASM_GIT_UWVM_BIN");
         let token = format!(
             "{label}-{}-{}",
             std::process::id(),
@@ -163,7 +163,7 @@ impl Case {
         let evidence = json!({
             "schema_version":1, "status":status, "workspace":self.directory,
             "examples_root":self.examples, "runtime":self.runtime,
-            "scope":"Fresh WABT compilation and original-byte uwgit workflows, with explicitly recorded pure preload runtime probes. No ROS network execution or source-repository modification.",
+            "scope":"Fresh WABT compilation and original-byte wasm-git workflows, with explicitly recorded pure preload runtime probes. No ROS network execution or source-repository modification.",
             "sources":self.sources,"artifacts":self.artifacts,"commands":self.commands,"assertions":self.assertions,
         });
         std::fs::write(&self.report, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
@@ -569,7 +569,7 @@ fn unchanged_store(
     repo: &Path,
     before: &BTreeMap<PathBuf, Option<Vec<u8>>>,
 ) {
-    let after = snapshot(&repo.join(".uwgit"));
+    let after = snapshot(&repo.join(".wasm-git"));
     assert_eq!(
         &after, before,
         "{label}: no refs, objects, locks, or directories may change"
@@ -590,7 +590,7 @@ fn decode_hex(value: &Value) -> Vec<u8> {
 }
 
 fn replay_patch_independently(patch: &Value, old: &[u8], new: &[u8]) {
-    assert_eq!(patch["format"], "uwgit-byte-patch-binary-v1");
+    assert_eq!(patch["format"], "wasm-git-byte-patch-binary-v1");
     assert_eq!(patch["old_sha256"], sha(old));
     assert_eq!(patch["new_sha256"], sha(new));
     assert_eq!(patch["old_len"], old.len());
@@ -634,9 +634,9 @@ fn commit(case: &mut Case, repo: &Path, input: &Path, message: &str) -> String {
 }
 
 fn object(repo: &Path, id: &str, kind: u8) -> Vec<u8> {
-    let bytes = std::fs::read(repo.join(".uwgit/objects").join(id)).unwrap();
+    let bytes = std::fs::read(repo.join(".wasm-git/objects").join(id)).unwrap();
     assert_eq!(sha(&bytes), id);
-    assert_eq!(&bytes[..8], b"UWGO\0\0\0\x02");
+    assert_eq!(&bytes[..8], b"WGTO\0\0\0\x02");
     assert_eq!(bytes[8], kind);
     let length = u64::from_be_bytes(bytes[9..17].try_into().unwrap());
     assert_eq!(length, (bytes.len() - 17) as u64);
@@ -722,7 +722,7 @@ fn lifecycle(case: &mut Case, label: &str, old_file: &Path, new_file: &Path) {
     );
     assert_eq!(diff["audit"]["changed"], old != new);
     case.save(&format!("{label}.diff"), diff);
-    let patch = case.path(&format!("{label}.uwgp"));
+    let patch = case.path(&format!("{label}.wgp"));
     case.cli_json(
         "patch",
         &args(&[
@@ -767,7 +767,7 @@ fn lifecycle(case: &mut Case, label: &str, old_file: &Path, new_file: &Path) {
     let verified = verify_commit(&repo, &tip, std::slice::from_ref(&base), &new);
     case.save(&format!("{label}.typed-objects"), verified);
     let range = format!("0:{}", new.len());
-    let before = snapshot(&repo.join(".uwgit"));
+    let before = snapshot(&repo.join(".wasm-git"));
     let history = case.cli_json(
         "trace",
         &args(&["trace", &text(&repo), &tip, "--range", &range]),
@@ -776,7 +776,7 @@ fn lifecycle(case: &mut Case, label: &str, old_file: &Path, new_file: &Path) {
         &history,
         &BTreeMap::from([(base, old), (tip.clone(), new.clone())]),
     );
-    assert_eq!(snapshot(&repo.join(".uwgit")), before);
+    assert_eq!(snapshot(&repo.join(".wasm-git")), before);
     case.save(&format!("{label}.trace"), history);
     transfer(case, label, &repo, &tip, &new);
 }
@@ -1032,7 +1032,7 @@ fn real_preload_index_shift_is_explicit_and_context_merge_refuses_writes() {
     case.cli("switch-right", &args(&["switch", &text(&repo), "right"]));
     let right = commit(&mut case, &repo, &concurrent, "concurrent const edit");
     case.cli("switch-main", &args(&["switch", &text(&repo), "main"]));
-    let before = snapshot(&repo.join(".uwgit"));
+    let before = snapshot(&repo.join(".wasm-git"));
     let output = case.run(
         "merge-must-conflict",
         Path::new(env!("CARGO_BIN_EXE_wasm-git")),
@@ -1054,7 +1054,7 @@ fn real_preload_index_shift_is_explicit_and_context_merge_refuses_writes() {
         .unwrap()
         .iter()
         .any(|conflict| conflict["reason"].as_str().unwrap().contains("context")));
-    assert_eq!(snapshot(&repo.join(".uwgit")), before);
+    assert_eq!(snapshot(&repo.join(".wasm-git")), before);
     case.save("context-conflict-no-writes", report);
     case.finish();
 }
@@ -1434,7 +1434,7 @@ fn real_independent_peers_resolve_overlap_and_return_verified_two_parent_history
         &base_file,
         "shared real preload baseline",
     );
-    let origin_state = snapshot(&origin.join(".uwgit"));
+    let origin_state = snapshot(&origin.join(".wasm-git"));
     case.cli(
         "peer-clone-a",
         &args(&["clone", &text(&origin), &text(&peer_a)]),
@@ -1449,7 +1449,7 @@ fn real_independent_peers_resolve_overlap_and_return_verified_two_parent_history
         &left_file,
         "peer A independent argc assertion 4",
     );
-    let left_state = snapshot(&peer_a.join(".uwgit"));
+    let left_state = snapshot(&peer_a.join(".wasm-git"));
     let right_id = commit(
         &mut case,
         &peer_b,
@@ -1469,7 +1469,7 @@ fn real_independent_peers_resolve_overlap_and_return_verified_two_parent_history
         &origin,
         &origin_state,
     );
-    let peer_b_state = snapshot(&peer_b.join(".uwgit"));
+    let peer_b_state = snapshot(&peer_b.join(".wasm-git"));
     let peer_bundle = case.path("peer.b-to-a.bundle");
     case.cli(
         "peer-b-bundle",
@@ -1480,8 +1480,8 @@ fn real_independent_peers_resolve_overlap_and_return_verified_two_parent_history
         &peer_bundle,
     );
 
-    let before_non_ff = snapshot(&peer_a.join(".uwgit"));
-    assert!(!peer_a.join(".uwgit/objects").join(&right_id).exists());
+    let before_non_ff = snapshot(&peer_a.join(".wasm-git"));
+    assert!(!peer_a.join(".wasm-git/objects").join(&right_id).exists());
     let refused = case.run(
         "peer-non-fast-forward-refused",
         Path::new(env!("CARGO_BIN_EXE_wasm-git")),
@@ -1504,7 +1504,7 @@ fn real_independent_peers_resolve_overlap_and_return_verified_two_parent_history
         "deliberate final-byte bundle corruption; must never publish",
         &corrupt_bundle,
     );
-    let before_corrupt = snapshot(&peer_a.join(".uwgit"));
+    let before_corrupt = snapshot(&peer_a.join(".wasm-git"));
     let refused = case.run(
         "peer-corrupt-bundle-refused",
         Path::new(env!("CARGO_BIN_EXE_wasm-git")),
@@ -1543,7 +1543,7 @@ fn real_independent_peers_resolve_overlap_and_return_verified_two_parent_history
         json!({"local_head":current,"incoming":incoming}),
     );
 
-    let before_conflict = snapshot(&peer_a.join(".uwgit"));
+    let before_conflict = snapshot(&peer_a.join(".wasm-git"));
     let conflict_output = case.run(
         "peer-overlap-must-conflict",
         Path::new(env!("CARGO_BIN_EXE_wasm-git")),
@@ -1622,7 +1622,7 @@ fn real_independent_peers_resolve_overlap_and_return_verified_two_parent_history
     let parents = [left_id.clone(), right_id.clone()];
     let evidence = verify_commit(&peer_a, &resolved_id, &parents, &resolved_bytes);
     case.save("peer-manual-two-parent-raw-object-verification", evidence);
-    let before_stale = snapshot(&peer_a.join(".uwgit"));
+    let before_stale = snapshot(&peer_a.join(".wasm-git"));
     let stale = case.run(
         "peer-stale-resolution-refused",
         Path::new(env!("CARGO_BIN_EXE_wasm-git")),
@@ -1736,7 +1736,7 @@ fn real_independent_peers_resolve_overlap_and_return_verified_two_parent_history
         operators[3]["start"].as_u64().unwrap(),
         operators[3]["end"].as_u64().unwrap()
     );
-    let before_trace = snapshot(&peer_c.join(".uwgit"));
+    let before_trace = snapshot(&peer_c.join(".wasm-git"));
     let traced = case.cli_json(
         "peer-c-trace-all-reviewed-parents",
         &args(&["trace", &text(&peer_c), "reviewed", "--range", &query]),
@@ -1900,7 +1900,7 @@ fn reference_roundtrip(case: &mut Case, label: &str, old_file: &Path, new_file: 
         &args(&["diff", &text(old_file), &text(new_file), "--format", "json"]),
     );
     assert_eq!(difference["audit"]["changed"], true);
-    let patch = case.path(&format!("{label}.uwgp"));
+    let patch = case.path(&format!("{label}.wgp"));
     case.cli_json(
         "bindings-patch",
         &args(&[
@@ -1950,7 +1950,7 @@ fn reference_roundtrip(case: &mut Case, label: &str, old_file: &Path, new_file: 
         .unwrap()
         .1;
     let query = format!("{}:{}", import_range.start, import_range.end);
-    let before = snapshot(&repo.join(".uwgit"));
+    let before = snapshot(&repo.join(".wasm-git"));
     let traced = case.cli_json(
         "bindings-trace-physical-import-only",
         &args(&["trace", &text(&repo), &tip_id, "--range", &query]),

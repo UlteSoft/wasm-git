@@ -146,7 +146,7 @@ fn temporary_images(
                     continue;
                 };
                 let name = format!(
-                    "uwgit-index-{}-{}.wasm",
+                    "wasm-git-index-{}-{}.wasm",
                     crate::platform_fs::process_id(),
                     SEQUENCE.fetch_add(1, Ordering::Relaxed)
                 );

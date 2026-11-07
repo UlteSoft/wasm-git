@@ -1,4 +1,4 @@
-//! Native Wasm object plumbing. Payloads retain uwgit's canonical envelopes.
+//! Native Wasm object plumbing. Payloads retain wasm-git's canonical envelopes.
 use crate::query_commands::QueryOutput;
 use crate::repository::{Repository, RepositoryResult};
 use clap::{Parser, Subcommand};
@@ -10,7 +10,7 @@ mod reference_input;
 #[derive(Parser)]
 #[command(
     name = "wasm-git",
-    about = "Native uwgit object and reference plumbing"
+    about = "Native wasm-git object and reference plumbing"
 )]
 struct Cli {
     #[command(subcommand)]

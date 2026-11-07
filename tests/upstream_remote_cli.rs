@@ -26,7 +26,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let root = std::env::temp_dir().join(format!(
-            "uwgit-upstream-{}-{}",
+            "wasm-git-upstream-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -45,9 +45,9 @@ impl Drop for Temp {
 fn command(args: &[&str]) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_wasm-git"));
     cmd.args(args)
-        .env_remove("UWGIT_REMOTE_TOKEN")
-        .env_remove("UWGIT_SSH_PROGRAM")
-        .env_remove("UWGIT_REMOTE_PROGRAM");
+        .env_remove("WASM_GIT_REMOTE_TOKEN")
+        .env_remove("WASM_GIT_SSH_PROGRAM")
+        .env_remove("WASM_GIT_REMOTE_PROGRAM");
     cmd
 }
 fn success(output: Output) -> String {
@@ -74,7 +74,7 @@ fn write(root: &Path, name: &str, value: u8) {
     .unwrap();
 }
 fn bindings(root: &Path) -> Value {
-    let p = root.join(".uwgit/upstreams.bin");
+    let p = root.join(".wasm-git/upstreams.bin");
     if p.exists() {
         native::upstreams_value(&fs::read(p).unwrap())
     } else {
@@ -94,8 +94,8 @@ fn snapshot(root: &Path, fetch: bool) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
             let p = entry.path();
             let rel = p.strip_prefix(root).unwrap();
             if fetch
-                && (rel.starts_with(".uwgit/objects")
-                    || rel.starts_with(".uwgit/tmp")
+                && (rel.starts_with(".wasm-git/objects")
+                    || rel.starts_with(".wasm-git/tmp")
                     || rel.to_str().unwrap().ends_with(".tracking.bin"))
             {
                 continue;
@@ -145,7 +145,7 @@ impl Fixture {
         run(&["clone", path(&producer), path(&upstream)]);
         let (server, url, shim) = if ssh {
             let shim = temp.path("ssh-shim");
-            fs::write(&shim,b"#!/bin/sh\nset -eu\nexec \"$UWGIT_UPSTREAM_TEST_BINARY\" server --stdio --root \"$UWGIT_UPSTREAM_TEST_ROOT\" --allow-force\n").unwrap();
+            fs::write(&shim,b"#!/bin/sh\nset -eu\nexec \"$WASM_GIT_UPSTREAM_TEST_BINARY\" server --stdio --root \"$WASM_GIT_UPSTREAM_TEST_ROOT\" --allow-force\n").unwrap();
             fs::set_permissions(&shim, fs::Permissions::from_mode(0o700)).unwrap();
             (
                 None,
@@ -204,11 +204,14 @@ impl Fixture {
         let mut child = command(args);
         if let Some(shim) = &self.shim {
             child
-                .env("UWGIT_SSH_PROGRAM", shim)
-                .env("UWGIT_UPSTREAM_TEST_BINARY", env!("CARGO_BIN_EXE_wasm-git"))
-                .env("UWGIT_UPSTREAM_TEST_ROOT", &self.temp.0);
+                .env("WASM_GIT_SSH_PROGRAM", shim)
+                .env(
+                    "WASM_GIT_UPSTREAM_TEST_BINARY",
+                    env!("CARGO_BIN_EXE_wasm-git"),
+                )
+                .env("WASM_GIT_UPSTREAM_TEST_ROOT", &self.temp.0);
         } else {
-            child.env("UWGIT_REMOTE_TOKEN", TOKEN);
+            child.env("WASM_GIT_REMOTE_TOKEN", TOKEN);
         }
         child
     }
@@ -264,7 +267,7 @@ fn network_clone_binds_only_its_committed_advertised_head() {
         let local_copy = f.temp.path("local-copy");
         run(&["clone", path(&local), path(&local_copy)]);
         assert!(
-            !local_copy.join(".uwgit/upstreams.bin").exists(),
+            !local_copy.join(".wasm-git/upstreams.bin").exists(),
             "local clone must not inherit transport-local bindings"
         );
         let empty = f.temp.path("empty.git");
@@ -272,7 +275,7 @@ fn network_clone_binds_only_its_committed_advertised_head() {
         let url = f.url.replace("/upstream.git", "/empty.git");
         let empty_clone = f.temp.path("empty-clone");
         f.run(&["clone", &url, path(&empty_clone)]);
-        assert!(!empty_clone.join(".uwgit/upstreams.bin").exists());
+        assert!(!empty_clone.join(".wasm-git/upstreams.bin").exists());
     }
 }
 #[test]
@@ -432,19 +435,19 @@ version,p=integer(meta,8)
 length,p=integer(meta,p);p+=length
 opcode,p=integer(meta,p)
 kind={6:'push',7:'update_ref'}.get(opcode,'other')
-result=subprocess.run([os.environ['UWGIT_UPSTREAM_TEST_BINARY'],'server','--stdio','--root',os.environ['UWGIT_UPSTREAM_TEST_ROOT']],input=request,capture_output=True,check=True)
+result=subprocess.run([os.environ['WASM_GIT_UPSTREAM_TEST_BINARY'],'server','--stdio','--root',os.environ['WASM_GIT_UPSTREAM_TEST_ROOT']],input=request,capture_output=True,check=True)
 response=result.stdout
 if kind in ['push','update_ref']:
- if os.environ.get('UWGIT_UPSTREAM_BAD_ACK')=='1':
+ if os.environ.get('WASM_GIT_UPSTREAM_BAD_ACK')=='1':
   size=struct.unpack('>I',response[8:12])[0]
   encoded=response[20:20+size]
   assert len(encoded)>=64 and all(c in b'0123456789abcdef' for c in encoded[-64:])
   encoded=encoded[:-64]+b'0'*64
   response=response[:8]+struct.pack('>I',len(encoded))+response[12:20]+encoded+response[20+size:]
  else:
-  pathlib.Path(os.environ['UWGIT_UPSTREAM_READY']).write_text('published')
+  pathlib.Path(os.environ['WASM_GIT_UPSTREAM_READY']).write_text('published')
   until=time.monotonic()+20
-  while not pathlib.Path(os.environ['UWGIT_UPSTREAM_RELEASE']).exists():
+  while not pathlib.Path(os.environ['WASM_GIT_UPSTREAM_RELEASE']).exists():
    if time.monotonic()>until:raise SystemExit('fixed acknowledgement barrier timeout')
    time.sleep(.01)
 sys.stdout.buffer.write(response)
@@ -461,9 +464,9 @@ fn exact_acknowledgement_precedes_binding_and_local_tip_or_binding_cas_is_preser
         let release = f.temp.path("release");
         let mut cmd = f.command(&["push", path(&local), "origin", "HEAD:publication", "-u"]);
         let child = cmd
-            .env("UWGIT_SSH_PROGRAM", &shim)
-            .env("UWGIT_UPSTREAM_READY", &ready)
-            .env("UWGIT_UPSTREAM_RELEASE", &release)
+            .env("WASM_GIT_SSH_PROGRAM", &shim)
+            .env("WASM_GIT_UPSTREAM_READY", &ready)
+            .env("WASM_GIT_UPSTREAM_RELEASE", &release)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -510,8 +513,8 @@ fn mismatching_acknowledgement_keeps_prior_upstream_even_after_remote_publicatio
     let before = snapshot(&local, false);
     let output = f
         .command(&["push", path(&local), "origin", "HEAD:publication", "-u"])
-        .env("UWGIT_SSH_PROGRAM", &shim)
-        .env("UWGIT_UPSTREAM_BAD_ACK", "1")
+        .env("WASM_GIT_SSH_PROGRAM", &shim)
+        .env("WASM_GIT_UPSTREAM_BAD_ACK", "1")
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1));

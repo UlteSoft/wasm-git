@@ -31,7 +31,7 @@ fn text(output: Output) -> String {
 impl Fixture {
     fn new() -> Self {
         let root = std::env::temp_dir().join(format!(
-            "uwgit-graph-{}-{}",
+            "wasm-git-graph-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -442,7 +442,7 @@ fn native_remote_branch_views_match_git_namespace_and_displayed_name_filters() {
     let f = query_graph();
     let url = "ssh://test@localhost/tmp/ref-query.git";
     text(f.uw(&["remote", "add", "origin", url]));
-    fs::write(f.native.join(".uwgit/remotes/origin.tracking.bin"),native::tracking_bytes(serde_json::json!({"version":1,"remote":"origin","url":url,"state":{"format":1,"head":"main","branches":{"main":f.id("right")},"tags":{}}}))).unwrap();
+    fs::write(f.native.join(".wasm-git/remotes/origin.tracking.bin"),native::tracking_bytes(serde_json::json!({"version":1,"remote":"origin","url":url,"state":{"format":1,"head":"main","branches":{"main":f.id("right")},"tags":{}}}))).unwrap();
     text(f.git(&["remote", "add", "origin", url]));
     text(f.git(&[
         "update-ref",
@@ -520,7 +520,7 @@ fn criss_cross_multiple_bases_and_ancestor_exit_codes_are_read_only() {
     let mut f = Fixture::new();
     f.graph();
     fs::write(
-        f.native.join(".uwgit/index"),
+        f.native.join(".wasm-git/index"),
         b"unrelated invalid index bytes",
     )
     .unwrap();
@@ -726,7 +726,7 @@ fn corrupt_graph_and_malformed_symmetric_ranges_fail_without_publication() {
     ] {
         assert!(!f.uw(&["rev-list", &range]).status.success());
     }
-    fs::remove_file(f.native.join(".uwgit/objects").join(f.id("root"))).unwrap();
+    fs::remove_file(f.native.join(".wasm-git/objects").join(f.id("root"))).unwrap();
     let before = metadata(&f.native);
     let output = f.uw(&["merge-base", "--is-ancestor", f.id("left"), f.id("right")]);
     assert_eq!(output.status.code(), Some(2));

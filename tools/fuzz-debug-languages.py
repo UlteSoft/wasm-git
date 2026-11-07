@@ -49,8 +49,8 @@ def main(args):
     try:
         for worker, cpu in enumerate(range(16, 32)):
             log = (output / f'worker-{worker}.log').open('w')
-            env = dict(os.environ, UWGIT_DEBUG_WORKER=str(worker), UWGIT_DEBUG_SECONDS=str(args.seconds),
-                       UWGIT_DEBUG_START_MS=str(start), UWGIT_DEBUG_OUTPUT=str(output),
+            env = dict(os.environ, WASM_GIT_DEBUG_WORKER=str(worker), WASM_GIT_DEBUG_SECONDS=str(args.seconds),
+                       WASM_GIT_DEBUG_START_MS=str(start), WASM_GIT_DEBUG_OUTPUT=str(output),
                        LLVM_PROFILE_FILE=str(output / f'worker-{worker}-%p.profraw'))
             child = subprocess.Popen(['taskset', '-c', str(cpu), str(binary), '--ignored', '--exact',
                                       'timed_language_debug_fuzz', '--nocapture', '--test-threads=1'],

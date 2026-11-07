@@ -378,7 +378,7 @@ fn corrupted_debug_payloads_never_reject_or_mutate_the_original_module() {
 #[test]
 fn debug_queries_survive_native_history_gc_and_exact_restore() {
     use std::{fs, process::Command};
-    let root = std::env::temp_dir().join(format!("uwgit-debug-gc-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("wasm-git-debug-gc-{}", std::process::id()));
     fs::create_dir_all(&root).unwrap();
     let repo = root.join("repo");
     let file = root.join("module.wasm");
@@ -445,7 +445,7 @@ fn changed_instruction_has_old_and_new_source_annotations() {
         false,
         false,
     );
-    let root = std::env::temp_dir().join(format!("uwgit-debug-diff-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("wasm-git-debug-diff-{}", std::process::id()));
     fs::create_dir_all(&root).unwrap();
     fs::write(root.join("a"), &a).unwrap();
     fs::write(root.join("b"), &b).unwrap();
@@ -482,7 +482,7 @@ fn changed_instruction_has_old_and_new_source_annotations() {
 #[test]
 fn cli_supports_offset_symbol_source_queries_without_opening_source_files() {
     use std::{fs, process::Command};
-    let root = std::env::temp_dir().join(format!("uwgit-debug-cli-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("wasm-git-debug-cli-{}", std::process::id()));
     fs::create_dir_all(&root).unwrap();
     let wasm = dwarf(sample(), false, false, false);
     let (_, _, _, ops) = body(&wasm);

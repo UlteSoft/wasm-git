@@ -26,8 +26,8 @@ def require(value, message):
 
 
 def expected_swap_max():
-    value = os.environ.get('UWGIT_EXPECTED_CGROUP_SWAP_MAX', '0')
-    require(value in ('max', '0') or (value and value[0] in '123456789' and all(char in '0123456789' for char in value)), 'UWGIT_EXPECTED_CGROUP_SWAP_MAX must be max or canonical nonnegative decimal')
+    value = os.environ.get('WASM_GIT_EXPECTED_CGROUP_SWAP_MAX', '0')
+    require(value in ('max', '0') or (value and value[0] in '123456789' and all(char in '0123456789' for char in value)), 'WASM_GIT_EXPECTED_CGROUP_SWAP_MAX must be max or canonical nonnegative decimal')
     return value
 
 
@@ -114,12 +114,12 @@ def main():
     parser.add_argument('--output', required=True, type=Path)
     args = parser.parse_args()
     require(platform.system() == 'Linux', 'admitted SSH Linux required')
-    expected = os.environ['UWGIT_EXPECTED_CGROUP']
+    expected = os.environ['WASM_GIT_EXPECTED_CGROUP']
     membership = Path('/proc/self/cgroup').read_text()
     require(membership.splitlines() == ['0::' + expected], 'existing admitted cgroup required')
     require(expected.startswith('/system.slice/docker-') and expected.endswith('.scope'), 'Docker cgroup required')
     boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
-    require(boot == os.environ['UWGIT_EXPECTED_BOOT_ID'], 'admitted boot required')
+    require(boot == os.environ['WASM_GIT_EXPECTED_BOOT_ID'], 'admitted boot required')
     cg = Path('/sys/fs/cgroup') / expected.lstrip('/')
     swap_max = expected_swap_max()
     limits = {field: (cg / field).read_text().strip() for field in ['memory.max', 'memory.swap.max', 'cpuset.cpus.effective']}
@@ -132,8 +132,8 @@ def main():
         require(path.is_absolute() and '..' not in path.parts and path.is_relative_to('/tmp'), 'absolute /tmp paths required')
     require(args.root.is_dir() and not args.root.is_symlink(), 'existing server root required')
     require(args.authority and '/' not in args.authority and not any(ord(char) <= 32 for char in args.authority), 'SSH authority only')
-    require(os.environ.get('UWGIT_SSH_PROGRAM'), 'parent temporary SSH program required')
-    require(os.environ.get('UWGIT_REMOTE_PROGRAM') == str(args.binary), 'remote executable must be the pinned binary')
+    require(os.environ.get('WASM_GIT_SSH_PROGRAM'), 'parent temporary SSH program required')
+    require(os.environ.get('WASM_GIT_REMOTE_PROGRAM') == str(args.binary), 'remote executable must be the pinned binary')
     binary_before = pin(args.binary)
     script_before = pin(Path(__file__).absolute())
     inputs_before = {name: pin(path) for name, path in sources.items()}
@@ -158,7 +158,7 @@ def main():
         input_pins[name] = pin(destination)
     (args.output / 'input-pins.json').write_text(json.dumps({'before': inputs_before, 'copies': input_pins}, indent=2) + '\n')
     env = dict(os.environ)
-    env.pop('UWGIT_REMOTE_TOKEN', None)
+    env.pop('WASM_GIT_REMOTE_TOKEN', None)
     commands = []
 
     def run(*arguments, expected_exit=0):
@@ -194,7 +194,7 @@ def main():
         destination.write_bytes(data)
 
     def local_refs(repository):
-        metadata = repository / '.uwgit'
+        metadata = repository / '.wasm-git'
         paths = [metadata / 'HEAD']
         for directory in ['refs', 'tags']:
             if (metadata / directory).exists():
@@ -206,7 +206,7 @@ def main():
         for root, directories, files in os.walk(repository, followlinks=False):
             root = Path(root)
             if root == repository:
-                directories.remove('.uwgit')
+                directories.remove('.wasm-git')
             for name in directories:
                 directory = root / name
                 require(stat.S_ISDIR(directory.lstat().st_mode), 'unexpected worktree symlink or non-directory')
@@ -260,9 +260,9 @@ def main():
     require(identifier(upstream) == changed, 'SSH push changed tree commit')
     exports.extend([export(upstream, 'HEAD', A, 'pushed-a.wasm', input_data['new_a']), export(upstream, 'HEAD', C, 'pushed-c.wasm', input_data['new_b'])])
     refs_before = local_refs(work)
-    index_before = pin(work / '.uwgit/index')
+    index_before = pin(work / '.wasm-git/index')
     run('fetch', work)
-    require(local_refs(work) == refs_before and pin(work / '.uwgit/index') == index_before, 'fetch changed local refs or index')
+    require(local_refs(work) == refs_before and pin(work / '.wasm-git/index') == index_before, 'fetch changed local refs or index')
     require(regular(work / A) == input_data['old_a'] and regular(work / B) == input_data['old_b'], 'fetch changed working files')
     require(identifier(work, 'origin/main') == changed, 'remote tracking lacks changed tree')
     run('pull', work, 'origin', 'main', '-m', 'integrate received ROS tree')
@@ -321,16 +321,16 @@ def main():
     right_tip = staged_commit(right, 'right adds different original ROS bytes at the same path')
     run('push', right)
     left_refs = local_refs(left)
-    left_index = pin(left / '.uwgit/index')
+    left_index = pin(left / '.wasm-git/index')
     left_worktree = worktree_snapshot(left)
     run('fetch', left)
-    require(local_refs(left) == left_refs and pin(left / '.uwgit/index') == left_index and worktree_snapshot(left) == left_worktree, 'resolution fetch changed local refs, index or worktree')
+    require(local_refs(left) == left_refs and pin(left / '.wasm-git/index') == left_index and worktree_snapshot(left) == left_worktree, 'resolution fetch changed local refs, index or worktree')
     conflict_command = len(commands)
     conflict_report_path = run('pull', left, 'origin', 'main', '-m', 'report add/add conflict without publishing', expected_exit=2)
     conflict_report = json.loads(conflict_report_path.read_bytes())
     require(conflict_report['status'] == 'conflict' and conflict_report['old_head'] == left_tip and conflict_report['target'] == right_tip and conflict_report['base'] == resolution_base, 'expected pull conflict does not bind both reviewed tips')
     require(any(row['path'] == conflict_path and row['status'] == 'conflict' for row in conflict_report['file_reports']), 'add/add conflict path missing from report')
-    require(local_refs(left) == left_refs and pin(left / '.uwgit/index') == left_index and worktree_snapshot(left) == left_worktree, 'conflicted pull changed HEAD, index or worktree')
+    require(local_refs(left) == left_refs and pin(left / '.wasm-git/index') == left_index and worktree_snapshot(left) == left_worktree, 'conflicted pull changed HEAD, index or worktree')
 
     run('mv', left, A, child_path)
     write(left, B, input_data['new_b'])
@@ -338,7 +338,7 @@ def main():
     resolved_files = {child_path: input_data['old_a'], B: input_data['new_b'], conflict_path: input_data['new_a']}
     dirty_bytes = input_data['old_a'] if input_data['old_a'] != input_data['new_b'] else input_data['new_a']
     write(left, B, dirty_bytes)
-    supplied_index = pin(left / '.uwgit/index')
+    supplied_index = pin(left / '.wasm-git/index')
     supplied_worktree = worktree_snapshot(left)
     manual_report_path = run('merge', left, right_tip, '-m', 'review exact original-module index with file to directory conversion', '--resolved-index', '--expect-head', left_tip)
     manual_report = json.loads(manual_report_path.read_bytes())
@@ -346,7 +346,7 @@ def main():
     require(first_evidence['replayed_modified_deltas'], 'manual merge did not expose the changed original ROS module delta')
     merged_tip = immutable_id(manual_report['commit'])
     require(manual_report['old_head'] == left_tip and manual_report['target'] == right_tip and manual_report['base'] == resolution_base, 'manual resolution changed the reviewed tips or base')
-    require(pin(left / '.uwgit/index') == supplied_index and worktree_snapshot(left) == supplied_worktree, 'manual tree merge changed the supplied index or dirty worktree')
+    require(pin(left / '.wasm-git/index') == supplied_index and worktree_snapshot(left) == supplied_worktree, 'manual tree merge changed the supplied index or dirty worktree')
     manual_commit_pin = shown_commit(left, 'HEAD', merged_tip, [left_tip, right_tip])
     run('push', left)
     run('pull', right, 'origin', 'main', '-m', 'receive reviewed file to directory conversion')
@@ -357,7 +357,7 @@ def main():
         export(right, 'HEAD', B, 'resolution/received-server.wasm', input_data['new_b']),
         export(right, 'HEAD', conflict_path, 'resolution/received-conflict.wasm', input_data['new_a']),
     ]
-    require(regular(left / B) == dirty_bytes and pin(left / '.uwgit/index') == supplied_index, 'remote operations discarded the original dirty worktree or staged resolution')
+    require(regular(left / B) == dirty_bytes and pin(left / '.wasm-git/index') == supplied_index, 'remote operations discarded the original dirty worktree or staged resolution')
 
     run('restore', left, '--source', 'HEAD', B)
     require(regular(left / B) == resolved_files[B], 'explicit restore did not restore staged module bytes')
@@ -385,27 +385,27 @@ def main():
     empty_right_files = {**reverse_files, A: input_data['new_a']}
     run('push', right)
     empty_left_refs = local_refs(left)
-    empty_left_index = pin(left / '.uwgit/index')
+    empty_left_index = pin(left / '.wasm-git/index')
     empty_left_worktree = worktree_snapshot(left)
     run('fetch', left)
-    require(local_refs(left) == empty_left_refs and pin(left / '.uwgit/index') == empty_left_index and worktree_snapshot(left) == empty_left_worktree, 'fetch before empty resolution changed local state')
+    require(local_refs(left) == empty_left_refs and pin(left / '.wasm-git/index') == empty_left_index and worktree_snapshot(left) == empty_left_worktree, 'fetch before empty resolution changed local state')
     run('rm', left, '--cached', A, B, conflict_path)
-    empty_index_data = regular(left / '.uwgit/index')
-    require(empty_index_data.startswith(b'UWGITIDX\x02') and json.loads(empty_index_data[9:])['files'] == {}, 'empty resolution must use a real, present, empty index')
-    empty_index_pin = pin(left / '.uwgit/index')
+    empty_index_data = regular(left / '.wasm-git/index')
+    require(empty_index_data.startswith(b'WASMGIDX\x02') and json.loads(empty_index_data[9:])['files'] == {}, 'empty resolution must use a real, present, empty index')
+    empty_index_pin = pin(left / '.wasm-git/index')
     empty_retained_worktree = worktree_snapshot(left)
     empty_report_path = run('merge', left, empty_right_tip, '-m', 'review exact empty staged tree with both ROS parents', '--resolved-index', '--expect-head', empty_left_tip)
     empty_report = json.loads(empty_report_path.read_bytes())
     empty_evidence = resolution_evidence(empty_report, reverse_files, empty_left_files, empty_right_files, {})
     merged_empty_tip = immutable_id(empty_report['commit'])
     require(empty_report['old_head'] == empty_left_tip and empty_report['target'] == empty_right_tip and empty_report['base'] == reverse_tip, 'empty manual resolution changed reviewed ancestry')
-    require(pin(left / '.uwgit/index') == empty_index_pin and worktree_snapshot(left) == empty_retained_worktree, 'empty resolution changed index or retained worktree bytes')
+    require(pin(left / '.wasm-git/index') == empty_index_pin and worktree_snapshot(left) == empty_retained_worktree, 'empty resolution changed index or retained worktree bytes')
     empty_commit_pin = shown_commit(left, 'HEAD', merged_empty_tip, [empty_left_tip, empty_right_tip])
     run('push', left)
     run('pull', right, 'origin', 'main', '-m', 'receive explicit empty-tree merge')
     require(all(not (right / name).exists() for name in reverse_files), 'empty resolved tree left tracked paths in the receiving worktree')
-    received_empty_index = regular(right / '.uwgit/index')
-    require(received_empty_index.startswith(b'UWGITIDX\x02') and json.loads(received_empty_index[9:])['files'] == {}, 'pull did not synchronize a real empty index')
+    received_empty_index = regular(right / '.wasm-git/index')
+    require(received_empty_index.startswith(b'WASMGIDX\x02') and json.loads(received_empty_index[9:])['files'] == {}, 'pull did not synchronize a real empty index')
     resolved_empty_clone = resolution_root / 'empty-clone'
     run('clone', resolution_url, resolved_empty_clone)
     empty_inspection_path = run('inspect', 'HEAD', '--repo', resolved_empty_clone, '--json')

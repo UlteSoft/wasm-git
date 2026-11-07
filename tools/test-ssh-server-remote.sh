@@ -4,18 +4,18 @@
 # lives in a newly reserved /tmp directory; private test keys are removed on exit.
 set -euo pipefail
 if [[ $# != 2 ]]; then
-    echo 'usage: test-ssh-server-remote.sh /absolute/wasm-git /tmp/uwgit-ssh-server-NEW' >&2
+    echo 'usage: test-ssh-server-remote.sh /absolute/wasm-git /tmp/wasm-git-ssh-server-NEW' >&2
     exit 2
 fi
 binary=$1
 work=$2
 case "$binary" in /*) ;; *) echo 'binary must be an absolute path' >&2; exit 2 ;; esac
-if [[ ! "$work" =~ ^/tmp/uwgit-ssh-server-[A-Za-z0-9_-]+$ ]]; then
-    echo 'test directory must be a simple /tmp/uwgit-ssh-server-NAME path' >&2
+if [[ ! "$work" =~ ^/tmp/wasm-git-ssh-server-[A-Za-z0-9_-]+$ ]]; then
+    echo 'test directory must be a simple /tmp/wasm-git-ssh-server-NAME path' >&2
     exit 2
 fi
-: "${UWGIT_EXPECTED_CGROUP:?exact admitted /proc/self/cgroup path is required}"
-: "${UWGIT_EXPECTED_BOOT_ID:?admitted boot ID is required}"
+: "${WASM_GIT_EXPECTED_CGROUP:?exact admitted /proc/self/cgroup path is required}"
+: "${WASM_GIT_EXPECTED_BOOT_ID:?admitted boot ID is required}"
 mkdir -m 700 "$work"
 mkdir "$work/logs" "$work/repositories"
 sshd_pid=
@@ -35,21 +35,21 @@ trap 'exit 143' TERM
 python3 - "$work/admission.json" "$binary" <<'PY'
 import hashlib,json,os,pathlib,platform,sys
 assert platform.system()=='Linux'
-expected=os.environ['UWGIT_EXPECTED_CGROUP']
+expected=os.environ['WASM_GIT_EXPECTED_CGROUP']
 lines=pathlib.Path('/proc/self/cgroup').read_text().splitlines()
 assert lines==['0::'+expected], lines
 assert 'docker-' in expected and expected.endswith('.scope'), expected
 base=pathlib.Path('/sys/fs/cgroup')
 # /host chroot retains the full cgroup tree, rather than a namespace-rebased root.
 base=base/expected.lstrip('/')
-swap_max=os.environ.get('UWGIT_EXPECTED_CGROUP_SWAP_MAX','0')
-assert swap_max in ('max','0') or (swap_max and swap_max[0] in '123456789' and all(char in '0123456789' for char in swap_max)),'UWGIT_EXPECTED_CGROUP_SWAP_MAX must be max or canonical nonnegative decimal'
+swap_max=os.environ.get('WASM_GIT_EXPECTED_CGROUP_SWAP_MAX','0')
+assert swap_max in ('max','0') or (swap_max and swap_max[0] in '123456789' and all(char in '0123456789' for char in swap_max)),'WASM_GIT_EXPECTED_CGROUP_SWAP_MAX must be max or canonical nonnegative decimal'
 values={name:(base/name).read_text().strip() for name in ['memory.max','memory.swap.max','memory.swap.current','cpuset.cpus.effective','memory.events']}
 assert values['memory.max']=='68719476736',values
 assert values['memory.swap.max']==swap_max,values
 assert values['cpuset.cpus.effective']=='0-31',values
 boot=pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip()
-assert boot==os.environ['UWGIT_EXPECTED_BOOT_ID'],boot
+assert boot==os.environ['WASM_GIT_EXPECTED_BOOT_ID'],boot
 binary=pathlib.Path(sys.argv[2]); assert binary.is_file() and os.access(binary,os.X_OK)
 record={'boot_id':boot,'cgroup':expected,'expected_cgroup_swap_max':swap_max,'resources':values,'binary':str(binary),'binary_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),'fuzzer_run':False}
 pathlib.Path(sys.argv[1]).write_text(json.dumps(record,sort_keys=True)+'\n')
@@ -115,7 +115,7 @@ CONFIG
 cat > "$work/ssh-program" <<'SHIM'
 #!/bin/sh
 set -eu
-exec "$UWGIT_TEST_SSH_BINARY" -F "$UWGIT_TEST_SSH_CONFIG" "$@"
+exec "$WASM_GIT_TEST_SSH_BINARY" -F "$WASM_GIT_TEST_SSH_CONFIG" "$@"
 SHIM
 chmod 700 "$work/ssh-program"
 # This isolated daemon must accept fixtures under the world-writable /tmp
@@ -146,11 +146,11 @@ while True:
         if time.monotonic()>=limit:raise
         time.sleep(.025)
 PY
-export UWGIT_SSH_PROGRAM="$work/ssh-program"
-export UWGIT_TEST_SSH_BINARY="$ssh_binary"
-export UWGIT_TEST_SSH_CONFIG="$work/ssh_config"
-export UWGIT_REMOTE_PROGRAM="$binary"
-unset UWGIT_REMOTE_TOKEN || true
+export WASM_GIT_SSH_PROGRAM="$work/ssh-program"
+export WASM_GIT_TEST_SSH_BINARY="$ssh_binary"
+export WASM_GIT_TEST_SSH_CONFIG="$work/ssh_config"
+export WASM_GIT_REMOTE_PROGRAM="$binary"
+unset WASM_GIT_REMOTE_TOKEN || true
 sequence=0
 run() {
     sequence=$((sequence+1))
@@ -167,8 +167,8 @@ PY
 }
 python3 - "$work" <<'PY'
 import hashlib,json,os,pathlib,stat,sys
-root=pathlib.Path(sys.argv[1]);old=os.environ.get('UWGIT_TEST_SSH_OLD_WASM');new=os.environ.get('UWGIT_TEST_SSH_NEW_WASM')
-assert (old is None)==(new is None),'both UWGIT_TEST_SSH_OLD_WASM and UWGIT_TEST_SSH_NEW_WASM must be set together'
+root=pathlib.Path(sys.argv[1]);old=os.environ.get('WASM_GIT_TEST_SSH_OLD_WASM');new=os.environ.get('WASM_GIT_TEST_SSH_NEW_WASM')
+assert (old is None)==(new is None),'both WASM_GIT_TEST_SSH_OLD_WASM and WASM_GIT_TEST_SSH_NEW_WASM must be set together'
 provided=old is not None
 if provided:assert old and new,'provided input paths must not be empty'
 records={}
@@ -214,11 +214,11 @@ run "$binary" fsck "$upstream"
 run "$binary" fsck "$local_clone"
 # The default single-module workflow stays unchanged. Supplying any tree input
 # enables one additional, separately logged workflow on this same real daemon.
-if [[ -n ${UWGIT_TEST_SSH_TREE_OLD_A+x} || -n ${UWGIT_TEST_SSH_TREE_OLD_B+x} || -n ${UWGIT_TEST_SSH_TREE_NEW_A+x} || -n ${UWGIT_TEST_SSH_TREE_NEW_B+x} ]]; then
-    : "${UWGIT_TEST_SSH_TREE_OLD_A:?all four tree module inputs are required}"
-    : "${UWGIT_TEST_SSH_TREE_OLD_B:?all four tree module inputs are required}"
-    : "${UWGIT_TEST_SSH_TREE_NEW_A:?all four tree module inputs are required}"
-    : "${UWGIT_TEST_SSH_TREE_NEW_B:?all four tree module inputs are required}"
+if [[ -n ${WASM_GIT_TEST_SSH_TREE_OLD_A+x} || -n ${WASM_GIT_TEST_SSH_TREE_OLD_B+x} || -n ${WASM_GIT_TEST_SSH_TREE_NEW_A+x} || -n ${WASM_GIT_TEST_SSH_TREE_NEW_B+x} ]]; then
+    : "${WASM_GIT_TEST_SSH_TREE_OLD_A:?all four tree module inputs are required}"
+    : "${WASM_GIT_TEST_SSH_TREE_OLD_B:?all four tree module inputs are required}"
+    : "${WASM_GIT_TEST_SSH_TREE_NEW_A:?all four tree module inputs are required}"
+    : "${WASM_GIT_TEST_SSH_TREE_NEW_B:?all four tree module inputs are required}"
     tree_script="$(cd "$(dirname "$0")" && pwd)/test-tree-ssh-workflow.py"
     python3 - "$tree_script" "$work/tree-hook-source.json" <<'PY'
 import hashlib,json,pathlib,stat,sys
@@ -227,8 +227,8 @@ data=path.read_bytes()
 pathlib.Path(sys.argv[2]).write_text(json.dumps({'path':str(path),'byte_len':len(data),'sha256':hashlib.sha256(data).hexdigest()},sort_keys=True)+'\n')
 PY
     python3 "$tree_script" "$binary" --root "$work/repositories" --authority "$username@127.0.0.1:$port" \
-        --old-a "$UWGIT_TEST_SSH_TREE_OLD_A" --old-b "$UWGIT_TEST_SSH_TREE_OLD_B" \
-        --new-a "$UWGIT_TEST_SSH_TREE_NEW_A" --new-b "$UWGIT_TEST_SSH_TREE_NEW_B" \
+        --old-a "$WASM_GIT_TEST_SSH_TREE_OLD_A" --old-b "$WASM_GIT_TEST_SSH_TREE_OLD_B" \
+        --new-a "$WASM_GIT_TEST_SSH_TREE_NEW_A" --new-b "$WASM_GIT_TEST_SSH_TREE_NEW_B" \
         --output "$work/tree-workflow" >"$work/logs/tree-workflow.stdout" 2>"$work/logs/tree-workflow.stderr"
 fi
 python3 - "$work" "$binary" <<'PY'

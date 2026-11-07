@@ -7,8 +7,8 @@ skip_fuzz=${3:-0}
 [[ $skip_fuzz == 0 || $skip_fuzz == 1 ]] || exit 2
 if [[ $# -ge 4 ]]; then
     corpus_mode=$4
-elif [[ ${UWGIT_CORPUS_MODE+x} ]]; then
-    corpus_mode=$UWGIT_CORPUS_MODE
+elif [[ ${WASM_GIT_CORPUS_MODE+x} ]]; then
+    corpus_mode=$WASM_GIT_CORPUS_MODE
 elif [[ $skip_fuzz == 1 ]]; then
     corpus_mode=originals-only
 else
@@ -16,7 +16,7 @@ else
 fi
 [[ $corpus_mode == originals-only || $corpus_mode == fixed-mutations ]] || exit 2
 [[ $skip_fuzz != 1 || $corpus_mode == originals-only ]] || exit 2
-export UWGIT_CORPUS_MODE="$corpus_mode"
+export WASM_GIT_CORPUS_MODE="$corpus_mode"
 cg_path=$(awk -F: '$1 == "0" && $2 == "" {print $3}' /proc/self/cgroup)
 cg="/sys/fs/cgroup$cg_path"
 [[ $(uname -s) == Linux && $cg_path == /system.slice/docker-*.scope ]]
@@ -74,13 +74,13 @@ with open(sys.argv[2], 'w') as output:
         output.write(hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()+'  '+path+'\n')
 PY
 sha256sum /usr/bin/wat2wasm /usr/bin/wasm-validate /usr/bin/wasm-objdump /usr/lib/llvm-22/bin/clang "$root/bin/wasm-ld" > "$run/evidence/compiler-tools.sha256"
-export UWGIT_UWVM_EXAMPLES_ROOT="$run/reference"
-export UWGIT_UWVM_BUILD_ROOT="$run/build"
-export UWGIT_UWVM_CORPUS_REPORT="$run/evidence/corpus.json"
-export UWGIT_UWVM_WORKFLOW_ROOT="$run/workflow"
-export UWGIT_UWVM_WORKFLOW_REPORT_DIR="$run/evidence/workflows"
-export UWGIT_UWVM_BIN="$run/bin/uwvm"
-export UWGIT_UWVM_CC="$root/bin/clang-wasm"
+export WASM_GIT_UWVM_EXAMPLES_ROOT="$run/reference"
+export WASM_GIT_UWVM_BUILD_ROOT="$run/build"
+export WASM_GIT_UWVM_CORPUS_REPORT="$run/evidence/corpus.json"
+export WASM_GIT_UWVM_WORKFLOW_ROOT="$run/workflow"
+export WASM_GIT_UWVM_WORKFLOW_REPORT_DIR="$run/evidence/workflows"
+export WASM_GIT_UWVM_BIN="$run/bin/uwvm"
+export WASM_GIT_UWVM_CC="$root/bin/clang-wasm"
 export WASM_GIT_CC="$root/bin/clang-wasm"
 set +e
 cargo fmt --check > "$run/evidence/fmt.log" 2>&1
@@ -99,7 +99,7 @@ if [[ $fmt_status == 0 && $clippy_status == 0 && $regular_status == 0 ]]; then
     workflow_status=$?
     if [[ $corpus_status == 0 ]]; then
         python3 tools/verify-uwvm-example-products.py --reference "$run/reference" --build-root "$run/build" \
-            --evidence "$run/evidence/products" --uwgit "$CARGO_TARGET_DIR/debug/wasm-git" \
+            --evidence "$run/evidence/products" --wasm-git "$CARGO_TARGET_DIR/debug/wasm-git" \
             --uwvm "$run/bin/uwvm" --cc "$root/bin/clang-wasm" > "$run/evidence/products.log" 2>&1
         products_status=$?
     fi

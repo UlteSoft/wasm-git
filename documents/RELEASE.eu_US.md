@@ -24,14 +24,14 @@ the PE import tables of both executables and rejects dynamic CRT dependencies.
 
 The client is still the default Cargo build. Use `--no-default-features
 --features server` for the standalone server or `--features server` for both.
-The object, pack and network formats are uwgit formats, not native Git formats.
+The object, pack and network formats are wasm-git formats, not native Git formats.
 
 ## 2. WASI Preview 1 profiles
 
 Both Wasm artifacts are command modules importing only
 `wasi_snapshot_preview1`. MVP and Core 2.0 describe the instruction/validation
-profile of **uwgit itself**. They do not restrict the features in modules that
-uwgit can audit. The same lossless parser and custom-section support are present
+profile of **wasm-git itself**. They do not restrict the features in modules that
+wasm-git can audit. The same lossless parser and custom-section support are present
 in both builds.
 
 `tools/build-wasi.py` rebuilds Rust `std` and `panic_abort` using a scoped

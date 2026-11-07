@@ -16,7 +16,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
-            "uwgit-head-transactions-{}-{}",
+            "wasm-git-head-transactions-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -104,7 +104,7 @@ fn seed(root: &Path) -> (String, String) {
     (ids.remove(0), ids.remove(0))
 }
 fn log(root: &Path, name: &str) -> Vec<Value> {
-    let bytes = fs::read(root.join(".uwgit").join(name)).unwrap();
+    let bytes = fs::read(root.join(".wasm-git").join(name)).unwrap();
     native::log_value(&bytes)
 }
 fn image(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
@@ -132,7 +132,7 @@ fn branch_creation_and_symbolic_head_publish_together_with_correct_logs_and_orig
     let temp = Temp::new();
     let root = temp.path("repo");
     let (first, second) = seed(&root);
-    let index = fs::read(root.join(".uwgit/index")).unwrap();
+    let index = fs::read(root.join(".wasm-git/index")).unwrap();
     fs::write(root.join("a.wasm"), b"dirty original bytes").unwrap();
     let global = log(&root, "reflog");
     let local = log(&root, "head-reflog.bin");
@@ -143,7 +143,7 @@ fn branch_creation_and_symbolic_head_publish_together_with_correct_logs_and_orig
     );
     assert_eq!(ok(&["rev-parse", p(&root), "HEAD"]), first);
     assert_eq!(ok(&["rev-parse", p(&root), "main"]), second);
-    assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), index);
+    assert_eq!(fs::read(root.join(".wasm-git/index")).unwrap(), index);
     assert_eq!(
         fs::read(root.join("a.wasm")).unwrap(),
         b"dirty original bytes"
@@ -157,7 +157,7 @@ fn branch_creation_and_symbolic_head_publish_together_with_correct_logs_and_orig
     assert_eq!(next_local.last().unwrap()["old"], second);
     assert_eq!(next_local.last().unwrap()["new"], first);
     assert_eq!(ok(&["rev-parse", p(&root), "HEAD@{1}"]), second);
-    assert!(!root.join(".uwgit/ref-transaction.bin").exists());
+    assert!(!root.join(".wasm-git/ref-transaction.bin").exists());
     ok(&["fsck", p(&root)]);
 }
 
@@ -227,7 +227,7 @@ fn detached_head_oid_leases_reattach_and_reports_distinguish_symbolic_and_commit
     let root = temp.path("repo");
     let (first, second) = seed(&root);
     ok(&["branch", p(&root), "topic", &first]);
-    let before = fs::read(root.join(".uwgit/index")).unwrap();
+    let before = fs::read(root.join(".wasm-git/index")).unwrap();
     let report = json(&[
         "update-ref",
         p(&root),
@@ -242,7 +242,7 @@ fn detached_head_oid_leases_reattach_and_reports_distinguish_symbolic_and_commit
     assert_eq!(report["new"], first);
     assert_eq!(report["new_commit"], first);
     assert_eq!(ok(&["rev-parse", p(&root), "main"]), second);
-    assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), before);
+    assert_eq!(fs::read(root.join(".wasm-git/index")).unwrap(), before);
     let image_before = image(&root);
     assert!(
         !batch(&root, "symref-verify HEAD refs/heads/main\n", false, false)
@@ -298,7 +298,9 @@ fn verify_noop_and_unborn_head_use_real_absence_without_synthetic_commits() {
         .status
         .success());
     assert_eq!(image(&root), before);
-    let objects = fs::read_dir(root.join(".uwgit/objects")).unwrap().count();
+    let objects = fs::read_dir(root.join(".wasm-git/objects"))
+        .unwrap()
+        .count();
     ok(&["symbolic-ref", p(&root), "HEAD", "refs/heads/unborn"]);
     success(execute(
         &["update-ref", p(&root), "--stdin"],
@@ -313,7 +315,9 @@ fn verify_noop_and_unborn_head_use_real_absence_without_synthetic_commits() {
     let last = log(&root, "head-reflog.bin").pop().unwrap();
     assert!(last["old"].is_null() && last["new"].is_null());
     assert_eq!(
-        fs::read_dir(root.join(".uwgit/objects")).unwrap().count(),
+        fs::read_dir(root.join(".wasm-git/objects"))
+            .unwrap()
+            .count(),
         objects
     );
     assert!(!execute(&["rev-parse", p(&root), "HEAD"], &[])
@@ -528,8 +532,8 @@ fn linked_worktree_head_registry_and_local_logs_change_together_without_touching
     ok(&["branch", p(&root), "peer", &first]);
     ok(&["branch", p(&root), "topic", &second]);
     ok(&["worktree", p(&root), "add", p(&peer), "peer"]);
-    let primary_log = fs::read(root.join(".uwgit/head-reflog.bin")).unwrap();
-    let index = fs::read(peer.join(".uwgit/index")).unwrap();
+    let primary_log = fs::read(root.join(".wasm-git/head-reflog.bin")).unwrap();
+    let index = fs::read(peer.join(".wasm-git/index")).unwrap();
     let bytes = fs::read(peer.join("a.wasm")).unwrap();
     success(batch(
         &peer,
@@ -540,10 +544,10 @@ fn linked_worktree_head_registry_and_local_logs_change_together_without_touching
     assert_eq!(ok(&["symbolic-ref", p(&peer), "HEAD"]), "refs/heads/topic");
     assert_eq!(ok(&["rev-parse", p(&peer), "HEAD"]), second);
     assert_eq!(
-        fs::read(root.join(".uwgit/head-reflog.bin")).unwrap(),
+        fs::read(root.join(".wasm-git/head-reflog.bin")).unwrap(),
         primary_log
     );
-    assert_eq!(fs::read(peer.join(".uwgit/index")).unwrap(), index);
+    assert_eq!(fs::read(peer.join(".wasm-git/index")).unwrap(), index);
     assert_eq!(fs::read(peer.join("a.wasm")).unwrap(), bytes);
     let worktrees = json(&["worktree", p(&root), "list"]);
     let peer_row = worktrees["worktrees"]
@@ -607,11 +611,11 @@ fn prepared_head_batch_holds_the_writer_lock_and_abort_or_eof_preserves_every_by
             "prepare: ok"
         );
         assert_eq!(
-            fs::read(root.join(".uwgit/HEAD")).unwrap(),
+            fs::read(root.join(".wasm-git/HEAD")).unwrap(),
             native::reference("main")
         );
-        assert!(!root.join(".uwgit/refs/reviewed").exists());
-        assert!(!root.join(".uwgit/ref-transaction.bin").exists());
+        assert!(!root.join(".wasm-git/refs/reviewed").exists());
+        assert!(!root.join(".wasm-git/ref-transaction.bin").exists());
         assert!(!execute(&["show-ref", p(&root)], &[]).status.success());
         if ending != "eof" {
             writeln!(input, "{ending}").unwrap();

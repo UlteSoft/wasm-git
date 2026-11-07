@@ -9,7 +9,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let p = std::env::temp_dir().join(format!(
-            "uwgit-flags-{}-{}",
+            "wasm-git-flags-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
@@ -69,7 +69,7 @@ fn seed(t: &Temp) {
     ok(&["commit", t.root(), "-m", "base"]);
 }
 fn index(t: &Temp) -> Vec<u8> {
-    fs::read(t.0.join(".uwgit/index")).unwrap()
+    fs::read(t.0.join(".wasm-git/index")).unwrap()
 }
 
 #[test]
@@ -79,7 +79,7 @@ fn assume_unchanged_is_a_persistent_query_promise_and_never_discards_hidden_work
     let r = t.root();
     let head = ok(&["rev-parse", r, "HEAD"]);
     ok(&["update-index", r, "--assume-unchanged", "a.wasm"]);
-    assert!(index(&t).starts_with(b"UWGITIDX\x06"));
+    assert!(index(&t).starts_with(b"WASMGIDX\x06"));
     assert_eq!(ok(&["ls-files", r, "-v"]), "h a.wasm");
     fs::write(t.0.join("a.wasm"), wasm(2)).unwrap();
     assert_eq!(json(&["status", r])["worktree"], "clean");
@@ -140,11 +140,11 @@ fn intent_to_add_has_no_fabricated_image_and_commit_all_stages_actual_bytes() {
     seed(&t);
     let r = t.root();
     let tree = ok(&["write-tree", r]);
-    let objects = fs::read_dir(t.0.join(".uwgit/objects")).unwrap().count();
+    let objects = fs::read_dir(t.0.join(".wasm-git/objects")).unwrap().count();
     fs::write(t.0.join("new.wasm"), wasm(2)).unwrap();
     ok(&["add", r, "-N", "new.wasm"]);
     assert_eq!(
-        fs::read_dir(t.0.join(".uwgit/objects")).unwrap().count(),
+        fs::read_dir(t.0.join(".wasm-git/objects")).unwrap().count(),
         objects
     );
     assert_eq!(ok(&["write-tree", r]), tree);

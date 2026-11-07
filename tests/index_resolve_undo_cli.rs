@@ -17,7 +17,7 @@ struct Temp {
 impl Temp {
     fn new() -> Self {
         let directory = std::env::temp_dir().join(format!(
-            "uwgit-resolve-undo-{}-{}",
+            "wasm-git-resolve-undo-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -46,7 +46,7 @@ impl Temp {
         ok(&["rev-parse", self.root(), "HEAD"], None)
     }
     fn index(&self) -> Vec<u8> {
-        fs::read(self.path(".uwgit/index")).unwrap()
+        fs::read(self.path(".wasm-git/index")).unwrap()
     }
     fn ids(&self) -> Vec<String> {
         [wasm(1), wasm(2), UNKNOWN.to_vec()]
@@ -147,8 +147,8 @@ fn resolution_lists_original_unpublished_images_with_stage_tags_paths_and_nul() 
     t.write("modules/a.wasm", UNKNOWN);
     let mut before = files(&t.repo);
     ok(&["add", t.root(), "modules/a.wasm"], None);
-    assert!(t.index().starts_with(b"UWGITIDX\x06"));
-    before.insert(PathBuf::from(".uwgit/index"), t.index());
+    assert!(t.index().starts_with(b"WASMGIDX\x06"));
+    before.insert(PathBuf::from(".wasm-git/index"), t.index());
     assert_eq!(files(&t.repo), before);
     let expected = ids
         .iter()
@@ -487,10 +487,10 @@ fn malformed_batches_dry_runs_locks_and_clear_controls_preserve_all_other_state(
         &["update-index", t.root(), "--unresolve", "--stdin", "-z"],
         Some(b"a.wasm\0../bad\0"),
     );
-    fs::write(t.path(".uwgit/index.lock"), b"other writer").unwrap();
+    fs::write(t.path(".wasm-git/index.lock"), b"other writer").unwrap();
     t.reject(&["update-index", t.root(), "--unresolve", "a.wasm"], None);
     t.reject(&["update-index", t.root(), "--clear-resolve-undo"], None);
-    fs::remove_file(t.path(".uwgit/index.lock")).unwrap();
+    fs::remove_file(t.path(".wasm-git/index.lock")).unwrap();
     let stages = ok(&["ls-files", t.root(), "--stage"], None);
     let work = fs::read(t.path("a.wasm")).unwrap();
     ok(&["update-index", t.root(), "--clear-resolve-undo"], None);
@@ -514,7 +514,7 @@ fn malformed_batches_dry_runs_locks_and_clear_controls_preserve_all_other_state(
         &["update-index", empty.root(), "--clear-resolve-undo"],
         None,
     );
-    assert!(!empty.path(".uwgit/index").exists());
+    assert!(!empty.path(".wasm-git/index").exists());
 }
 
 #[test]
@@ -577,10 +577,13 @@ fn linked_worktrees_have_independent_undo_records_and_full_read_tree_clears_them
     ok(&["branch", t.root(), "other"], None);
     let linked = t.directory.join("linked");
     ok(&["worktree", t.root(), "add", p(&linked), "other"], None);
-    let linked_index = fs::read(linked.join(".uwgit/index")).unwrap();
+    let linked_index = fs::read(linked.join(".wasm-git/index")).unwrap();
     t.seed("a.wasm", 7);
     t.stage("a.wasm", UNKNOWN);
-    assert_eq!(fs::read(linked.join(".uwgit/index")).unwrap(), linked_index);
+    assert_eq!(
+        fs::read(linked.join(".wasm-git/index")).unwrap(),
+        linked_index
+    );
     assert_eq!(ok(&["ls-files", p(&linked), "--resolve-undo"], None), "");
     let saved = ok(&["ls-files", t.root(), "--resolve-undo"], None);
     ok(&["update-index", p(&linked), "--clear-resolve-undo"], None);
@@ -631,7 +634,7 @@ fn recorded_rebase_can_unresolve_review_again_and_preserve_undo_across_publicati
     );
     assert_eq!(fs::read(t.path("a.wasm")).unwrap(), UNKNOWN);
     assert_eq!(fs::read(t.path("tail.wasm")).unwrap(), wasm(4));
-    assert!(!t.path(".uwgit/pending.bin").exists());
+    assert!(!t.path(".wasm-git/pending.bin").exists());
     ok(&["fsck", t.root()], None);
 }
 
@@ -661,7 +664,7 @@ fn recorded_rebase_abort_restores_the_original_v5_index_and_skip_keeps_saved_sid
                 resolved
             );
             assert_eq!(fs::read(t.path("a.wasm")).unwrap(), wasm(2));
-            assert!(!t.path(".uwgit/pending.bin").exists());
+            assert!(!t.path(".wasm-git/pending.bin").exists());
         }
     }
 }
@@ -701,7 +704,7 @@ fn merge_restore_recreates_selected_original_sides_and_preserves_every_other_fil
                 assert_eq!(ok(&["ls-files", t.root(), "-u"], None), stages);
                 assert_eq!(ok(&["ls-files", t.root(), "--resolve-undo"], None), "");
                 if resolved {
-                    expected.insert(PathBuf::from(".uwgit/index"), t.index());
+                    expected.insert(PathBuf::from(".wasm-git/index"), t.index());
                 }
                 expected.insert(PathBuf::from("a.wasm"), wasm(2));
                 assert_eq!(files(&t.repo), expected);
@@ -990,7 +993,7 @@ fn conflict_restore_rejects_invalid_combinations_intents_and_index_locks_before_
     t.write("intent.wasm", &wasm(4));
     ok(&["add", t.root(), "-N", "intent.wasm"], None);
     t.reject(&["restore", t.root(), "--merge", "--", "."], None);
-    fs::write(t.path(".uwgit/index.lock"), b"another writer").unwrap();
+    fs::write(t.path(".wasm-git/index.lock"), b"another writer").unwrap();
     t.reject(&["restore", t.root(), "--merge", "--", "a.wasm"], None);
 }
 
@@ -1034,7 +1037,7 @@ fn replay_can_recreate_merge_then_abort_without_altering_the_frozen_queue() {
     t.stage("a.wasm", UNKNOWN);
     let mut expected = files(&t.repo);
     ok(&["restore", t.root(), "--merge", "--", "a.wasm"], None);
-    expected.insert(PathBuf::from(".uwgit/index"), t.index());
+    expected.insert(PathBuf::from(".wasm-git/index"), t.index());
     expected.insert(PathBuf::from("a.wasm"), wasm(2));
     assert_eq!(files(&t.repo), expected);
     assert_eq!(ok(&["ls-files", t.root(), "-u"], None), stages);
@@ -1068,7 +1071,7 @@ fn linked_worktree_merge_restore_remains_local_and_can_continue_the_replay_queue
     assert_eq!(done["status"], "rebased");
     assert_eq!(fs::read(t.path("a.wasm")).unwrap(), UNKNOWN);
     assert_eq!(fs::read(t.path("tail.wasm")).unwrap(), wasm(4));
-    assert!(!t.path(".uwgit/pending.bin").exists());
+    assert!(!t.path(".wasm-git/pending.bin").exists());
     assert_eq!(files(&linked), linked_before);
     ok(&["fsck", t.root()], None);
 }

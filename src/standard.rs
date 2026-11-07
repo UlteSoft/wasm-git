@@ -580,7 +580,7 @@ pub(crate) fn classify(
     let report = StandardReport {
         selected_standard: standard,
         validation: if validator_valid && compatible { "valid" } else { "invalid" }.into(),
-        validator: "wasmparser 0.249.0 with uwgit local checked-bounds patch; feature validator on validator_input; independently checked oversized custom names use an offset-preserving reader projection; Core3=WASM3 minus THREADS; Core1 br_table label equality is supplemented for fully known MVP grammar; other historical typing is not reimplemented".into(),
+        validator: "wasmparser 0.249.0 with wasm-git local checked-bounds patch; feature validator on validator_input; independently checked oversized custom names use an offset-preserving reader projection; Core3=WASM3 minus THREADS; Core1 br_table label equality is supplemented for fully known MVP grammar; other historical typing is not reimplemented".into(),
         validator_input: reader_view.report.clone(),
         validator_valid,
         validator_error,

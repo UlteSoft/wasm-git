@@ -13,7 +13,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let p = std::env::temp_dir().join(format!(
-            "uwgit-tree-resolution-{}-{}",
+            "wasm-git-tree-resolution-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -169,10 +169,10 @@ fn staged_resolution_preserves_dirty_and_deleted_worktree_and_audits_both_parent
     fs::write(t.path("a.wasm"), b"unstaged invalid header").unwrap();
     fs::remove_file(t.path("新規.wasm")).unwrap();
     fs::write(t.path("untracked.txt"), b"preserve").unwrap();
-    let index = fs::read(t.path(".uwgit/index")).unwrap();
+    let index = fs::read(t.path(".wasm-git/index")).unwrap();
     let work = snapshot(&t.0)
         .into_iter()
-        .filter(|(p, _)| !p.starts_with(".uwgit"))
+        .filter(|(p, _)| !p.starts_with(".wasm-git"))
         .collect::<BTreeMap<_, _>>();
     // A ref whose name looks like the target ID cannot redirect an immutable lease.
     let before_reserved = snapshot(&t.0);
@@ -196,11 +196,11 @@ fn staged_resolution_preserves_dirty_and_deleted_worktree_and_audits_both_parent
     assert_eq!(report["worktree_updated"], false);
     assert_eq!(report["base"], base);
     assert_eq!(report["target"], theirs);
-    assert_eq!(fs::read(t.path(".uwgit/index")).unwrap(), index);
+    assert_eq!(fs::read(t.path(".wasm-git/index")).unwrap(), index);
     assert_eq!(
         snapshot(&t.0)
             .into_iter()
-            .filter(|(p, _)| !p.starts_with(".uwgit"))
+            .filter(|(p, _)| !p.starts_with(".wasm-git"))
             .collect::<BTreeMap<_, _>>(),
         work
     );
@@ -256,7 +256,7 @@ fn invalid_leases_branch_and_locks_never_publish_staged_bytes() {
         assert_eq!(snapshot(&t.0), before);
     }
     for name in ["index.lock", "write.lock"] {
-        let lock = t.path(&format!(".uwgit/{name}"));
+        let lock = t.path(&format!(".wasm-git/{name}"));
         fs::write(&lock, b"held by test").unwrap();
         let locked = snapshot(&t.0);
         fail(&[
@@ -286,7 +286,7 @@ fn invalid_leases_branch_and_locks_never_publish_staged_bytes() {
         &ours,
     ]);
     assert_eq!(snapshot(&t.0), before);
-    let index = t.path(".uwgit/index");
+    let index = t.path(".wasm-git/index");
     let original = fs::read(&index).unwrap();
     fs::write(&index, b"corrupt index").unwrap();
     let corrupt = snapshot(&t.0);
@@ -324,7 +324,7 @@ fn empty_index_is_a_real_resolution_but_a_missing_index_is_not() {
     assert!(error.contains("index"));
     assert_eq!(snapshot(&clone), before);
     run(&["rm", t.root(), "--cached", "a.wasm", "kept.wasm"]);
-    let index = fs::read(t.path(".uwgit/index")).unwrap();
+    let index = fs::read(t.path(".wasm-git/index")).unwrap();
     let work = fs::read(t.path("a.wasm")).unwrap();
     let report = value(&[
         "merge",
@@ -340,7 +340,7 @@ fn empty_index_is_a_real_resolution_but_a_missing_index_is_not() {
     let inspection = value(&["inspect", "HEAD", "--repo", t.root(), "--json"]);
     assert_eq!(inspection["file_count"], 0);
     assert_eq!(inspection["files"], json!([]));
-    assert_eq!(fs::read(t.path(".uwgit/index")).unwrap(), index);
+    assert_eq!(fs::read(t.path(".wasm-git/index")).unwrap(), index);
     assert_eq!(fs::read(t.path("a.wasm")).unwrap(), work);
     let commit = value(&["show", t.root(), "HEAD"]);
     assert_eq!(commit["parents"], json!([ours, theirs]));
@@ -365,7 +365,7 @@ fn v1_history_requires_an_explicit_path_and_keeps_original_commit_bytes() {
     run(&["switch", t.root(), "main"]);
     t.stage("named/original.wasm", &opaque(7));
     t.stage("new.wasm", HEADER);
-    let index = fs::read(t.path(".uwgit/index")).unwrap();
+    let index = fs::read(t.path(".wasm-git/index")).unwrap();
     let report = value(&[
         "merge",
         t.root(),
@@ -381,7 +381,7 @@ fn v1_history_requires_an_explicit_path_and_keeps_original_commit_bytes() {
         report["tree_manual_resolution"]["legacy_path"],
         "named/original.wasm"
     );
-    assert_eq!(fs::read(t.path(".uwgit/index")).unwrap(), index);
+    assert_eq!(fs::read(t.path(".wasm-git/index")).unwrap(), index);
     assert_eq!(
         value(&["show", t.root(), "HEAD"])["parents"],
         json!([ours, theirs])

@@ -4,8 +4,8 @@
 use super::*;
 use crate::protocol::MAX_BUNDLE_BYTES;
 
-const MAGIC: &[u8; 8] = b"UWGNET01";
-const DELTA_MAGIC: &[u8; 8] = b"UWGTRN01";
+const MAGIC: &[u8; 8] = b"WGTNET01";
+const DELTA_MAGIC: &[u8; 8] = b"WGTTRN01";
 const BLOCK: usize = 1024 * 1024;
 
 #[derive(Debug, Serialize, Deserialize)]

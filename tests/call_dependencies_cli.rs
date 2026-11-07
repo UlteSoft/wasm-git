@@ -22,7 +22,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
-            "uwgit-call-dependencies-{}-{}",
+            "wasm-git-call-dependencies-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
@@ -868,7 +868,7 @@ fn dependency_bindings_preserve_four_profile_raw_replay_patches_and_physical_his
                 &pair.old_path,
             ),
         ] {
-            let patch = pair.temp.path(&format!("{label}.uwgp"));
+            let patch = pair.temp.path(&format!("{label}.wgp"));
             let applied = pair.temp.path(&format!("{label}.wasm"));
             run_json(&["patch", old_path, new_path, "--output", &patch]);
             let raw = std::fs::read(&patch).unwrap();

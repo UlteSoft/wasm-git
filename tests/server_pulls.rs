@@ -23,7 +23,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let p = std::env::temp_dir().join(format!(
-            "uwgit-pulls-{}-{}",
+            "wasm-git-pulls-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
@@ -59,7 +59,7 @@ fn compile(root: &Path, name: &str, value: serde_json::Value) -> PathBuf {
             .unwrap(),
     );
     fs::remove_file(input).unwrap();
-    assert!(fs::read(&output).unwrap().starts_with(b"UWGM"));
+    assert!(fs::read(&output).unwrap().starts_with(b"WGTM"));
     output
 }
 struct Server {
@@ -129,7 +129,7 @@ impl Server {
         stream
             .set_read_timeout(Some(Duration::from_secs(30)))
             .unwrap();
-        write!(stream,"POST /v1/uwgit HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {actor}\r\nContent-Length: {}\r\n\r\n",bytes.len()).unwrap();
+        write!(stream,"POST /v1/wasm-git HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {actor}\r\nContent-Length: {}\r\n\r\n",bytes.len()).unwrap();
         stream.write_all(&bytes).unwrap();
         stream.shutdown(Shutdown::Write).unwrap();
         let mut response = Vec::new();
@@ -159,7 +159,7 @@ impl Server {
             Command::new(env!("CARGO_BIN_EXE_wasm-git"))
                 .args(["pr", &format!("http://{}/project", self.address)])
                 .args(args)
-                .env("UWGIT_REMOTE_TOKEN", "alice")
+                .env("WASM_GIT_REMOTE_TOKEN", "alice")
                 .output()
                 .unwrap(),
         )
@@ -330,8 +330,8 @@ fn cross_fork_protection_requires_fresh_independent_review_and_trusted_ci() {
         )
         .is_err());
     assert!(s.pull("bob", merge(&p, MergeMethod::FastForward)).is_err());
-    let raw = fs::read(t.0.join("project/.uwgit/pulls/1.bin")).unwrap();
-    assert!(raw.starts_with(b"UWGPR001"));
+    let raw = fs::read(t.0.join("project/.wasm-git/pulls/1.bin")).unwrap();
+    assert!(raw.starts_with(b"WGTPR001"));
     assert!(!raw.starts_with(b"{"));
     repo.fsck().unwrap();
 }
@@ -573,7 +573,7 @@ fn packed_multi_chunk_audit_checks_original_bytes_and_rejects_storage_corruption
     assert!(audit.to_string().contains(&head));
     let blob = repo.read_commit(&head).unwrap().commit.wasm;
     // A corrupt loose shadow must not bypass the final original envelope hash.
-    fs::write(repo.root.join(".uwgit/objects").join(blob), b"corrupt").unwrap();
+    fs::write(repo.root.join(".wasm-git/objects").join(blob), b"corrupt").unwrap();
     assert!(s
         .pull(
             "reader",
@@ -757,7 +757,7 @@ fn frozen_pr_history_survives_fork_removal_and_gc_and_detects_record_corruption(
         .unwrap();
     assert_eq!(chunk.bytes, custom(b'x', 1));
     repo.fsck().unwrap();
-    fs::write(t.0.join("project/.uwgit/pulls/1.bin"), b"corrupt").unwrap();
+    fs::write(t.0.join("project/.wasm-git/pulls/1.bin"), b"corrupt").unwrap();
     assert!(repo.fsck().unwrap_err().contains("pull record"));
     assert!(repo.garbage_collect(&[], true).is_err());
 }

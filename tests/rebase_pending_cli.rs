@@ -20,7 +20,7 @@ struct Temp {
 impl Temp {
     fn new() -> Self {
         let base = std::env::temp_dir().join(format!(
-            "uwgit-rebase-pending-{}-{}",
+            "wasm-git-rebase-pending-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -52,10 +52,10 @@ impl Temp {
         ok(&["rev-parse", self.root(), "HEAD"]).trim().into()
     }
     fn journal(&self) -> Value {
-        native::pending_value(&fs::read(self.path(".uwgit/pending.bin")).unwrap())
+        native::pending_value(&fs::read(self.path(".wasm-git/pending.bin")).unwrap())
     }
     fn index(&self) -> Option<Vec<u8>> {
-        match fs::read(self.path(".uwgit/index")) {
+        match fs::read(self.path(".wasm-git/index")) {
             Ok(bytes) => Some(bytes),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => panic!("{error}"),
@@ -175,7 +175,7 @@ fn snapshot(root: &Path) -> BTreeMap<PathBuf, Entry> {
 fn worktree(t: &Temp) -> BTreeMap<PathBuf, Entry> {
     snapshot(&t.repo)
         .into_iter()
-        .filter(|(name, _)| !name.starts_with(".uwgit"))
+        .filter(|(name, _)| !name.starts_with(".wasm-git"))
         .collect()
 }
 fn rejected(t: &Temp, args: &[&str]) -> String {
@@ -309,7 +309,7 @@ fn automatic_stages_allow_consecutive_resolutions_without_restoring_or_filling_i
     assert_eq!(fs::read(t.path("tail.wasm")).unwrap(), HEADER);
     assert_eq!(value(&["status", t.root()])["staged"], false);
     assert_eq!(reflog_len(&t), logs + 1);
-    assert!(!t.path(".uwgit/pending.bin").exists());
+    assert!(!t.path(".wasm-git/pending.bin").exists());
     ok(&["fsck", t.root()]);
 }
 
@@ -332,7 +332,7 @@ fn an_empty_rebase_queue_fast_forwards_to_the_frozen_onto_without_synthetic_comm
         value(&["count-objects", t.root(), "-v"])["by_kind"]["commit"]["objects"],
         before
     );
-    assert!(!t.path(".uwgit/pending.bin").exists());
+    assert!(!t.path(".wasm-git/pending.bin").exists());
 }
 
 #[test]
@@ -366,7 +366,7 @@ fn two_resolutions_preserve_dirty_index_and_work_and_publish_only_the_final_tip(
     assert_eq!(fs::read(t.path("tail.wasm")).unwrap(), HEADER);
     assert_eq!(fs::read(t.path("untracked.wasm")).unwrap(), UNKNOWN);
     assert_eq!(reflog_len(&t), logs + 1);
-    assert!(!t.path(".uwgit/pending.bin").exists());
+    assert!(!t.path(".wasm-git/pending.bin").exists());
     let stored = t.stored("HEAD");
     assert_eq!(stored["a.wasm"], module(9));
     assert_eq!(stored["b.wasm"], module(9));
@@ -439,7 +439,7 @@ fn skip_repairs_a_broken_index_and_materializes_the_remaining_queue_without_losi
     let h = history(&t);
     t.record();
     continue_first(&t);
-    fs::write(t.path(".uwgit/index"), b"damaged index kept by skip").unwrap();
+    fs::write(t.path(".wasm-git/index"), b"damaged index kept by skip").unwrap();
     t.write("a.wasm", UNKNOWN);
     t.write("new.wasm", HEADER);
     let logs = reflog_len(&t);
@@ -472,7 +472,7 @@ fn abort_after_manual_progress_restores_the_original_tracked_domain_and_raw_inde
     t.stage("created.wasm", UNKNOWN);
     let _ = fs::remove_file(t.path("tail.wasm"));
     t.write("a.wasm", UNKNOWN);
-    fs::write(t.path(".uwgit/index"), b"broken current index").unwrap();
+    fs::write(t.path(".wasm-git/index"), b"broken current index").unwrap();
     let logs = reflog_len(&t);
     let aborted = value(&["rebase", t.root(), "--abort"]);
     assert_eq!(aborted["status"], "aborted");
@@ -482,7 +482,7 @@ fn abort_after_manual_progress_restores_the_original_tracked_domain_and_raw_inde
     let mut expected = original;
     expected.insert(PathBuf::from("created.wasm"), Entry::File(UNKNOWN.into()));
     assert_eq!(worktree(&t), expected);
-    assert!(!t.path(".uwgit/pending.bin").exists());
+    assert!(!t.path(".wasm-git/pending.bin").exists());
     assert_eq!(
         value(&["status", t.root()])["untracked"],
         json!(["created.wasm"])
@@ -505,14 +505,14 @@ fn blockers_refuse_abort_before_any_write_and_quit_preserves_all_user_bytes() {
     assert_eq!(t.index(), index);
     assert_eq!(worktree(&t), work);
     assert_eq!(t.head(), head);
-    assert!(!t.path(".uwgit/pending.bin").exists());
+    assert!(!t.path(".wasm-git/pending.bin").exists());
 }
 
 #[test]
 fn an_originally_absent_index_is_not_invented_or_used_to_claim_a_clean_resolution() {
     let t = Temp::new();
     let h = history(&t);
-    fs::remove_file(t.path(".uwgit/index")).unwrap();
+    fs::remove_file(t.path(".wasm-git/index")).unwrap();
     t.record();
     assert_eq!(t.journal()["baseline_index"], Value::Null);
     rejected(&t, &["rebase", t.root(), "--continue", "--resolved-index"]);
@@ -543,7 +543,7 @@ fn clean_recorded_rebase_rejects_untracked_file_and_directory_collisions_before_
             t.write("upstream.wasm", HEADER);
         }
         rejected(&t, &["rebase", t.root(), "main", "--record-conflict"]);
-        assert!(!t.path(".uwgit/pending.bin").exists());
+        assert!(!t.path(".wasm-git/pending.bin").exists());
     }
 }
 
@@ -560,7 +560,7 @@ fn clean_recorded_rebase_updates_an_existing_clean_workspace_but_keeps_no_index_
         t.stage("a.wasm", &module(3));
         t.commit("clean replay");
         if !indexed {
-            fs::remove_file(t.path(".uwgit/index")).unwrap();
+            fs::remove_file(t.path(".wasm-git/index")).unwrap();
         }
         let work = worktree(&t);
         let done = value(&["rebase", t.root(), "main", "--record-conflict"]);
@@ -573,7 +573,7 @@ fn clean_recorded_rebase_updates_an_existing_clean_workspace_but_keeps_no_index_
             assert!(done.get("index_updated").is_none());
             assert!(done.get("worktree_updated").is_none());
         }
-        assert!(!t.path(".uwgit/pending.bin").exists());
+        assert!(!t.path(".wasm-git/pending.bin").exists());
         assert_eq!(
             value(&["show", t.root(), "HEAD"])["parents"],
             json!([upstream])
@@ -613,10 +613,10 @@ fn frozen_upstream_and_queue_survive_ref_replacement_and_stale_bindings_only_all
         t.record();
         if same_tip_other_branch {
             ok(&["branch", t.root(), "same-tip", "HEAD"]);
-            fs::write(t.path(".uwgit/HEAD"), native::reference("same-tip")).unwrap();
+            fs::write(t.path(".wasm-git/HEAD"), native::reference("same-tip")).unwrap();
         } else {
             fs::write(
-                t.path(".uwgit/refs/feature"),
+                t.path(".wasm-git/refs/feature"),
                 native::reference(&h.upstream),
             )
             .unwrap();
@@ -675,12 +675,12 @@ fn pending_controls_locks_partial_status_and_history_guards_are_consistent() {
     t.stage("a.wasm", UNKNOWN);
     ok(&["reset", t.root(), "--", "a.wasm"]);
     ok(&["restore", t.root(), "--", "a.wasm"]);
-    fs::write(t.path(".uwgit/index.lock"), b"external index owner").unwrap();
+    fs::write(t.path(".wasm-git/index.lock"), b"external index owner").unwrap();
     rejected(&t, &["rebase", t.root(), "--skip"]);
     rejected(&t, &["rebase", t.root(), "--abort"]);
     rejected(&t, &["rebase", t.root(), "--quit"]);
-    fs::remove_file(t.path(".uwgit/index.lock")).unwrap();
-    fs::write(t.path(".uwgit/index"), b"corrupt").unwrap();
+    fs::remove_file(t.path(".wasm-git/index.lock")).unwrap();
+    fs::write(t.path(".wasm-git/index"), b"corrupt").unwrap();
     let partial = value(&["status", t.root()]);
     assert_eq!(partial["index_available"], false);
     assert_eq!(partial["worktree"], "unavailable");
@@ -749,7 +749,7 @@ fn legacy_history_requires_an_explicit_anchor_and_abort_restores_old_index_encod
         Some("old.wasm".into()),
     )
     .bytes();
-    fs::write(t.path(".uwgit/index"), &raw).unwrap();
+    fs::write(t.path(".wasm-git/index"), &raw).unwrap();
     let head = t.head();
     let recorded = t.record();
     assert_eq!(recorded["status"], "conflict");

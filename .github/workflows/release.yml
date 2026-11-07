@@ -35,4 +35,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
-        run: gh release create "$RELEASE_TAG" .tmp/dist/* --verify-tag --prerelease --title "uwgit $RELEASE_TAG" --notes-file documents/RELEASE_NOTES.eu_US.md
+        run: gh release create "$RELEASE_TAG" .tmp/dist/* --verify-tag --prerelease --title "wasm-git $RELEASE_TAG" --notes-file documents/RELEASE_NOTES.eu_US.md

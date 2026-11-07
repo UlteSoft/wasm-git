@@ -27,7 +27,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
-            "uwgit-pull-ff-only-{}-{}",
+            "wasm-git-pull-ff-only-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -50,9 +50,9 @@ fn command(args: &[&str]) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_wasm-git"));
     command
         .args(args)
-        .env_remove("UWGIT_REMOTE_TOKEN")
-        .env_remove("UWGIT_SSH_PROGRAM")
-        .env_remove("UWGIT_REMOTE_PROGRAM");
+        .env_remove("WASM_GIT_REMOTE_TOKEN")
+        .env_remove("WASM_GIT_SSH_PROGRAM")
+        .env_remove("WASM_GIT_REMOTE_PROGRAM");
     command
 }
 fn success(output: Output) -> String {
@@ -96,10 +96,10 @@ fn snapshot(repository: &Path, allow_fetch: bool) -> BTreeMap<PathBuf, Entry> {
             let relative = entry_path.strip_prefix(root).unwrap();
             if allow_fetch
                 && [
-                    ".uwgit/objects",
-                    ".uwgit/tmp",
-                    ".uwgit/remotes/origin.tracking.bin",
-                    ".uwgit/remotes/peer.tracking.bin",
+                    ".wasm-git/objects",
+                    ".wasm-git/tmp",
+                    ".wasm-git/remotes/origin.tracking.bin",
+                    ".wasm-git/remotes/peer.tracking.bin",
                 ]
                 .iter()
                 .any(|excluded| relative == Path::new(excluded))
@@ -179,7 +179,7 @@ impl Fixture {
         run(&["clone", path(&producer), path(&upstream)]);
         let (server, url, shim) = if ssh {
             let shim = temp.path("ssh-shim");
-            fs::write(&shim, b"#!/bin/sh\nset -eu\nexec \"$UWGIT_FF_TEST_BINARY\" server --stdio --root \"$UWGIT_FF_TEST_ROOT\"\n").unwrap();
+            fs::write(&shim, b"#!/bin/sh\nset -eu\nexec \"$WASM_GIT_FF_TEST_BINARY\" server --stdio --root \"$WASM_GIT_FF_TEST_ROOT\"\n").unwrap();
             fs::set_permissions(&shim, fs::Permissions::from_mode(0o700)).unwrap();
             (
                 None,
@@ -204,9 +204,9 @@ impl Fixture {
         let mut child = command(args);
         if let Some(shim) = &self.ssh {
             child
-                .env("UWGIT_SSH_PROGRAM", shim)
-                .env("UWGIT_FF_TEST_BINARY", env!("CARGO_BIN_EXE_wasm-git"))
-                .env("UWGIT_FF_TEST_ROOT", &self.temp.0);
+                .env("WASM_GIT_SSH_PROGRAM", shim)
+                .env("WASM_GIT_FF_TEST_BINARY", env!("CARGO_BIN_EXE_wasm-git"))
+                .env("WASM_GIT_FF_TEST_ROOT", &self.temp.0);
         }
         child
     }
@@ -240,7 +240,7 @@ impl Fixture {
     }
     fn assert_fetched(&self, local: &Path, remote: &str, id: &str) {
         let tracking: Value = native::tracking_value(
-            &fs::read(local.join(format!(".uwgit/remotes/{remote}.tracking.bin"))).unwrap(),
+            &fs::read(local.join(format!(".wasm-git/remotes/{remote}.tracking.bin"))).unwrap(),
         );
         assert_eq!(tracking["state"]["branches"]["main"], id);
         assert_eq!(tip(local, &format!("{remote}/main")), id);
@@ -304,7 +304,7 @@ fn explicit_and_default_pull_ff_only_fast_forward_unborn_and_ancestor_cases() {
         let initialized = fixture.json(&["pull", path(&unborn), "origin", "feature", "--ff-only"]);
         assert_eq!(initialized["status"], "fast_forward");
         assert_eq!(tip(&unborn, "HEAD"), next);
-        assert!(!unborn.join(".uwgit/index").exists());
+        assert!(!unborn.join(".wasm-git/index").exists());
         for repository in [&local, &unborn, &fixture.upstream] {
             run(&["fsck", path(repository)]);
         }
@@ -327,7 +327,8 @@ fn divergent_pull_ff_only_keeps_local_state_but_retains_fetch_objects_and_tracki
             run(&["commit", path(&fixture.producer), "-m", "remote divergence"]);
             let theirs = fixture.publish("main");
             let protected = snapshot(&local, true);
-            let old_tracking = fs::read(local.join(".uwgit/remotes/origin.tracking.bin")).unwrap();
+            let old_tracking =
+                fs::read(local.join(".wasm-git/remotes/origin.tracking.bin")).unwrap();
             let rejected = fixture
                 .command(&["pull", path(&local), "--ff-only", "-m", "--ff-only"])
                 .output()
@@ -338,7 +339,7 @@ fn divergent_pull_ff_only_keeps_local_state_but_retains_fetch_objects_and_tracki
             assert_eq!(tip(&local, "HEAD"), ours);
             assert_eq!(snapshot(&local, true), protected);
             assert_ne!(
-                fs::read(local.join(".uwgit/remotes/origin.tracking.bin")).unwrap(),
+                fs::read(local.join(".wasm-git/remotes/origin.tracking.bin")).unwrap(),
                 old_tracking
             );
             fixture.assert_fetched(&local, "origin", &theirs);

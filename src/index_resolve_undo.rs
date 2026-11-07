@@ -47,7 +47,7 @@ mod tests {
     #[test]
     fn binary_index_preserves_conflict_images_and_rejects_old_headers() {
         for version in 1..=5 {
-            let mut old = b"UWGITIDX".to_vec();
+            let mut old = b"WASMGIDX".to_vec();
             old.push(version);
             old.extend_from_slice(b"{}");
             assert!(decode_index(&old).is_err());

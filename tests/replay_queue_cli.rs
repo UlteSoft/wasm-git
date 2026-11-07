@@ -13,7 +13,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
-            "uwgit-queue-{}-{}",
+            "wasm-git-queue-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
@@ -42,10 +42,10 @@ impl Temp {
         ok(&["switch", self.root(), name]);
     }
     fn index(&self) -> Vec<u8> {
-        fs::read(self.0.join(".uwgit/index")).unwrap()
+        fs::read(self.0.join(".wasm-git/index")).unwrap()
     }
     fn no_pending(&self) {
-        assert!(!self.0.join(".uwgit/pending.bin").exists());
+        assert!(!self.0.join(".wasm-git/pending.bin").exists());
     }
     fn assert_file(&self, path: &str, n: u8) {
         assert_eq!(fs::read(self.0.join(path)).unwrap(), wasm(n), "{path}");
@@ -429,7 +429,7 @@ fn skip_restores_the_original_sparse_omission_and_index_flags_after_conflict_exp
     expected["format"] = serde_json::json!(5);
     expected["resolve_undo"] = stopped["conflicts"].clone();
     let raw = t.index();
-    assert!(raw.starts_with(b"UWGITIDX\x06"));
+    assert!(raw.starts_with(b"WASMGIDX\x06"));
     assert_eq!(native::index_value(&raw), expected);
     assert!(!t.0.join("a.wasm").exists());
     assert!(ok(&["ls-files", r, "-t"]).contains("S a.wasm"));
@@ -578,11 +578,11 @@ fn fast_forward_reuses_exact_original_commits_and_detached_replay_keeps_source_b
     let [base, first, second, ours] = t.fixture(false);
     let r = t.root();
     ok(&["reset", r, "--hard", &base]);
-    let before = snapshot(&t.0.join(".uwgit/objects"));
+    let before = snapshot(&t.0.join(".wasm-git/objects"));
     let report = value(&["cherry-pick", r, "--ff", &first, &second]);
     assert_eq!(t.head(), second);
     assert_eq!(report["steps"][0]["action"], "fast-forward");
-    assert_eq!(snapshot(&t.0.join(".uwgit/objects")), before);
+    assert_eq!(snapshot(&t.0.join(".wasm-git/objects")), before);
     ok(&["switch", r, "--detach", &ours]);
     value(&["cherry-pick", r, &first, &second]);
     assert_eq!(value(&["status", r])["detached"], true);

@@ -1,6 +1,6 @@
 # 浅历史、承诺对象、作者签名与多节点对象池
 
-本页描述 uwgit 原生格式的工作流；服务端与客户端共用实现，默认只构建 client。
+本页描述 wasm-git 原生格式的工作流；服务端与客户端共用实现，默认只构建 client。
 仓库对象、边界、承诺记录、密钥、信任表、对象池配置、pack 和 RPC 均为二进制。
 JSON 仅用于命令输出或外部配置输入。原始 Wasm、提交内容寻址及精确字节补丁保持独立。
 
@@ -27,7 +27,7 @@ SOURCE 支持本地仓库、HTTP(S) 和 SSH。HTTP 明文仍需显式 `--allow-i
 `--depth N` 重新按远端所选 tip 定义深度；`--unshallow` 请求当前源能提供的全部历史。
 如果源本身是浅仓库，返回的真实边界仍会报告，不能凭空生成缺失祖先。
 
-部分克隆保留提交和 uwgit 的平面文件树，按以下条件省略完整 Wasm 内容对象：
+部分克隆保留提交和 wasm-git 的平面文件树，按以下条件省略完整 Wasm 内容对象：
 
 - `blob:none`：省略所有 Wasm 内容；
 - `blob:limit=N`：省略超过 N 字节的 Wasm 内容；
@@ -52,7 +52,7 @@ wasm-git show DIR HEAD --file app.wasm --output restored.wasm
 浅仓库可以向已有祖先的服务器推送新提交。接收端用自己校验过的对象补齐图，
 只有最终完整的对象图才能发布到服务端引用；向没有这些祖先的新服务器发布时须先补齐。
 原生 byte-range、DWARF 和 custom-section 审计始终针对取得的原始 Wasm。
-这里的 filter 是 uwgit 文件模型的选项，不声称接受 Git 的全部过滤器拼写或原生线协议。
+这里的 filter 是 wasm-git 文件模型的选项，不声称接受 Git 的全部过滤器拼写或原生线协议。
 
 ## 提交作者签名
 
@@ -88,7 +88,7 @@ wasm-git-server --root ROOT --signed-authors trusted-authors.bin \
 
 ## 跨 pack delta
 
-磁盘格式为 `UWGPACK4`。索引保留排序原始对象 ID、fanout、压缩长度、解压长度、CRC、
+磁盘格式为 `WGTPACK4`。索引保留排序原始对象 ID、fanout、压缩长度、解压长度、CRC、
 本 pack 基底编号，并增加固定 32 字节的外部基底 ID。
 私有增量可引用仍保留的共享 pack 中的完整 Wasm 基底；不需要再存一份完整私有起始版本。
 其余对象继续使用同 pack 的块 copy/insert + Zstandard。
@@ -146,4 +146,4 @@ HTTP 与 SSH stdio 共用授权、选取、对象校验和接收实现，服务�
 [pack 格式](https://git-scm.com/docs/pack-format) 和
 [签名格式](https://git-scm.com/docs/gitformat-signature)，密码实现使用
 [ed25519-dalek 严格验证](https://docs.rs/ed25519-dalek/2.2.0/ed25519_dalek/struct.VerifyingKey.html#method.verify_strict)。
-这些是等价工作流的设计依据，不表示 uwgit 原生二进制可以交给 Git 直接读取。
+这些是等价工作流的设计依据，不表示 wasm-git 原生二进制可以交给 Git 直接读取。

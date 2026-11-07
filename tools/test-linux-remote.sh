@@ -17,8 +17,8 @@ expected_swap_max=${8:-0}
 # Direct invocations receive the same mode checks as the staging wrapper.
 if [[ $# -ge 6 ]]; then
     corpus_mode=$6
-elif [[ ${UWGIT_CORPUS_MODE+x} ]]; then
-    corpus_mode=$UWGIT_CORPUS_MODE
+elif [[ ${WASM_GIT_CORPUS_MODE+x} ]]; then
+    corpus_mode=$WASM_GIT_CORPUS_MODE
 elif [[ $skip_fuzz == 1 ]]; then
     corpus_mode=originals-only
 else
@@ -26,7 +26,7 @@ else
 fi
 [[ $corpus_mode == originals-only || $corpus_mode == fixed-mutations ]] || exit 2
 [[ $skip_fuzz != 1 || $corpus_mode == originals-only ]] || exit 2
-export UWGIT_CORPUS_MODE=$corpus_mode
+export WASM_GIT_CORPUS_MODE=$corpus_mode
 cg_path=$(awk -F: '$1 == "0" && $2 == "" {print $3}' /proc/self/cgroup)
 cg="/sys/fs/cgroup$cg_path"
 initial_boot=$(cat /proc/sys/kernel/random/boot_id)
@@ -94,7 +94,7 @@ if [[ $run_spec == 1 && $test_status == 0 ]]; then
     spec_status=$?
     if [[ $spec_status == 0 ]]; then
         while IFS=$'\t' read -r version corpus_root; do
-            UWGIT_SPEC_ROOT="$corpus_root" UWGIT_SPEC_VERSION="$version" UWGIT_SPEC_REPORT="$run/evidence/spec-core$version.json" \
+            WASM_GIT_SPEC_ROOT="$corpus_root" WASM_GIT_SPEC_VERSION="$version" WASM_GIT_SPEC_REPORT="$run/evidence/spec-core$version.json" \
                 cargo test --locked --all-features --test spec_corpus official_core_wast_corpus_audit -- --ignored --exact --nocapture --test-threads=1 > "$run/evidence/spec-core$version.log" 2>&1
             if [[ $? != 0 ]]; then spec_status=1; fi
         done < <(python3 -c 'import json,sys; data=json.load(open(sys.argv[1])); [print(str(c["version"])+"\t"+c["root"]) for c in data["corpora"]]' "$run/evidence/spec-inputs.json")
@@ -110,7 +110,7 @@ elif [[ $run_spec == 1 ]]; then
 fi
 fuzz_status=0
 if [[ $run_fuzz == 1 && $test_status == 0 ]]; then
-    UWGIT_AUDIT_FUZZ_REPORT_DIR="$run/evidence/audit-fuzz" \
+    WASM_GIT_AUDIT_FUZZ_REPORT_DIR="$run/evidence/audit-fuzz" \
         cargo test --locked --all-features --test audit_fuzz deterministic_extended_byte_fuzz_with_replay_receipts -- \
         --ignored --exact --nocapture --test-threads=1 > "$run/evidence/fuzz.log" 2>&1
     fuzz_status=$?

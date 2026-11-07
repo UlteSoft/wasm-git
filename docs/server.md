@@ -1,23 +1,23 @@
 # HTTP 与 SSH 服务
 
-`wasm-git server` 为同一服务根目录下的多个 uwgit 仓库提供读取及受控引用更新。
-每个子目录是一个独立仓库；服务不执行 Wasm。客户端和服务端使用 uwgit 的对象及 RPC 格式。
+`wasm-git server` 为同一服务根目录下的多个 wasm-git 仓库提供读取及受控引用更新。
+每个子目录是一个独立仓库；服务不执行 Wasm。客户端和服务端使用 wasm-git 的对象及 RPC 格式。
 
 ## HTTP
 
 ```sh
-mkdir -p /srv/uwgit
-wasm-git init /srv/uwgit/project
-wasm-git-server --root /srv/uwgit --listen 127.0.0.1:9419
+mkdir -p /srv/wasm-git
+wasm-git init /srv/wasm-git/project
+wasm-git-server --root /srv/wasm-git --listen 127.0.0.1:9419
 wasm-git clone http://127.0.0.1:9419/project ./peer
 ```
 
 默认监听 loopback，默认只读。写入服务使用管理员提供的 token 文件：
 
 ```sh
-wasm-git-server --root /srv/uwgit --listen 127.0.0.1:9419 \
-  --token-file /run/secrets/uwgit-token --allow-write
-export UWGIT_REMOTE_TOKEN='your-token'
+wasm-git-server --root /srv/wasm-git --listen 127.0.0.1:9419 \
+  --token-file /run/secrets/wasm-git-token --allow-write
+export WASM_GIT_REMOTE_TOKEN='your-token'
 wasm-git remote ./peer add origin http://127.0.0.1:9419/project
 wasm-git push ./peer origin main:main
 ```
@@ -37,8 +37,8 @@ wasm-git push ./peer origin main:main
 在服务机器安装 `wasm-git-server`，使用既有 OpenSSH 用户及密钥授权：
 
 ```sh
-wasm-git clone ssh://alice@example.org/srv/uwgit/project ./peer
-wasm-git remote ./peer add origin ssh://alice@example.org/srv/uwgit/project
+wasm-git clone ssh://alice@example.org/srv/wasm-git/project ./peer
+wasm-git remote ./peer add origin ssh://alice@example.org/srv/wasm-git/project
 wasm-git fetch ./peer origin
 wasm-git pull ./peer origin main -m 'integrate remote'
 wasm-git push ./peer origin main:main
@@ -49,7 +49,7 @@ URL 的绝对路径父目录成为服务根，最后一段为仓库名。客户�
 服务端使用 SSH 的系统用户权限，stdio 默认允许写入；HTTP token 不会转发给 SSH。
 远端程序及路径逐项 shell 引用，客户端不将输入拼接成未引用的 shell 命令。
 
-`UWGIT_REMOTE_PROGRAM` 可指定远端单个可执行文件路径，`UWGIT_SSH_PROGRAM` 可指定本机单个 SSH
+`WASM_GIT_REMOTE_PROGRAM` 可指定远端单个可执行文件路径，`WASM_GIT_SSH_PROGRAM` 可指定本机单个 SSH
 可执行文件或包装脚本。两者都不是 shell 命令字符串。主机密钥遵守 OpenSSH 的正常策略，
 连接使用 BatchMode，不会挂起等待交互密码。
 允许 SSH 强制推送时，管理员可提供包装程序，在接收 `server --stdio` 参数时加入
@@ -132,7 +132,7 @@ ref 已发布后同步或 reflog 写入失败会明确报告已发布状态。
 
 ## 线格式与资源界限
 
-HTTP 仅接受 `POST /v1/uwgit`，关闭每次连接，要求唯一的 `Content-Length`，拒绝
+HTTP 仅接受 `POST /v1/wasm-git`，关闭每次连接，要求唯一的 `Content-Length`，拒绝
 `Transfer-Encoding`、重复 header、超限 header 及不完整输入。HTTP 请求格式依据
 [RFC 9112](https://www.rfc-editor.org/rfc/rfc9112.html) 的 framing 规则。
 请求中的 repository 指定服务根下受限的仓库路径，可用 `team/project.git`。
@@ -143,7 +143,7 @@ HTTP body 与 SSH stdio 使用同一帧：
 
 | 字段 | 编码 |
 |---|---|
-| magic | 8 字节 `UWGRPC02` |
+| magic | 8 字节 `WGTRPC02` |
 | metadata length | u32 大端，1–65536 |
 | payload length | u64 大端，转换为本机长度前检查 |
 | metadata | 带版本头的按位置编码二进制记录，拒绝额外/截断字段 |
@@ -159,7 +159,7 @@ HTTP header 最多 16 KiB，连接有总时限，最多同时运行 16 个连接
 `--max-connections N` 供有限集成测试使用，生产服务默认持续监听。
 
 磁盘 pack 与网络增量复用二进制块差量算法；网络按已知提交的可达对象闭包协商。
-它使用原生 uwgit 线协议；提交作者签名、浅历史与部分克隆见 [服务器存储扩展](server-storage.md)。
+它使用原生 wasm-git 线协议；提交作者签名、浅历史与部分克隆见 [服务器存储扩展](server-storage.md)。
 对象完整性来自原始编码的 SHA-256；认证只证明运输层授权，不能证明提交作者身份。
 
 ## 独立共享 fork 与部署
@@ -192,7 +192,7 @@ base 来自对方已知提交闭包，或本次传输携带的完整根提交模
 线程池；接收端先核对 base、还原边界、原始对象 SHA-256、引用和完整对象图，再安装或发布。
 存储增量不构成函数身份或语义等价判断，Wasm 审计算法及原始字节不变。
 
-压缩传输头为 `UWGNET01`，每个独立 Zstandard frame 最多还原 1 MiB；内部记录为 `UWGTRN01`。
+压缩传输头为 `WGTNET01`，每个独立 Zstandard frame 最多还原 1 MiB；内部记录为 `WGTTRN01`。
 无变化 fetch 不携带对象；引用状态放在二进制 payload 内，避免大仓库的 64 KiB metadata 限制。
 `ls-remote` 对过大的广告改用每页至多 256 个引用的 `refs_page`；游标和 SHA-256 快照代次
 绑定，引用在分页中改变会明确要求重试，客户端也核对最终完整快照摘要。
@@ -222,8 +222,8 @@ base 来自对方已知提交闭包，或本次传输携带的完整根提交模
 ```
 
 ```sh
-wasm-git-server compile-policy /tmp/policy-input.json /etc/uwgit/policy.bin
-wasm-git-server --root /srv/uwgit --policy /etc/uwgit/policy.bin --allow-write
+wasm-git-server compile-policy /tmp/policy-input.json /etc/wasm-git/policy.bin
+wasm-git-server --root /srv/wasm-git --policy /etc/wasm-git/policy.bin --allow-write
 ```
 
 仓库和引用规则只支持精确匹配或末尾 `*` 前缀匹配；没有隐式默认授权。
@@ -231,7 +231,7 @@ HTTP token 的 SHA-256 与策略中的凭据比较，日志只记 principal 名�
 引用写入要求匹配 write 规则；强制更新还需匹配 force 规则及服务器 `--allow-force`。
 fork 要求源仓库 read 和目标名称 create；不会因可读取源仓库而获得其他租户的目标权限。
 策略改变后重启服务生效。SSH 通过管理员设置的 forced-command 固定
-`--stdio --root /srv/uwgit --policy ... --principal alice`；身份不能来自客户端请求体。
+`--stdio --root /srv/wasm-git --policy ... --principal alice`；身份不能来自客户端请求体。
 `--read-only` 可限制 SSH key，也可限制 HTTP 服务。不同分支不构成读取隔离，私有数据应放在不同仓库。
 
 ```sh
@@ -251,10 +251,10 @@ wasm-git push ./peer origin main:main HEAD:refs/tags/release --atomic
 可执行文件，不执行仓库里的 Wasm 或脚本，也不拼接 shell 命令。每个钩子最多 15 秒。
 stdin 为原生二进制 `Vec<RefUpdate>`，同时提供以下环境变量：
 
-- `UWGIT_ACTOR`：已认证身份；兼容管理员 token/SSH 模式分别为 `token`/`ssh`。
-- `UWGIT_REPOSITORY`：服务器仓库的绝对路径。
-- `UWGIT_UPDATES_FILE`：本批次二进制更新记录的临时路径。
-- `UWGIT_QUARANTINE_BUNDLE`：接收前是完整、已校验、尚未安装的原生 bundle；接收后为空文件。
+- `WASM_GIT_ACTOR`：已认证身份；兼容管理员 token/SSH 模式分别为 `token`/`ssh`。
+- `WASM_GIT_REPOSITORY`：服务器仓库的绝对路径。
+- `WASM_GIT_UPDATES_FILE`：本批次二进制更新记录的临时路径。
+- `WASM_GIT_QUARANTINE_BUNDLE`：接收前是完整、已校验、尚未安装的原生 bundle；接收后为空文件。
 
 接收前钩子拒绝时，新对象和引用均不会进入公开库，隔离文件退出时删除。
 钩子应检查隔离 bundle，不要递归更新正在接收的仓库。接收后钩子失败不会把已完成推送报告为失败，
@@ -267,7 +267,7 @@ prepared 事件在发布前持久化；崩溃或最终审计写入失败可能�
 日志是操作审计，不是提交作者签名或不可篡改证明。
 
 ```sh
-wasm-git-server audit-log /srv/uwgit/receive-audit.bin
+wasm-git-server audit-log /srv/wasm-git/receive-audit.bin
 ```
 
 上面的 JSON 只是对外查询输出，内部策略、日志、对象、事务、压缩历史和网络 payload 均为二进制。
@@ -282,7 +282,7 @@ wasm-git-server audit-log /srv/uwgit/receive-audit.bin
 接入循环会回收任意已完成 worker，不等待最早的慢连接；16 个活动连接全满时快速拒绝。
 连接有 15 秒累计 I/O 时限；完整请求缓存后的校验与落盘处理时间不计入其中，
 避免慢主机完成发布后无法发送回执。零碎读取不会重置 I/O 预算。
-客户端 HTTP/SSH 每次 RPC 默认 300 秒，可用 `UWGIT_RPC_TIMEOUT_SECONDS` 设置为 1–3600 秒；
+客户端 HTTP/SSH 每次 RPC 默认 300 秒，可用 `WASM_GIT_RPC_TIMEOUT_SECONDS` 设置为 1–3600 秒；
 连接建立限时 10 秒，子进程与管道收尾另有 5 秒。超时后应先查询远端 ref，再决定重试。
 单仓库服务操作串行协调，压缩和对象工作使用共享线程池；
 这不等于无限并发或多节点分布式锁。
@@ -294,7 +294,7 @@ loose 基础历史先压成共享 pack，fork 后各自增加私有 pack；GC �
 
 这些接口可作为 wasmhub 的存储与接收核心。账号注册、组织成员管理、Web UI、PR/审批、CI 执行、
 限流计费、日志归档与多主引用协调属于上层；多节点不可变对象池已由原生后端提供。仓库创建/删除仍通过受控本地 Repository/CLI；
-浅历史/部分克隆、作者签名、跨 pack delta 和多节点对象池已实现，见 [工作流与协议边界](server-storage.md)。仍使用原生 uwgit 协议，不声称支持 Git 的每个命令行选项。
+浅历史/部分克隆、作者签名、跨 pack delta 和多节点对象池已实现，见 [工作流与协议边界](server-storage.md)。仍使用原生 wasm-git 协议，不声称支持 Git 的每个命令行选项。
 
 
 ## 浅历史、作者签名与对象池

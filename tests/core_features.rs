@@ -15,7 +15,7 @@ struct FixtureDirectory(PathBuf);
 impl FixtureDirectory {
     fn new(label: &str) -> Self {
         let directory = std::env::temp_dir().join(format!(
-            "uwgit-core-{label}-{}-{}",
+            "wasm-git-core-{label}-{}-{}",
             std::process::id(),
             NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed)
         ));

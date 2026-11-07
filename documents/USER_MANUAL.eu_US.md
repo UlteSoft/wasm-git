@@ -1,17 +1,17 @@
-# uwgit User Manual
+# wasm-git User Manual
 
 **Edition:** 2026-11-07 · [简体中文](USER_MANUAL.zh_CN.md) · [Library](README.eu_US.md)
 
 ## 1. Conventions and prerequisites
 
-Examples use the `wasm-git` client from a client-enabled build. `DIR` is an uwgit
-repository directory, not its `.uwgit` metadata subdirectory. File arguments for
+Examples use the `wasm-git` client from a client-enabled build. `DIR` is an wasm-git
+repository directory, not its `.wasm-git` metadata subdirectory. File arguments for
 standalone audit refer to ordinary files; staged tree paths are relative to `DIR`.
 `REV` is a supported revision expression, such as a branch, tag, full commit ID,
 `HEAD`, or `HEAD~1`. Names such as `TARGET_ID` and `REVIEWED_HEAD_ID` are placeholders
 for the exact IDs returned by your operation.
 
-Do not assume that every Git option has an uwgit equivalent. Run the particular
+Do not assume that every Git option has an wasm-git equivalent. Run the particular
 command with `--help` to inspect its accepted arguments. Scripts should check the
 exit status, inspect structured results, and retain diagnostics; a JSON field
 that reports incomplete interpretation is not the same as command failure.
@@ -172,7 +172,7 @@ Every accepted input records its name, byte length, SHA-256, format and binding.
 `matching_code_payload` means the separate DWARF container has the exact original
 code payload. It is not an author signature. Containers without code, source maps
 and symbol maps use `explicit_input_unverified`: the caller supplies the
-association, and uwgit cannot prove that the compiler produced it for this module.
+association, and wasm-git cannot prove that the compiler produced it for this module.
 `embedded_reference` identifies a map embedded in the original Wasm. DWARF PCs
 still use the original code-payload base, while `metadata_source` identifies the
 sidecar owning metadata offsets. Source-map names have no fabricated JSON byte
@@ -223,9 +223,9 @@ Wasm validity requirements.
 ## 6. Create and apply a binary patch
 
 ```sh
-wasm-git patch old.wasm new.wasm --output update.uwgp
-wasm-git apply old.wasm update.uwgp --check
-wasm-git apply old.wasm update.uwgp --output restored.wasm
+wasm-git patch old.wasm new.wasm --output update.wgp
+wasm-git apply old.wasm update.wgp --check
+wasm-git apply old.wasm update.wgp --output restored.wasm
 ```
 
 The source must match the patch's exact expected bytes. A valid target is
@@ -236,12 +236,12 @@ patch is created by swapping the old/new inputs in `patch`.
 Committed input can be read from one repository snapshot:
 
 ```sh
-wasm-git patch main topic --repo ./history --file modules/app.wasm --output update.uwgp
-wasm-git apply main update.uwgp --repo ./history --file modules/app.wasm --check
+wasm-git patch main topic --repo ./history --file modules/app.wasm --output update.wgp
+wasm-git apply main update.wgp --repo ./history --file modules/app.wasm --check
 ```
 
 `--file` selects a path in a named tree. Patch creation/application does not
-commit or update references. JSON reports are review output; the `.uwgp` file
+commit or update references. JSON reports are review output; the `.wgp` file
 contains binary restoration data.
 
 ## 7. Start a single-module history
@@ -401,7 +401,7 @@ commit and preserves the old history.
 Trace and blame report byte-range ancestry candidates and frontier boundaries
 under explicit budgets. Repeated bytes do not establish a unique origin. Other
 inspection commands include `rev-list`, `show-ref`, `for-each-ref`, `shortlog`,
-`range-diff`, `describe`, `archive`, and non-checkout `bisect`. They use uwgit's
+`range-diff`, `describe`, `archive`, and non-checkout `bisect`. They use wasm-git's
 actual object and history model; consult command help for each option subset.
 
 Reference events include UTC Unix timestamps. `reflog DIR` retains the shared
@@ -416,8 +416,8 @@ event at or before that time. Numeric selectors remain ordinals. Dates use UTC;
 
 ```sh
 wasm-git clone ./history ./peer
-wasm-git bundle ./peer peer.uwgb
-wasm-git unbundle ./history peer.uwgb incoming
+wasm-git bundle ./peer peer.wgb
+wasm-git unbundle ./history peer.wgb incoming
 wasm-git remote ./peer add origin https://host.example/project
 wasm-git fetch ./peer origin
 wasm-git push ./peer origin main:main
@@ -430,7 +430,7 @@ moving local branches or changing the workspace. Pull adds integration and may
 conflict. A full clone preserves advertised branches and tags; tree files can
 then be materialized with `restore DIR --source HEAD --staged --worktree`.
 
-HTTP credentials are supplied through `UWGIT_REMOTE_TOKEN` and are not saved in
+HTTP credentials are supplied through `WASM_GIT_REMOTE_TOKEN` and are not saved in
 remote configuration. Use HTTPS off loopback; insecure remote HTTP requires
 explicit opt-in. SSH URLs use the installed remote server and system account
 policy. Server administration is documented separately.
@@ -505,7 +505,7 @@ wasm-git sign-commit ./work EXPECTED_HEAD_ID \
   --author 'Alice <alice@example.org>' --key author.key
 ```
 
-The default uses uwgit's binary Ed25519 keys. `--format ssh` accepts OpenSSH keys;
+The default uses wasm-git's binary Ed25519 keys. `--format ssh` accepts OpenSSH keys;
 `--format openpgp` uses a full GPG fingerprint for signing and a public certificate
 for trust import. See the [signing and PR guide](WASMHUB.eu_US.md) for agent,
 revocation and verification behavior. Keep private keys outside source control.

@@ -1,10 +1,10 @@
-# uwgit 服务端部署与运维手册
+# wasm-git 服务端部署与运维手册
 
 **版本：** 2026-11-06 · [English](SERVER_ADMINISTRATION.eu_US.md) · [文档目录](README.zh_CN.md)
 
 ## 1. 部署模型
 
-`wasm-git-server` 为指定根目录下已有的 uwgit 仓库提供服务，支持 `team/project`、
+`wasm-git-server` 为指定根目录下已有的 wasm-git 仓库提供服务，支持 `team/project`、
 `team/users/fork` 等命名空间。每段为 1–128 个 ASCII 字符，以字母或数字开头，
 其余仅允许字母、数字、`-`、`_`、`.`；总长最多 512 字节、16 段。
 拒绝空段、路径穿越、符号链接和嵌套在另一个仓库内部的仓库。服务端不执行上传的 Wasm。
@@ -29,17 +29,17 @@ WasmHub 类平台可将其作为仓库后端，但需补充账户、审阅 UI、
 典型部署分开保存程序、仓库和配置：
 
 - `/usr/local/bin/wasm-git`、`/usr/local/bin/wasm-git-server`：安装的程序。
-- `/srv/uwgit/project/`：单个仓库，包含 `.uwgit/`。
-- `/etc/uwgit/`：授权策略、token、作者信任配置。
+- `/srv/wasm-git/project/`：单个仓库，包含 `.wasm-git/`。
+- `/etc/wasm-git/`：授权策略、token、作者信任配置。
 - 独立于在线存储卷的备份位置。
 
 使用专用非特权账户，仅授予必要写权限，并以该账户初始化仓库。
 以下假设账户和目录已准备好：
 
 ```sh
-sudo -u uwgit /usr/local/bin/wasm-git init /srv/uwgit/project
-sudo -u uwgit /usr/local/bin/wasm-git fsck /srv/uwgit/project
-wasm-git-server --root /srv/uwgit --listen 127.0.0.1:9419
+sudo -u wasm-git /usr/local/bin/wasm-git init /srv/wasm-git/project
+sudo -u wasm-git /usr/local/bin/wasm-git fsck /srv/wasm-git/project
+wasm-git-server --root /srv/wasm-git --listen 127.0.0.1:9419
 ```
 
 最后一条是前台运行示例，也应以服务账户执行。HTTP 默认 loopback、只读；服务根需提前存在。
@@ -50,13 +50,13 @@ wasm-git-server --root /srv/uwgit --listen 127.0.0.1:9419
 单一传输身份可配置私有 token 文件：
 
 ```sh
-wasm-git-server --root /srv/uwgit --listen 127.0.0.1:9419 \
-  --token-file /etc/uwgit/token --allow-write
+wasm-git-server --root /srv/wasm-git --listen 127.0.0.1:9419 \
+  --token-file /etc/wasm-git/token --allow-write
 ```
 
 Token 为 1–4096 个非空白可打印 ASCII 字节，文件允许一个末尾换行。
 应生成高熵 token 并限制文件权限。配置 token 后，读取和写入都需 Bearer 认证。
-真实 token 不得放入源码、服务命令行或公开示例；客户端从 `UWGIT_REMOTE_TOKEN` 读取，
+真实 token 不得放入源码、服务命令行或公开示例；客户端从 `WASM_GIT_REMOTE_TOKEN` 读取，
 不保存到 remote 配置。
 
 公网通过 TLS 反向代理转发仓库 RPC 到 loopback；原生监听器不处理 TLS。
@@ -78,7 +78,7 @@ wasm-git push ./peer origin main:main
 
 ```sh
 wasm-git-server compile-policy policy.json policy.bin
-wasm-git-server --root /srv/uwgit --policy policy.bin --allow-write
+wasm-git-server --root /srv/wasm-git --policy policy.bin --allow-write
 ```
 
 外部输入示例：
@@ -119,7 +119,7 @@ HTTP 写开关仍需显式启用；编译策略与 `--token-file` 互斥。
 ## 5. SSH 传输
 
 ```sh
-wasm-git clone ssh://alice@host.example/srv/uwgit/project ./peer
+wasm-git clone ssh://alice@host.example/srv/wasm-git/project ./peer
 wasm-git fetch ./peer origin
 ```
 
@@ -129,15 +129,15 @@ URL 父路径成为服务根，末段为仓库名。客户端通过无伪终端 
 `--principal NAME`。
 
 层级仓库使用双斜杠明确分隔绝对服务根与仓库路径：
-`ssh://alice@host.example/srv/uwgit//team/project`。
+`ssh://alice@host.example/srv/wasm-git//team/project`。
 HTTP 直接使用 `https://wasm.example/team/project`。
 策略中的 `team/*` 匹配该仓库命名空间；principal 和配置 remote 的名称仍为单段。
 镜像推送、`--force`、`+SOURCE:DESTINATION` 同样需要服务端 force 授权，并保留精确旧值 lease。
 
-`UWGIT_REMOTE_PROGRAM` 指定一个远端程序路径，`UWGIT_SSH_PROGRAM` 指定一个本地 SSH
+`WASM_GIT_REMOTE_PROGRAM` 指定一个远端程序路径，`WASM_GIT_SSH_PROGRAM` 指定一个本地 SSH
 程序或包装器，均不是任意 shell 命令字符串。SSH 非交互认证并遵守正常主机密钥检查；
 HTTP Bearer 凭据不转发给 SSH 子进程。Forced-command 包装器必须验证或替换客户端请求
-参数；若账户仍有任意 shell 权限，仅附加 principal 不能将其限制在 uwgit 策略内。
+参数；若账户仍有任意 shell 权限，仅附加 principal 不能将其限制在 wasm-git 策略内。
 
 ## 6. 接收流程、hooks 与审计
 
@@ -157,19 +157,19 @@ HTTP Bearer 凭据不转发给 SSH 子进程。Forced-command 包装器必须验
 重试前必须核对实际引用。
 
 ```sh
-wasm-git-server --root /srv/uwgit --policy policy.bin --allow-write \
-  --pre-receive /usr/local/libexec/uwgit-pre-receive \
-  --update /usr/local/libexec/uwgit-update \
-  --post-receive /usr/local/libexec/uwgit-post-receive \
-  --post-update /usr/local/libexec/uwgit-post-update
-wasm-git-server audit-log /srv/uwgit/receive-audit.bin
+wasm-git-server --root /srv/wasm-git --policy policy.bin --allow-write \
+  --pre-receive /usr/local/libexec/wasm-git-pre-receive \
+  --update /usr/local/libexec/wasm-git-update \
+  --post-receive /usr/local/libexec/wasm-git-post-receive \
+  --post-update /usr/local/libexec/wasm-git-post-update
+wasm-git-server audit-log /srv/wasm-git/receive-audit.bin
 ```
 
-Hook 是管理员安装的程序，不执行仓库上传脚本。工作目录为仓库，提供 `UWGIT_ACTOR`、
-`UWGIT_REPOSITORY`、`UWGIT_QUARANTINE_BUNDLE`、`UWGIT_UPDATES_FILE`、
-`UWGIT_RECEIVE_TRANSACTION` 和 `UWGIT_HOOK`。
-客户端可重复 `-o VALUE` / `--push-option VALUE`，通过 `UWGIT_PUSH_OPTION_COUNT` 和
-`UWGIT_PUSH_OPTION_0`、`_1` 等传给 hook。值按 UTF-8 原样传递，最多 256 项、合计 64 KiB，
+Hook 是管理员安装的程序，不执行仓库上传脚本。工作目录为仓库，提供 `WASM_GIT_ACTOR`、
+`WASM_GIT_REPOSITORY`、`WASM_GIT_QUARANTINE_BUNDLE`、`WASM_GIT_UPDATES_FILE`、
+`WASM_GIT_RECEIVE_TRANSACTION` 和 `WASM_GIT_HOOK`。
+客户端可重复 `-o VALUE` / `--push-option VALUE`，通过 `WASM_GIT_PUSH_OPTION_COUNT` 和
+`WASM_GIT_PUSH_OPTION_0`、`_1` 等传给 hook。值按 UTF-8 原样传递，最多 256 项、合计 64 KiB，
 禁止 NUL/LF；继承的同名前缀环境变量会清除。选项进入二进制请求回执和审计。
 标准输入与 updates 文件均为二进制更新记录，不能按 Git 文本 hook 协议解析。
 Pre-receive 与 update 共用一个私有隔离区，总期限 15 秒。
@@ -186,9 +186,9 @@ rejected/unknown/post-hook-failed 等结果。Post-receive 失败后仍尝试 po
 ## 7. 作者签名策略
 
 ```sh
-wasm-git trust-author /etc/uwgit/authors.bin 'Alice <alice@example.org>' alice.pub
-wasm-git-server --root /srv/uwgit --policy policy.bin --allow-write \
-  --signed-authors /etc/uwgit/authors.bin
+wasm-git trust-author /etc/wasm-git/authors.bin 'Alice <alice@example.org>' alice.pub
+wasm-git-server --root /srv/wasm-git --policy policy.bin --allow-write \
+  --signed-authors /etc/wasm-git/authors.bin
 ```
 
 服务端对新公开提交执行原生 Ed25519、OpenSSH SSHSIG 或 OpenPGP 验证及作者/密钥精确绑定
@@ -204,10 +204,10 @@ wasm-git-server --root /srv/uwgit --policy policy.bin --allow-write \
 ## 8. 共享 fork 与压缩存储
 
 ```sh
-wasm-git fork /srv/uwgit/project /srv/uwgit/project-fork
+wasm-git fork /srv/wasm-git/project /srv/wasm-git/project-fork
 wasm-git fork https://wasm.example/project project-fork
-wasm-git repack /srv/uwgit/project
-wasm-git gc /srv/uwgit/project
+wasm-git repack /srv/wasm-git/project
+wasm-git gc /srv/wasm-git/project
 ```
 
 同文件系统 fork 链接不可变 pack，独立维护 refs、HEAD、恢复记录与 pool 身份。
@@ -235,10 +235,10 @@ wasm-git gc /srv/uwgit/project
 源仓库显式配置：
 
 ```sh
-wasm-git pool attach /srv/uwgit/project https://node-a.example/pool https://node-b.example/pool
-wasm-git pool sync /srv/uwgit/project
-wasm-git pool status /srv/uwgit/project
-wasm-git pool sync /srv/uwgit/project --evict
+wasm-git pool attach /srv/wasm-git/project https://node-a.example/pool https://node-b.example/pool
+wasm-git pool sync /srv/wasm-git/project
+wasm-git pool status /srv/wasm-git/project
+wasm-git pool sync /srv/wasm-git/project --evict
 ```
 
 每个拥有者具有随机身份，通过 `pool/<owner>/<commit-id>` 引用 pin 提交。
@@ -270,7 +270,7 @@ CPU/内存限制，并允许服务根和必要 hook 数据访问。
 避免慢主机完成校验和持久化发布后无法发送回执；零碎读取不会重置预算。
 服务端处理受请求大小和并发数约束，不会因固定墙钟期限而取消；hook 组的独立期限见前文。
 
-客户端 HTTP/SSH 每次 RPC 默认允许 300 秒，环境变量 `UWGIT_RPC_TIMEOUT_SECONDS`
+客户端 HTTP/SSH 每次 RPC 默认允许 300 秒，环境变量 `WASM_GIT_RPC_TIMEOUT_SECONDS`
 可设置为 1–3600 的整数。大传输包含多次 RPC，各自计时。连接建立限时 10 秒，
 子进程与管道收尾另有 5 秒。发布后的客户端超时仍属于结果未知，应先查询远端 ref 再重试。
 审计渲染还有累计大小限制。

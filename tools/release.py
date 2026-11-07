@@ -94,18 +94,18 @@ def smoke(args):
             selection = json.loads(command("diff", "old.wasm", "new.wasm", "--section",
                                            selector, "--format", "json"))
             assert selection["whole_module_patch"] is False
-        command("patch", "old.wasm", "new.wasm", "--output", "update.uwgp")
-        command("apply", "old.wasm", "update.uwgp", "--output", "restored.wasm")
+        command("patch", "old.wasm", "new.wasm", "--output", "update.wgp")
+        command("apply", "old.wasm", "update.wgp", "--output", "restored.wasm")
         assert (root / "restored.wasm").read_bytes() == new
-        command("apply", "old.wasm", "update.uwgp", "--output", "restored.wasm", success=False)
+        command("apply", "old.wasm", "update.wgp", "--output", "restored.wasm", success=False)
         assert (root / "restored.wasm").read_bytes() == new
         command("init", "repo")
-        command("patch", "old.wasm", "new.wasm", "--output", "repo/.uwgit/export.wasm", success=False)
-        assert not (root / "repo/.uwgit/export.wasm").exists()
+        command("patch", "old.wasm", "new.wasm", "--output", "repo/.wasm-git/export.wasm", success=False)
+        assert not (root / "repo/.wasm-git/export.wasm").exists()
         if os.name != "nt":
-            (root / "metadata-alias").symlink_to("repo/.uwgit", target_is_directory=True)
+            (root / "metadata-alias").symlink_to("repo/.wasm-git", target_is_directory=True)
             command("patch", "old.wasm", "new.wasm", "--output", "metadata-alias/export.wasm", success=False)
-            assert not (root / "repo/.uwgit/export.wasm").exists()
+            assert not (root / "repo/.wasm-git/export.wasm").exists()
         command("commit", "repo", "old.wasm", "-m", "original")
         first = command("rev-parse", "repo", "HEAD").decode().strip()
         command("branch", "repo", "original")
@@ -119,9 +119,9 @@ def smoke(args):
             name = revision + ".wasm"
             command("checkout", "repo", revision, name)
             assert (root / name).read_bytes() == expected
-        command("bundle", "repo", "history.uwgb")
+        command("bundle", "repo", "history.wgb")
         command("init", "from-bundle")
-        command("unbundle", "from-bundle", "history.uwgb", "main")
+        command("unbundle", "from-bundle", "history.wgb", "main")
         command("fsck", "from-bundle")
         assert command("rev-parse", "from-bundle", "HEAD").decode().strip() == last
         command("clone", "repo", "local-clone")

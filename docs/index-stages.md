@@ -17,7 +17,7 @@ wasm-git write-tree DIR --prefix modules/
 
 普通 `read-tree` 只替换 index，不移动 HEAD，不修改工作文件。`-m` 对路径做三方比较：
 两侧相等，或者只有一侧相对 base 改变时，保存确定结果；其余情况保存各侧的实际字节。
-两棵树形式将当前完整且没有冲突的 index 作为 ours。这是明确的 uwgit 语义，
+两棵树形式将当前完整且没有冲突的 index 作为 ours。这是明确的 wasm-git 语义，
 并不声称等同 Git 两树 read-tree 对暂存变更的全部携带规则。
 read-tree 不在文件内部自动合成代码；需要文件内合并时可再使用 `merge-index`。
 
@@ -59,7 +59,7 @@ wasm-git ls-files DIR --eol
 多个来源或多个 stages 可以产生重复路径；`--deduplicate` 在只列名称时按路径去重，不丢弃 stage 或标签信息。
 
 `-i/--ignored` 需显式组合 `-c` 或 `-o`，并给出排除规则。
-`--exclude-standard` 使用仓库内 `.gitignore` 和 `.uwgitignore`，不读取用户的全局 Git 配置。
+`--exclude-standard` 使用仓库内 `.gitignore` 和 `.wasm-gitignore`，不读取用户的全局 Git 配置。
 另有可重复的 `-x/--exclude PATTERN`、`-X/--exclude-from FILE`、`--exclude-per-directory BASENAME`。
 规则按目录范围和优先级匹配，也能正确识别已暂存但工作侧缺席的忽略路径；已排除的父目录不能由子目录规则重新纳入。
 一个规则文件最多 1 MiB；错误规则与不可读输入均不改变 index。
@@ -105,7 +105,7 @@ format 的 `%(eolinfo:index)`、`%(eolinfo:worktree)` 和 `%(eolattr)` 提供同
 EOL 始终观察真实工作文件，包含 assume/skip 路径上的脏字节。缺席、目录、symlink 或非普通工作侧为空；
 symlink 父路径也不跟随。intent 没有索引图像，因此 i/ 为空；历史树补充项同样不伪装为索引内容。
 resolve-undo 的文本行继续只显示真实 side/ID，不附工作侧 EOL。
-uwgit 的 Wasm 模型没有文本转换属性：eolattr/attr 为空，`.gitattributes`、Git 全局配置及 autocrlf 不参与转换。
+wasm-git 的 Wasm 模型没有文本转换属性：eolattr/attr 为空，`.gitattributes`、Git 全局配置及 autocrlf 不参与转换。
 JSON 的 eol_index/eol_worktree/eol_attribute 和 eol_policy 明确给出这个范围；它不是属性或内容规范化实现。
 
 只读回归见 [index_listing_cli.rs](../tests/index_listing_cli.rs)，包含完整失败保持、未发布/跨对象种类碰撞、边界目录、
@@ -130,7 +130,7 @@ wasm-git checkout-index DIR --stage=all --all -z
 既可写 `export/`，也可写 `.review-`；不能逃逸仓库。`--dry-run` 完整预检后仅输出计划。
 
 `--stage=1|2|3` 选择真实冲突侧，缺席侧报错。`--temp` 将所选图像写入仓库根下独占创建的
-`uwgit-index-PID-SEQUENCE.wasm`；`--stage=all` 隐含 temp，只导出未解决项。
+`wasm-git-index-PID-SEQUENCE.wasm`；`--stage=all` 隐含 temp，只导出未解决项。
 输出为 `TEMP<TAB>PATH`，all 形式为 `BASE_TEMP OURS_TEMP THEIRS_TEMP<TAB>PATH`；
 缺席侧用 `.`，`-z` 将记录分隔符改为 NUL。映射到的导出文件由调用者使用后移除；失败会清理本次已创建文件。
 原工作文件和 index 保持原字节。本模型没有 stat cache，`-u/--index` 仍拒绝。默认尊重 skip-worktree，显式 `--ignore-skip-worktree-bits` 可物化；详见[索引标志](index-flags.md)。
@@ -208,7 +208,7 @@ ours/theirs 同时选择 stage 0 普通路径时按该原图像恢复。`restore
 接口参考 [Git restore](https://git-scm.com/docs/git-restore) 和 [Git checkout](https://git-scm.com/docs/git-checkout)。
 Git 二进制回退、stages/撤回生命周期及缺失侧拒绝有独立对照；原生 Wasm 结构组合与批量失败保持另有专门回归。
 
-`merge-index` 使用 uwgit 的 Wasm 三方合并器，不调用外部 Git 程序。
+`merge-index` 使用 wasm-git 的 Wasm 三方合并器，不调用外部 Git 程序。
 必须给 `--all/-a` 或 `--` 后的 pathspec；可合成的路径进入 stage 0，仍有冲突的路径保留原图像。
 目录/文件分歧不能被逐路径的成功结果掩盖。存在未解决项时退出 2，并报告各路径原因；
 其他已解决的选中路径可以同时暂存。`--dry-run` 不修改 index。工作文件和 HEAD 始终保留。
@@ -217,12 +217,12 @@ status 明确标出未解决路径及现存 stage。commit、write-tree、stash 
 拒绝未解决 index；当前 diff-files/diff-index/diff-worktree 也明确拒绝，尚未实现 combined diff。
 clean 将未解决路径视为受控文件，不能当作 untracked 删除。
 
-index 统一使用 `UWGITIDX\x06` 二进制签名。内部 format 字段区分 stages、flags 与 resolve-undo 能力；不读取旧磁盘格式。
+index 统一使用 `WASMGIDX\x06` 二进制签名。内部 format 字段区分 stages、flags 与 resolve-undo 能力；不读取旧磁盘格式。
 老客户端不认识格式 3 时必须拒绝，不能丢弃 stages。不可变 Wasm/tree/commit 对象编码和 ID 不变。
 
 stages 可由 read-tree、update-index 或录制的 merge/pick/revert/rebase 队列建立。
 索引 flags、intent-to-add 见[索引标志](index-flags.md)；稀疏 index、Git 属性转换和其他剩余选项仍见[能力矩阵](git-command-coverage.md)。
-接口参考 [Git ls-files](https://git-scm.com/docs/git-ls-files) 与 [Git checkout-index](https://git-scm.com/docs/git-checkout-index)，对象及数据持久化继续使用 uwgit。
+接口参考 [Git ls-files](https://git-scm.com/docs/git-ls-files) 与 [Git checkout-index](https://git-scm.com/docs/git-checkout-index)，对象及数据持久化继续使用 wasm-git。
 
 索引 version 4、assume/skip/图像有效性标志、intent-to-add 与 commit -a 见[原生索引标志](index-flags.md)。
 已有 index 的 merge/pick/revert/rebase 录制及多目标 pick/revert 自动建立上述 stages，并带可恢复的工作区检查点；见[录制冲突](pending.md)、[rebase](rebase-pending.md)及[原生队列](replay-queue.md)。

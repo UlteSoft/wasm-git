@@ -15,18 +15,18 @@ pub(super) fn visible_paths(root: &Path, respect_ignore: bool) -> Result<BTreeSe
         .require_git(false)
         .follow_links(false);
     if respect_ignore {
-        builder.add_custom_ignore_filename(".uwgitignore");
+        builder.add_custom_ignore_filename(".wasm-gitignore");
     }
     builder.filter_entry(|entry| {
         if entry.depth() == 0 {
             return true;
         }
         let name = entry.file_name().to_string_lossy();
-        if name.eq_ignore_ascii_case(".uwgit") || name.eq_ignore_ascii_case(".git") {
+        if name.eq_ignore_ascii_case(".wasm-git") || name.eq_ignore_ascii_case(".git") {
             return false;
         }
         if entry.file_type().is_some_and(|kind| kind.is_dir()) {
-            return !entry.path().join(".uwgit").exists() && !entry.path().join(".git").exists();
+            return !entry.path().join(".wasm-git").exists() && !entry.path().join(".git").exists();
         }
         true
     });
@@ -281,7 +281,7 @@ pub fn mergetool(
         manifest["merged"] = json!(merged);
         if let Some(program) = program {
             let mut command = std::process::Command::new(program);
-            command.env("MERGED", &merged).env("UWGIT_PATH", path);
+            command.env("MERGED", &merged).env("WASM_GIT_PATH", path);
             for name in ["BASE", "LOCAL", "REMOTE"] {
                 if let Some(file) = files.get(name) {
                     command.env(name, file);

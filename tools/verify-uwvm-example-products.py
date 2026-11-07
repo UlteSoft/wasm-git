@@ -33,7 +33,7 @@ SOURCES = tuple(
 
 def selected_headers(reference):
     source = Path(__file__).with_name("uwvm-examples-inputs.py")
-    spec = importlib.util.spec_from_file_location("uwgit_product_inputs", source)
+    spec = importlib.util.spec_from_file_location("wasm-git_product_inputs", source)
     if spec is None or spec.loader is None:
         raise ValueError("cannot load input SDK selection helper")
     module = importlib.util.module_from_spec(spec)
@@ -84,9 +84,9 @@ def inventory(reference, headers=None):
 
 
 def expected_swap_max():
-    value = os.environ.get("UWGIT_EXPECTED_CGROUP_SWAP_MAX", "0")
+    value = os.environ.get("WASM_GIT_EXPECTED_CGROUP_SWAP_MAX", "0")
     if re.fullmatch(r"max|0|[1-9][0-9]*", value) is None:
-        raise ValueError("UWGIT_EXPECTED_CGROUP_SWAP_MAX must be max or canonical nonnegative decimal")
+        raise ValueError("WASM_GIT_EXPECTED_CGROUP_SWAP_MAX must be max or canonical nonnegative decimal")
     return value
 
 
@@ -234,7 +234,7 @@ class Harness:
     def prepare_tools(self):
         self.tools = {}
         for name, supplied in (
-            ("uwgit", self.args.uwgit), ("uwvm", self.args.uwvm),
+            ("wasm-git", self.args.wasm_git), ("uwvm", self.args.uwvm),
             ("cc", self.args.cc), ("wasm-validate", "wasm-validate"),
             ("wasm-objdump", "wasm-objdump"), ("cmp", "cmp"),
         ):
@@ -312,18 +312,18 @@ class Harness:
             imports.append((module, target[len(module) + 1:]))
         if not imports or {module for module, _ in imports} != set(allowed):
             raise ValueError(f"expected real ROS and WASI imports in {path}, got {imports!r}")
-        inspected = self.require_command(f"uwgit-inspect-{path.name}", [self.tools["uwgit"], "inspect", str(path), "--json"], inputs=[path])
+        inspected = self.require_command(f"wasm-git-inspect-{path.name}", [self.tools["wasm-git"], "inspect", str(path), "--json"], inputs=[path])
         projection = json.loads(self.output(inspected))
         if projection.get("function_analysis", {}).get("available") is not True:
-            raise ValueError(f"uwgit function projection unavailable for compiled real example: {path}")
+            raise ValueError(f"wasm-git function projection unavailable for compiled real example: {path}")
         projected = [(item["module"], item["name"]) for item in projection["module"]["imports"]]
         if Counter(imports) != Counter(projected):
-            raise ValueError(f"WABT/uwgit import lists differ for {path}")
+            raise ValueError(f"WABT/wasm-git import lists differ for {path}")
         self.report.setdefault("compiled_import_checks", []).append({
             "path": str(path), "imports": [{"module": module, "name": name} for module, name in imports],
-            "unexpected_env_imports": False, "matches_uwgit_projection": True,
+            "unexpected_env_imports": False, "matches_wasm-git_projection": True,
             "objdump_details_command": details["index"], "objdump_disassembly_command": disassembly["index"],
-            "uwgit_inspect_command": inspected["index"],
+            "wasm-git_inspect_command": inspected["index"],
         })
         return disassembly
 
@@ -375,7 +375,7 @@ class Harness:
         if constants(old_text) - constants(new_text) != Counter({1000000000: 1}) or constants(new_text) - constants(old_text) != Counter({1000000001: 1}):
             raise ValueError("independent WABT disassembly did not isolate exactly one i64.const threshold change")
         baseline = compiled[source_name]
-        difference = self.require_command("uwgit-threshold-diff", [self.tools["uwgit"], "diff", str(baseline), str(product), "--format", "json"], inputs=[baseline, product])
+        difference = self.require_command("wasm-git-threshold-diff", [self.tools["wasm-git"], "diff", str(baseline), str(product), "--format", "json"], inputs=[baseline, product])
         diff = json.loads(self.output(difference))
         audit = diff["audit"]
         semantic = [change for change in audit["semantic_changes"]
@@ -385,12 +385,12 @@ class Harness:
         edits = [edit for edit in audit["edits"] if edit["old_hex"] != edit["new_hex"]
                  and any("/operator[" in context["path"] for context in edit["old_context"] + edit["new_context"])]
         if not diff.get("binary_changed") or not audit.get("changed") or not semantic or not edits:
-            raise ValueError("uwgit did not expose the real threshold operator change with physical edit context")
-        patch = self.build / "c-compiled" / "threshold.uwgp"
-        patch_command = self.require_command("uwgit-threshold-patch", [self.tools["uwgit"], "patch", str(baseline), str(product), "--output", str(patch)], inputs=[baseline, product], outputs=[patch])
-        check_command = self.require_command("uwgit-threshold-apply-check", [self.tools["uwgit"], "apply", str(baseline), str(patch), "--check"], inputs=[baseline, patch])
+            raise ValueError("wasm-git did not expose the real threshold operator change with physical edit context")
+        patch = self.build / "c-compiled" / "threshold.wgp"
+        patch_command = self.require_command("wasm-git-threshold-patch", [self.tools["wasm-git"], "patch", str(baseline), str(product), "--output", str(patch)], inputs=[baseline, product], outputs=[patch])
+        check_command = self.require_command("wasm-git-threshold-apply-check", [self.tools["wasm-git"], "apply", str(baseline), str(patch), "--check"], inputs=[baseline, patch])
         restored = self.build / "c-compiled" / "threshold-restored.wasm"
-        apply_command = self.require_command("uwgit-threshold-apply", [self.tools["uwgit"], "apply", str(baseline), str(patch), "--output", str(restored)], inputs=[baseline, patch], outputs=[restored])
+        apply_command = self.require_command("wasm-git-threshold-apply", [self.tools["wasm-git"], "apply", str(baseline), str(patch), "--output", str(restored)], inputs=[baseline, patch], outputs=[restored])
         cmp_command = self.require_command("cmp-threshold-replay", [self.tools["cmp"], "--silent", str(product), str(restored)], inputs=[product, restored])
         if product.read_bytes() != restored.read_bytes() or sha256(product) != sha256(restored):
             raise ValueError("patch replay differs from the separately compiled variant")
@@ -483,7 +483,7 @@ class Harness:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("reference", "build-root", "evidence", "uwgit", "uwvm", "cc"):
+    for name in ("reference", "build-root", "evidence", "wasm-git", "uwvm", "cc"):
         parser.add_argument(f"--{name}", type=Path, required=True)
     args = parser.parse_args()
     harness = None

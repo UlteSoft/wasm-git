@@ -13,7 +13,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let p = std::env::temp_dir().join(format!(
-            "uwgit-pack-fork-{}-{}",
+            "wasm-git-pack-fork-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
@@ -85,7 +85,7 @@ fn seed(repo: &Path, version: u8) -> String {
     ok(&["rev-parse", p(repo), "HEAD"])
 }
 fn packs(repo: &Path) -> Vec<PathBuf> {
-    fs::read_dir(repo.join(".uwgit/packs"))
+    fs::read_dir(repo.join(".wasm-git/packs"))
         .unwrap()
         .map(|e| e.unwrap().path())
         .collect()
@@ -105,7 +105,9 @@ fn indexed_delta_repack_preserves_every_revision_and_future_writes() {
         report["pack_bytes"].as_u64().unwrap() < report["raw_object_bytes"].as_u64().unwrap() / 2
     );
     assert_eq!(
-        fs::read_dir(repo.join(".uwgit/objects")).unwrap().count(),
+        fs::read_dir(repo.join(".wasm-git/objects"))
+            .unwrap()
+            .count(),
         0
     );
     assert_eq!(before, js(&["fsck", p(&repo)]));
@@ -126,7 +128,7 @@ fn indexed_delta_repack_preserves_every_revision_and_future_writes() {
     ok(&["gc", p(&repo), "--pack", "--prune=now"]);
     ok(&["fsck", p(&repo)]);
     assert_eq!(packs(&repo).len(), 1);
-    let bundle = t.path("history.uwgb");
+    let bundle = t.path("history.wgb");
     ok(&["bundle", p(&repo), p(&bundle)]);
     let peer = t.path("peer");
     ok(&["clone", p(&repo), p(&peer)]);
@@ -143,11 +145,11 @@ fn independent_forks_share_loose_and_packed_inodes_and_survive_source_removal() 
     let first = seed(&repo, 1);
     let loose = t.path("loose");
     ok(&["fork", p(&repo), p(&loose)]);
-    for e in fs::read_dir(repo.join(".uwgit/objects")).unwrap() {
+    for e in fs::read_dir(repo.join(".wasm-git/objects")).unwrap() {
         let e = e.unwrap();
         assert_eq!(
             e.metadata().unwrap().ino(),
-            fs::metadata(loose.join(".uwgit/objects").join(e.file_name()))
+            fs::metadata(loose.join(".wasm-git/objects").join(e.file_name()))
                 .unwrap()
                 .ino()
         );
@@ -157,7 +159,7 @@ fn independent_forks_share_loose_and_packed_inodes_and_survive_source_removal() 
     let packed = t.path("packed");
     ok(&["fork", p(&repo), p(&packed)]);
     for a in packs(&repo) {
-        let b = packed.join(".uwgit/packs").join(a.file_name().unwrap());
+        let b = packed.join(".wasm-git/packs").join(a.file_name().unwrap());
         assert_eq!(
             fs::metadata(a).unwrap().ino(),
             fs::metadata(b).unwrap().ino()
@@ -213,7 +215,7 @@ fn pack_corruption_and_truncation_are_rejected_without_changing_references() {
         fs::write(&pack, broken).unwrap();
         assert!(!command(&["fsck", p(&repo)]).status.success());
         assert_eq!(
-            fs::read(repo.join(".uwgit/refs/main")).unwrap(),
+            fs::read(repo.join(".wasm-git/refs/main")).unwrap(),
             native::reference(&tip)
         );
     }
@@ -228,8 +230,8 @@ fn a_fork_target_cannot_create_foreign_entries_inside_source_metadata() {
     ok(&["init", p(&repo)]);
     seed(&repo, 1);
     for directory in [
-        repo.join(".uwgit/objects/foreign"),
-        repo.join(".uwgit/tmp/foreign"),
+        repo.join(".wasm-git/objects/foreign"),
+        repo.join(".wasm-git/tmp/foreign"),
     ] {
         assert!(!command(&["fork", p(&repo), p(&directory)]).status.success());
         assert!(!directory.exists());
@@ -308,9 +310,9 @@ fn standalone_http_server_creates_an_authenticated_independent_fork() {
         let mut command = Command::new(env!("CARGO_BIN_EXE_wasm-git"));
         command
             .args(["fork", &url, name])
-            .env_remove("UWGIT_REMOTE_TOKEN");
+            .env_remove("WASM_GIT_REMOTE_TOKEN");
         if authenticated {
-            command.env("UWGIT_REMOTE_TOKEN", "fork-test-token");
+            command.env("WASM_GIT_REMOTE_TOKEN", "fork-test-token");
         }
         command.output().unwrap()
     };
@@ -393,7 +395,7 @@ fn clone_and_push_transfer_large_bundles_in_bounded_frames() {
     let run = |args: &[&str]| {
         let r = Command::new(env!("CARGO_BIN_EXE_wasm-git"))
             .args(args)
-            .env("UWGIT_REMOTE_TOKEN", "large-transfer-token")
+            .env("WASM_GIT_REMOTE_TOKEN", "large-transfer-token")
             .output()
             .unwrap();
         assert!(
@@ -430,9 +432,11 @@ fn clone_and_push_transfer_large_bundles_in_bounded_frames() {
         ok(&["rev-parse", p(&target), "HEAD"]),
         ok(&["rev-parse", p(&peer), "HEAD"])
     );
-    assert!(!fs::read_dir(target.join(".uwgit/tmp")).unwrap().any(|e| e
+    assert!(!fs::read_dir(target.join(".wasm-git/tmp"))
         .unwrap()
-        .file_name()
-        .to_string_lossy()
-        .starts_with("upload-")));
+        .any(|e| e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("upload-")));
 }

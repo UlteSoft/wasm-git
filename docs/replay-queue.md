@@ -1,7 +1,7 @@
 # 多目标原生 Wasm replay
 
 cherry-pick/revert 可以冻结多个目标、范围或 stdin 中的提交选择。每一步按真实路径的原始 Wasm 图像做三方组合；
-原 HEAD 保持到整个队列及工作区检查点完成，再一次发布最终 tip。对象格式、差异、合并及引用都由 uwgit 原生实现。
+原 HEAD 保持到整个队列及工作区检查点完成，再一次发布最终 tip。对象格式、差异、合并及引用都由 wasm-git 原生实现。
 
 ```sh
 wasm-git cherry-pick DIR FIRST_ID SECOND_ID
@@ -66,7 +66,7 @@ quit 只忘记 journal，不恢复任何字节。revert 使用相同控制入口
 
 ## 持久检查点与恢复
 
-version 2 `.uwgit/pending.bin` 绑定原 HEAD/检出身份、原 index、原受控工作图像、选项、完整队列、进度链与所拥有路径。
+version 2 `.wasm-git/pending.bin` 绑定原 HEAD/检出身份、原 index、原受控工作图像、选项、完整队列、进度链与所拥有路径。
 记录为严格规范二进制，限制 64 MiB。每次读取重新核对来源、图像、对象类型、父链、消息及自动组合结果。
 尚未完成的 journal 使维护与 GC 保守保留对象，其他普通历史写入口受 pending guard 约束。
 

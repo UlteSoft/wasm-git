@@ -6,7 +6,7 @@
 ```sh
 wasm-git inspect module.wasm --standard core1 --json
 wasm-git diff old.wasm new.wasm --standard core3 --format json
-wasm-git apply old.wasm change.uwgp --check --standard core2
+wasm-git apply old.wasm change.wgp --check --standard core2
 ```
 
 `core1`、`core2`、`core3` 选择所允许的 Core 特性。

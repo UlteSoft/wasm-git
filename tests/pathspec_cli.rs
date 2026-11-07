@@ -10,7 +10,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let root = std::env::temp_dir().join(format!(
-            "uwgit-pathspec-{}-{}",
+            "wasm-git-pathspec-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -129,7 +129,7 @@ fn selectors_cover_glob_literal_case_directory_and_exclusion_semantics() {
         "a/../b",
         "/a",
         ":(top)../a",
-        ":(glob).uwgit/**",
+        ":(glob).wasm-git/**",
         "a\n",
     ] {
         assert!(Pathspec::new(&[invalid.into()]).is_err(), "{invalid:?}");
@@ -192,7 +192,7 @@ fn native_add_all_update_dry_run_ignore_and_restore_pathspecs_preserve_other_byt
     fs::write(temp.0.join(".gitignore"), "ignored.wasm\n").unwrap();
     fs::write(temp.0.join("notes.txt"), b"ordinary local text").unwrap();
     ok(&["add", root, "-A", "-n"]);
-    assert!(!temp.0.join(".uwgit/index").exists());
+    assert!(!temp.0.join(".wasm-git/index").exists());
     ok(&["add", root, "-A"]);
     assert_eq!(
         ok(&["ls-files", root]).lines().collect::<BTreeSet<_>>(),
@@ -205,9 +205,9 @@ fn native_add_all_update_dry_run_ignore_and_restore_pathspecs_preserve_other_byt
     ok(&["add", root, "-u"]);
     assert_eq!(ok(&["ls-files", root]).trim(), "a.wasm");
     ok(&["add", root, "-f", "ignored.wasm"]);
-    let before = fs::read(temp.0.join(".uwgit/index")).unwrap();
+    let before = fs::read(temp.0.join(".wasm-git/index")).unwrap();
     assert!(!uw(&["add", root, "a.wasm", "missing*"]).status.success());
-    assert_eq!(fs::read(temp.0.join(".uwgit/index")).unwrap(), before);
+    assert_eq!(fs::read(temp.0.join(".wasm-git/index")).unwrap(), before);
     ok(&[
         "restore",
         root,

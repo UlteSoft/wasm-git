@@ -24,7 +24,7 @@ struct Temp {
 impl Temp {
     fn new() -> Self {
         let base = std::env::temp_dir().join(format!(
-            "uwgit-archive-{}-{}",
+            "wasm-git-archive-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -122,9 +122,9 @@ fn sha(bytes: &[u8]) -> String {
 fn invoke(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_wasm-git"))
         .args(args)
-        .env_remove("UWGIT_REMOTE_TOKEN")
-        .env_remove("UWGIT_SSH_PROGRAM")
-        .env_remove("UWGIT_REMOTE_PROGRAM")
+        .env_remove("WASM_GIT_REMOTE_TOKEN")
+        .env_remove("WASM_GIT_SSH_PROGRAM")
+        .env_remove("WASM_GIT_REMOTE_PROGRAM")
         .output()
         .unwrap()
 }
@@ -386,8 +386,12 @@ fn commit_tags_ancestry_prefixes_and_direct_tree_keep_actual_source_identity() {
 fn malformed_index_pending_and_dirty_or_missing_work_are_not_archive_inputs() {
     let (t, _, _) = populated();
     let (_, clean) = t.export("HEAD", "clean.tar", &[]);
-    fs::write(t.path(".uwgit/index"), b"malformed index retained").unwrap();
-    fs::write(t.path(".uwgit/pending.bin"), b"malformed journal retained").unwrap();
+    fs::write(t.path(".wasm-git/index"), b"malformed index retained").unwrap();
+    fs::write(
+        t.path(".wasm-git/pending.bin"),
+        b"malformed journal retained",
+    )
+    .unwrap();
     t.write("a.wasm", b"uncommitted invalid work");
     fs::remove_file(t.path("nested/文件.wasm")).unwrap();
     t.write("private.txt", b"untracked private");
@@ -522,7 +526,7 @@ fn named_trees_with_a_legacy_binding_keep_that_fact_but_reject_legacy_renaming()
         Some(chosen.into()),
     )
     .bytes();
-    fs::write(t.path(".uwgit/index"), raw).unwrap();
+    fs::write(t.path(".wasm-git/index"), raw).unwrap();
     t.commit("promote explicit binding to named tree");
     let (report, bytes) = t.export("HEAD", "named.tar", &[]);
     assert_eq!(
@@ -576,8 +580,8 @@ fn invalid_options_prefixes_and_paths_are_rejected_before_opening_missing_reposi
         ".",
         "a//b",
         "x/",
-        ".UwGiT",
-        "a/.uwgit/b",
+        ".WaSm-GiT",
+        "a/.wasm-git/b",
         "C:drive",
         "a\\b",
         "a\nb",
@@ -599,8 +603,8 @@ fn invalid_options_prefixes_and_paths_are_rejected_before_opening_missing_reposi
         ".",
         "a//b",
         "a//",
-        ".uwgit/",
-        "a/.UwGiT/b",
+        ".wasm-git/",
+        "a/.WaSm-GiT/b",
         "a\\b",
         "a\tb",
     ] {
@@ -649,7 +653,7 @@ fn output_publication_refuses_overwrite_metadata_aliases_directories_and_staging
         t.root(),
         "HEAD",
         "-o",
-        s(&t.path(".uwgit/new.tar")),
+        s(&t.path(".wasm-git/new.tar")),
     ]);
     t.reject(&[
         "archive",
@@ -662,12 +666,12 @@ fn output_publication_refuses_overwrite_metadata_aliases_directories_and_staging
     assert!(!bytes.is_empty());
     assert!(!snapshot(&t.base)
         .keys()
-        .any(|path| path.to_string_lossy().contains(".uwgit-output-")));
+        .any(|path| path.to_string_lossy().contains(".wasm-git-output-")));
     #[cfg(unix)]
     {
         use std::os::unix::fs::symlink;
         let alias = t.base.join("metadata-alias");
-        symlink(t.path(".uwgit"), &alias).unwrap();
+        symlink(t.path(".wasm-git"), &alias).unwrap();
         t.reject(&["archive", t.root(), "HEAD", "-o", s(&alias.join("new.tar"))]);
         let link = t.base.join("existing-link.tar");
         symlink(&out, &link).unwrap();
@@ -685,7 +689,7 @@ fn corrupt_objects_and_unknown_revisions_fail_without_output_and_describe_names_
     let out = t.base.join("failed.tar");
     t.reject(&["archive", t.root(), "missing", "-o", s(&out)]);
     let head = ok(&["rev-parse", t.root(), "HEAD"]).trim().to_owned();
-    let object = t.path(&format!(".uwgit/objects/{head}"));
+    let object = t.path(&format!(".wasm-git/objects/{head}"));
     let mut raw = fs::read(&object).unwrap();
     raw[0] ^= 1;
     fs::write(object, raw).unwrap();

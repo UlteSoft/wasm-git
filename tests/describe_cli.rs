@@ -20,7 +20,7 @@ struct Temp {
 impl Temp {
     fn new() -> Self {
         let base = std::env::temp_dir().join(format!(
-            "uwgit-describe-{}-{}",
+            "wasm-git-describe-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -96,9 +96,9 @@ fn s(path: &Path) -> &str {
 fn invoke(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_wasm-git"))
         .args(args)
-        .env_remove("UWGIT_REMOTE_TOKEN")
-        .env_remove("UWGIT_SSH_PROGRAM")
-        .env_remove("UWGIT_REMOTE_PROGRAM")
+        .env_remove("WASM_GIT_REMOTE_TOKEN")
+        .env_remove("WASM_GIT_SSH_PROGRAM")
+        .env_remove("WASM_GIT_REMOTE_PROGRAM")
         .output()
         .unwrap()
 }
@@ -164,7 +164,7 @@ impl History {
     }
 }
 fn object_ids(t: &Temp) -> Vec<String> {
-    fs::read_dir(t.path(".uwgit/objects"))
+    fs::read_dir(t.path(".wasm-git/objects"))
         .unwrap()
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())
         .collect()
@@ -557,8 +557,8 @@ fn unrelated_malformed_index_pending_dirty_missing_work_and_symlinks_are_ignored
     let t = &h.t;
     let plain = t.text(&["describe", t.root()]);
     let report = t.json(&["describe", t.root(), "--json"]);
-    t.write(".uwgit/index", b"fixed malformed index\0\xff");
-    t.write(".uwgit/pending.bin", b"fixed malformed pending\0\xff");
+    t.write(".wasm-git/index", b"fixed malformed index\0\xff");
+    t.write(".wasm-git/pending.bin", b"fixed malformed pending\0\xff");
     t.write("module.wasm", b"unfinished non-Wasm editor data\0");
     t.write("private.txt", b"untracked private bytes");
     #[cfg(unix)]
@@ -575,14 +575,14 @@ fn authoritative_corruption_and_writer_locks_are_reported_without_repairs() {
     let h = History::new();
     let t = &h.t;
     for (path, bytes) in [
-        (".uwgit/refs/main", b"not-an-object-id\n".as_slice()),
-        (".uwgit/reflog", b"fixed truncated reflog\0".as_slice()),
+        (".wasm-git/refs/main", b"not-an-object-id\n".as_slice()),
+        (".wasm-git/reflog", b"fixed truncated reflog\0".as_slice()),
         (
-            ".uwgit/remotes/origin.tracking.bin",
+            ".wasm-git/remotes/origin.tracking.bin",
             b"{bad fixed tracking".as_slice(),
         ),
         (
-            ".uwgit/write.lock",
+            ".wasm-git/write.lock",
             b"fixed existing writer lock\n".as_slice(),
         ),
     ] {
@@ -595,7 +595,7 @@ fn authoritative_corruption_and_writer_locks_are_reported_without_repairs() {
             fs::remove_file(t.path(path)).unwrap();
         }
     }
-    let object = t.path(&format!(".uwgit/objects/{}", h.first));
+    let object = t.path(&format!(".wasm-git/objects/{}", h.first));
     let before = fs::read(&object).unwrap();
     fs::write(&object, b"fixed corrupted commit object").unwrap();
     t.reject(&["describe", t.root()]);

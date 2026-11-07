@@ -17,7 +17,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let p = std::env::temp_dir().join(format!(
-            "uwgit-tree-{}-{}",
+            "wasm-git-tree-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -133,11 +133,11 @@ fn every_export_rejects_metadata_destinations_and_preserves_repository_state() {
     let bundle_bytes = fs::read(&bundle).unwrap();
     let legacy = Temp::new();
     success(&["commit", legacy.root(), &old_input, "-m", "legacy module"]);
-    let mut blocked_parents = vec![tree.0.join(".uwgit")];
+    let mut blocked_parents = vec![tree.0.join(".wasm-git")];
     #[cfg(unix)]
     {
         let alias = tree.0.join("metadata-alias");
-        std::os::unix::fs::symlink(tree.0.join(".uwgit"), &alias).unwrap();
+        std::os::unix::fs::symlink(tree.0.join(".wasm-git"), &alias).unwrap();
         blocked_parents.push(alias);
     }
     let commands: Vec<(&str, Vec<&str>, &[u8])> = vec![
@@ -256,7 +256,7 @@ fn every_export_rejects_metadata_destinations_and_preserves_repository_state() {
                 "{label}: legacy state changed"
             );
         }
-        let metadata_before = snapshot(&tree.0.join(".uwgit"));
+        let metadata_before = snapshot(&tree.0.join(".wasm-git"));
         let destination = tree.path(&format!("export-{label}"));
         let mut args = prefix;
         args.push(&destination);
@@ -266,7 +266,7 @@ fn every_export_rejects_metadata_destinations_and_preserves_repository_state() {
             expected,
             "{label}: wrong export"
         );
-        assert_eq!(snapshot(&tree.0.join(".uwgit")), metadata_before);
+        assert_eq!(snapshot(&tree.0.join(".wasm-git")), metadata_before);
         assert_eq!(snapshot(&legacy.0), legacy_before);
         assert_eq!(fs::read(tree.path("module.wasm")).unwrap(), C);
     }
@@ -286,7 +286,7 @@ fn path_delimiters_keep_flag_shaped_filenames_literal_across_tree_commands() {
         t.write(path, B);
         success(&["add", t.root(), "--", path]);
         t.write(path, C);
-        let index = fs::read(t.path(".uwgit/index")).unwrap();
+        let index = fs::read(t.path(".wasm-git/index")).unwrap();
         success(&["mv", t.root(), "--", path, "moved.wasm"]);
         assert!(!Path::new(&t.path(path)).exists());
         assert_eq!(fs::read(t.path("moved.wasm")).unwrap(), C);
@@ -302,12 +302,12 @@ fn path_delimiters_keep_flag_shaped_filenames_literal_across_tree_commands() {
         assert_eq!(fs::read(staged_output).unwrap(), B);
         success(&["mv", t.root(), "--", "moved.wasm", path]);
         assert_eq!(fs::read(t.path(path)).unwrap(), C);
-        assert_eq!(fs::read(t.path(".uwgit/index")).unwrap(), index);
+        assert_eq!(fs::read(t.path(".wasm-git/index")).unwrap(), index);
         success(&["restore", t.root(), "--", path]);
         assert_eq!(fs::read(t.path(path)).unwrap(), B);
         success(&["restore", t.root(), "--source", &first, "--", path]);
         assert_eq!(fs::read(t.path(path)).unwrap(), A);
-        assert_eq!(fs::read(t.path(".uwgit/index")).unwrap(), index);
+        assert_eq!(fs::read(t.path(".wasm-git/index")).unwrap(), index);
         success(&[
             "restore",
             t.root(),
@@ -327,7 +327,7 @@ fn path_delimiters_keep_flag_shaped_filenames_literal_across_tree_commands() {
         let before = snapshot(&t.0);
         failure(&["mv", t.root(), "--", path, "obstruction.wasm"]);
         assert_eq!(snapshot(&t.0), before);
-        failure(&["mv", t.root(), "--", path, ".uwgit/index.lock"]);
+        failure(&["mv", t.root(), "--", path, ".wasm-git/index.lock"]);
         assert_eq!(snapshot(&t.0), before);
         success(&["rm", t.root(), "--", path]);
         assert!(!Path::new(&t.path(path)).exists());
@@ -402,9 +402,9 @@ fn final_deletion_and_initial_allow_empty_create_real_empty_trees() {
     t.commit("files");
     success(&["rm", t.root(), "a.wasm", "b.wasm"]);
     let empty = t.commit("remove all files");
-    assert!(fs::read(t.path(".uwgit/index"))
+    assert!(fs::read(t.path(".wasm-git/index"))
         .unwrap()
-        .starts_with(b"UWGITIDX\x06"));
+        .starts_with(b"WASMGIDX\x06"));
     assert_eq!(t.entries("HEAD"), serde_json::json!({}));
     success(&["reset", t.root(), "--hard", "HEAD~1"]);
     assert_eq!(fs::read(t.path("a.wasm")).unwrap(), A);
@@ -521,7 +521,7 @@ fn v1_binary_index_and_explicit_first_add_anchor_promote_without_guessing_names(
         Some(path.into()),
     )
     .bytes();
-    fs::write(t.path(".uwgit/index"), bytes).unwrap();
+    fs::write(t.path(".wasm-git/index"), bytes).unwrap();
     assert_eq!(json(&["status", t.root()])["staged"], false);
     let promoted = t.commit("explicit v1 filename");
     assert_ne!(promoted, old);
@@ -554,7 +554,7 @@ fn restore_retains_explicit_v1_anchor_and_rejects_other_tree_anchor_before_write
     success(&["add", pure.root(), "replacement.wasm"]);
     pure.commit("independent named tree without legacy anchor");
     assert!(json(&["show", pure.root(), "HEAD"])["legacy_path"].is_null());
-    let bundle = pure.path("pure.uwgb");
+    let bundle = pure.path("pure.wgb");
     success(&["bundle", pure.root(), &bundle]);
     success(&["unbundle", legacy.root(), &bundle, "pure"]);
 
@@ -567,7 +567,7 @@ fn restore_retains_explicit_v1_anchor_and_rejects_other_tree_anchor_before_write
             args.push("--worktree");
         }
         success(&args);
-        let encoded = fs::read(legacy.path(".uwgit/index")).unwrap();
+        let encoded = fs::read(legacy.path(".wasm-git/index")).unwrap();
         let index: Value = native::index_value(&encoded);
         assert_eq!(index["legacy_path"], chosen);
         let status = json(&["status", legacy.root()]);
@@ -601,7 +601,7 @@ fn restore_retains_explicit_v1_anchor_and_rejects_other_tree_anchor_before_write
     other.write("different/original.wasm", A);
     success(&["add", other.root(), "different/original.wasm"]);
     other.commit("different explicit anchor");
-    let bundle = other.path("other.uwgb");
+    let bundle = other.path("other.wgb");
     success(&["bundle", other.root(), &bundle]);
     success(&["unbundle", legacy.root(), &bundle, "other-anchor"]);
     let before = snapshot(&legacy.0);
@@ -628,7 +628,7 @@ fn explicit_restore_file_selects_index_even_when_path_is_also_a_branch_name() {
         success(&["branch", t.root(), path]);
         t.write(path, B);
         success(&["add", t.root(), path]);
-        let index_before = fs::read(t.path(".uwgit/index")).unwrap();
+        let index_before = fs::read(t.path(".wasm-git/index")).unwrap();
         let output = t.path("index-export.wasm");
         success(&["restore", t.root(), "--file", path, "--output", &output]);
         assert_eq!(fs::read(&output).unwrap(), B);
@@ -636,7 +636,7 @@ fn explicit_restore_file_selects_index_even_when_path_is_also_a_branch_name() {
         success(&["restore", t.root(), "--output", &literal_output, "--", path]);
         assert_eq!(fs::read(literal_output).unwrap(), B);
         assert_eq!(fs::read(t.path(path)).unwrap(), B);
-        assert_eq!(fs::read(t.path(".uwgit/index")).unwrap(), index_before);
+        assert_eq!(fs::read(t.path(".wasm-git/index")).unwrap(), index_before);
         assert_eq!(success(&["rev-parse", t.root(), "HEAD"]).trim(), base);
         let legacy_output = t.path("revision-export.wasm");
         if multiple {
@@ -671,7 +671,7 @@ fn explicit_add_after_soft_reset_to_v1_anchors_without_dropping_other_staged_fil
     let old = success(&["rev-parse", legacy.root(), "HEAD"])
         .trim()
         .to_owned();
-    let bundle = legacy.path("legacy.uwgb");
+    let bundle = legacy.path("legacy.wgb");
     success(&["bundle", legacy.root(), &bundle]);
     success(&["unbundle", tree.root(), &bundle, "old"]);
     success(&["reset", tree.root(), "--soft", "old"]);
@@ -769,9 +769,9 @@ fn corrupt_binary_index_paths_duplicates_and_trailing_fields_are_never_silently_
         BTreeMap::<String, native::Stages>::new(),
     ))
     .unwrap();
-    let duplicate = [b"UWGITIDX\x06".as_slice(), &duplicate].concat();
+    let duplicate = [b"WASMGIDX\x06".as_slice(), &duplicate].concat();
     for bytes in [bad_path, trailing, duplicate] {
-        fs::write(t.path(".uwgit/index"), bytes).unwrap();
+        fs::write(t.path(".wasm-git/index"), bytes).unwrap();
         let before = snapshot(&t.0);
         failure(&["add", t.root(), "a.wasm"]);
         failure(&["status", t.root()]);

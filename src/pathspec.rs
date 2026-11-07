@@ -64,9 +64,9 @@ impl Pattern {
         // traversal/metadata even when there are no matching candidates.
         if expression.starts_with('/')
             || expression.contains(':')
-            || expression
-                .split('/')
-                .any(|part| matches!(part, "" | "." | "..") || part.eq_ignore_ascii_case(".uwgit"))
+            || expression.split('/').any(|part| {
+                matches!(part, "" | "." | "..") || part.eq_ignore_ascii_case(".wasm-git")
+            })
             || (literal && expression.contains('\\'))
         {
             return Err(format!("invalid root-relative pathspec: {original:?}"));

@@ -1,4 +1,4 @@
-# uwgit 二进制格式参考
+# wasm-git 二进制格式参考
 
 **版本：** 当前发行前实现，2026-11-06
 [English](BINARY_FORMAT.eu_US.md) · [文档目录](README.zh_CN.md)
@@ -6,7 +6,7 @@
 ## 1. 范围与版本策略
 
 本参考描述当前 checkout 写入的格式，不承诺未发行布局永久稳定。
-仓库标记为八字节 `UWGRPO\0\x03`。旧 JSON 仓库、文本控制文件与已废弃发行前 pack 不迁移，
+仓库标记为八字节 `WGTRPO\0\x03`。旧 JSON 仓库、文本控制文件与已废弃发行前 pack 不迁移，
 而是明确拒绝。读取器必须核对版本、完整记录、语义约束和引用图，仅识别 magic 不够。
 
 可读对象 ID 和十六进制编辑证据属于展示。
@@ -25,7 +25,7 @@
 ### 2.1 Envelope 与身份
 
 ```text
-8 bytes   magic = UWGO\0\0\0\x02
+8 bytes   magic = WGTO\0\0\0\x02
 1 byte    kind
 u64be     payload length
 N bytes   payload
@@ -52,15 +52,15 @@ N bytes   payload
 
 签名记录依次含 version、author、timestamp、32 字节密钥身份和签名字节向量。
 Version 1 的密钥身份为公钥、签名为 64 字节 Ed25519。
-被签内容为用途域 `uwgit.author.commit.v1\0`，随后是显式 string 作者、u64be 时间戳、
+被签内容为用途域 `wasm-git.author.commit.v1\0`，随后是显式 string 作者、u64be 时间戳、
 公钥、长度前缀的规范未签名 commit payload；该未签名形式不带签名内容。
 严格密码验证与可信作者绑定是独立操作。
 
 Version 2（SSH）和 3（OpenPGP）的签名向量内为位置式 `ExternalSignature`，依次包含二进制
 公钥材料和 detached signature。SSH armor 解码为 SSHSIG，OpenPGP 证书与签名均为二进制。
-各成员上限 1 MiB、封装上限 2 MiB。32 字节身份是对 `uwgit.external.author.key.v1\0`、
+各成员上限 1 MiB、封装上限 2 MiB。32 字节身份是对 `wasm-git.external.author.key.v1\0`、
 version u32be、SSH wire 公钥或大写 OpenPGP 主指纹求 SHA-256。被签用途域为
-`uwgit.author.commit.v2\0`，后接 version u32be、author string、timestamp、密钥身份和
+`wasm-git.author.commit.v2\0`，后接 version u32be、author string、timestamp、密钥身份和
 长度前缀的未签提交。SSH namespace 为 `commit@wasm-git`。外部密码学检查仅在明确验签或
 可信准入时运行，普通读对象不运行，见[签名策略](WASMHUB.zh_CN.md)。
 
@@ -76,7 +76,7 @@ Tree 为 u32be 数量，随后按 UTF-8 路径字节严格升序的 path string 
 ## 3. Bundle 与选择性 manifest
 
 ```text
-8 bytes   magic = UWGB\0\0\0\x02
+8 bytes   magic = WGTB\0\0\0\x02
 u64be     manifest byte length
 N bytes   manifest
 u64be     number of objects
@@ -97,11 +97,11 @@ Promise 表示缺少 Wasm 内容，不虚构 envelope；浅边界保留真实父
 
 ### 4.1 外层布局
 
-当前 pack 为 `UWGPACK4`，文件名为整个文件的 SHA-256。
+当前 pack 为 `WGTPACK4`，文件名为整个文件的 SHA-256。
 内嵌索引与数据通过一个不可变目录项发布：
 
 ```text
-8 bytes   magic = UWGPACK4
+8 bytes   magic = WGTPACK4
 u32be     object count C
 1024      256 cumulative u32be fanout values
 32 * C    strictly sorted raw object IDs
@@ -146,7 +146,7 @@ raw_len+5。指令使用显式大端编码：
 ## 5. 离线字节补丁
 
 ```text
-8 bytes   magic = UWGPAT01
+8 bytes   magic = WGTPAT01
 32 bytes  SHA-256 of the complete original file
 32 bytes  SHA-256 of the complete target file
 u64be     original length
@@ -158,7 +158,7 @@ repeated  old start/end u64be, new start/end u64be,
 
 Span 长度决定原始字节长度，不保存 hex/JSON。
 摘要指原 Wasm 文件，不是仓库 envelope。
-内存报告 format 为 `uwgit-byte-patch-binary-v1`，wire format 中不额外保存该字符串。
+内存报告 format 为 `wasm-git-byte-patch-binary-v1`，wire format 中不额外保存该字符串。
 
 验证单调范围、未改间隙长度、旧字节相等、总长度与目标摘要。
 补丁有效不表示结构解码完整、语义等价或编辑全局最小。
@@ -166,7 +166,7 @@ Span 长度决定原始字节长度，不保存 hex/JSON。
 
 ## 6. 规范位置记录与控制文件
 
-冷记录以 `UWGM\0\0\0\x01` 开头，按 schema 字段顺序使用 bincode 1.3.3 规范变长整数。
+冷记录以 `WGTM\0\0\0\x01` 开头，按 schema 字段顺序使用 bincode 1.3.3 规范变长整数。
 0–250 单字节；251/252/253/254 在 schema 允许时分别引出 little-endian u16/u32/u64/u128。
 有符号值遵守 codec 的有符号映射；bool/Option 标志、枚举编号、集合长度与字段顺序由确切
 Rust schema 决定，不是自描述 map 格式。
@@ -175,11 +175,11 @@ Rust schema 决定，不是自描述 map 格式。
 整数、非规范 map 顺序和重复键编码。Schema 变化必须审阅并版本化；字段名虽然不落盘，
 类型变化仍可能改变持久字节。
 
-Index 外头为 `UWGITIDX\x06`，后跟当前位置记录。
+Index 外头为 `WASMGIDX\x06`，后跟当前位置记录。
 Config、index 图像、stash、pending/rebase、reflog、worktree、事务 journal、部分历史、
 pool、trust、upload 状态均为二进制。部分冷恢复字段中的 UTF-8 仍是 schema 值，不是 JSON。
 
-仓库标记 `UWGRPO\0\x03` 对应带时间戳的 reflog 和事务前像。拒绝 version 2 仓库，
+仓库标记 `WGTRPO\0\x03` 对应带时间戳的 reflog 和事务前像。拒绝 version 2 仓库，
 不迁移尚未发行的旧格式；不可变对象 ID 与 pack 编码不变。
 Reflog 条目字段依次为 `unix_seconds: u64`、`sequence: u64`、`reference: String`、
 `old: Option<String>`、`new: Option<String>`、`operation: String`。
@@ -187,14 +187,14 @@ Reflog 条目字段依次为 `unix_seconds: u64`、`sequence: u64`、`reference:
 引用事务及 HEAD 图像在持久决定前冻结时间戳，恢复时不替换为恢复时刻。
 本地 HEAD 日志最多 4096 项；共享引用日志通过显式过期清理。
 
-HEAD/ref 采用 `UWGREF\0\x01` 加 tag：1 为原始 32 字节 oid；0 为长度前缀分支名，仅允许
-symbolic HEAD。Writer 锁为 `UWGLCK\0\x01` 加大端 PID，PID 不授权自动删除锁。
-Worktree commondir 用位置记录。私钥为 `UWGKEY01` 加 32 字节种子，公钥为 `UWGPUB01`
+HEAD/ref 采用 `WGTREF\0\x01` 加 tag：1 为原始 32 字节 oid；0 为长度前缀分支名，仅允许
+symbolic HEAD。Writer 锁为 `WGTLCK\0\x01` 加大端 PID，PID 不授权自动删除锁。
+Worktree commondir 用位置记录。私钥为 `WGTKEY01` 加 32 字节种子，公钥为 `WGTPUB01`
 加 32 字节公钥。
 
 ## 7. RPC 与协商对象流
 
-RPC 为 `UWGRPC02`、metadata 长度 u32be、payload 长度 u64be、位置 metadata 和原 payload。
+RPC 为 `WGTRPC02`、metadata 长度 u32be、payload 长度 u64be、位置 metadata 和原 payload。
 Metadata 最大 64 KiB，完整 packet 最大 64 MiB；传输 slice 为 1 MiB，bundle 上限 4 GiB。
 Envelope 版本与 metadata 内逻辑请求 version 是不同概念。
 
@@ -213,14 +213,14 @@ SHA-256。部分发布另返回 `PartialReceipt { rejections: Vec<Option<String>
 对应：None 表示接受，Some 表示拒绝原因。数量不符或回执损坏不能确认发布结果。
 
 PullRequest 的 payload 为位置式 PullCommand，返回 PullReply，成功响应 tip 绑定确切命令
-payload 的 SHA-256；不能作为上传内层操作。持久 PR 为 UWGPR001、u64be 解码长度、
+payload 的 SHA-256；不能作为上传内层操作。持久 PR 为 WGTPR001、u64be 解码长度、
 Zstandard 压缩的位置式 PullRecord，存储和解码均限 16 MiB；编号计数器为位置式二进制 u64。
 字段/枚举顺序和必要 Option 见 [pull 类型](../src/pull.rs)，保留与恢复见
 [WasmHub 手册](WASMHUB.zh_CN.md)。
 
-协商压缩流为 `UWGNET01`、总解压长度 u64be，随后重复 u32be frame 长度及 Zstandard frame。
+协商压缩流为 `WGTNET01`、总解压长度 u64be，随后重复 u32be frame 长度及 Zstandard frame。
 除最后一块外，各块解压恰好 1 MiB。
-解压内容以 `UWGTRN01` 开头，包含 manifest 长度/内容及对象数，条目按 ID 排序。
+解压内容以 `WGTTRN01` 开头，包含 manifest 长度/内容及对象数，条目按 ID 排序。
 Mode 0 为完整长度前缀 envelope；mode 1 包含原始 base ID、目标 envelope 长度、delta 长度与
 copy/insert 指令。
 

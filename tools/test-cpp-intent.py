@@ -80,7 +80,7 @@ def uleb(data, at):
 
 def function_names(data):
     # Independent reader for the standard name subsection of trusted compiler
-    # output. No uwgit parsing or matching is used as the symbol oracle.
+    # output. No wasm-git parsing or matching is used as the symbol oracle.
     result = {}; at = 8
     while at < len(data):
         section = data[at]; length, start = uleb(data, at + 1); end = start + length
@@ -184,8 +184,8 @@ for(const s of ''' + json.dumps(SEEDS) + ''')for(let m=0;m<4;m++)console.log([s,
                 a = modules[mode,'base',stripped]; b = modules[mode,name,stripped]
                 run_args = ['diff',a,b,'--format','json','--compact']
                 start = time.perf_counter()
-                raw = command([args.uwgit,'--threads','1',*run_args]); elapsed = time.perf_counter()-start
-                assert raw == command([args.uwgit,'--threads','0',*run_args]), (mode,name,'parallel output mismatch')
+                raw = command([args.wasm_git,'--threads','1',*run_args]); elapsed = time.perf_counter()-start
+                assert raw == command([args.wasm_git,'--threads','0',*run_args]), (mode,name,'parallel output mismatch')
                 d = json.loads(raw); replay(a.read_bytes(),b.read_bytes(),d)
                 assert d['function_analysis']['available'] and d['audit']['old']['standard']['validation']=='valid' and d['audit']['new']['standard']['validation']=='valid'
                 target = b.parent / ('stripped.diff.json' if stripped else 'named.diff.json'); target.write_bytes(raw)
@@ -228,32 +228,32 @@ for(const s of ''' + json.dumps(SEEDS) + ''')for(let m=0;m<4;m++)console.log([s,
                 if name == 'layout' and not stripped and cross:
                     # Exact body reuse can disagree with same-source symbols.
                     # Do not pass off the implementation view as a source rename.
-                    text_report = command([args.uwgit, 'diff', a, b]).decode()
+                    text_report = command([args.wasm_git, 'diff', a, b]).decode()
                     assert 'names differ; body correspondence is not a source rename proof' in text_report
                 if name in ['dead','rename','layout','reorder']:
                     assert native[name]==native['base'], (mode,name,'unexpected behavior change')
                 else:
                     assert native[name]!=native['base'], (mode,name,'test never observes source edit')
                 if mode=='O2-threads':
-                    inspected=json.loads(command([args.uwgit,'inspect',b,'--json']))
+                    inspected=json.loads(command([args.wasm_git,'inspect',b,'--json']))
                     assert any(e['feature']=='threads' for e in inspected['audit']['standard']['evidence'])
                 # Serialized native patches independently reproduce every byte.
-                patch_file=b.parent/('stripped.uwgp' if stripped else 'named.uwgp')
-                command([args.uwgit,'patch',a,b,'--output',patch_file])
+                patch_file=b.parent/('stripped.wgp' if stripped else 'named.wgp')
+                command([args.wasm_git,'patch',a,b,'--output',patch_file])
                 restored=b.parent/('stripped.restored.wasm' if stripped else 'named.restored.wasm')
-                command([args.uwgit,'apply',a,patch_file,'--output',restored]); assert restored.read_bytes()==b.read_bytes()
+                command([args.wasm_git,'apply',a,patch_file,'--output',restored]); assert restored.read_bytes()==b.read_bytes()
                 row={'mode':mode,'case':name,'stripped':stripped,'summary':d['summary'],'changed_functions':changed,
                      'cross_symbol_pairs':cross,'runtime_changed':native[name]!=native['base'],'binary_changed':d['binary_changed'],
                      'old_sha256':sha(a.read_bytes()),'new_sha256':sha(b.read_bytes()),'serial_diff_seconds':elapsed}
-                if args.baseline_uwgit:
-                    previous=json.loads(command([args.baseline_uwgit,'--threads','1',*run_args]))
+                if args.baseline_wasm_git:
+                    previous=json.loads(command([args.baseline_wasm_git,'--threads','1',*run_args]))
                     (b.parent/('stripped.before.json' if stripped else 'named.before.json')).write_text(json.dumps(previous))
                     row['previous_cross_symbol_pairs']=sum(old_names.get(m['old_source_index'])!=new_names.get(m['new_source_index']) for m in previous['function_matches'])
                 rows.append(row);print(mode,name,'stripped' if stripped else 'named','ok',flush=True)
     receipt={'format':1,'resources':resource,'source_sha256':sha(source.read_bytes()),
              'harness_sha256':sha(Path(__file__).read_bytes()),
              'compiler_version':command([args.clang,'--version']).decode(),'native_compiler_version':command([args.cxx,'--version']).decode(),
-             'uwgit_sha256':sha(Path(args.uwgit).read_bytes()),'wasm_modules':len(modules),'comparisons':len(rows),
+             'wasm_git_sha256':sha(Path(args.wasm_git).read_bytes()),'wasm_modules':len(modules),'comparisons':len(rows),
              'runtime_vectors_per_module':len(SEEDS)*4,'thread_scheduling_tested':False,'commands':commands,'cases':rows}
     (root/'receipt.json').write_text(json.dumps(receipt,indent=2)+'\n')
     print(f"passed {len(rows)} compiled comparisons; receipt: {root/'receipt.json'}")
@@ -261,7 +261,7 @@ for(const s of ''' + json.dumps(SEEDS) + ''')for(let m=0;m<4;m++)console.log([s,
 
 if __name__ == '__main__':
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--output',required=True); p.add_argument('--uwgit',required=True);p.add_argument('--baseline-uwgit')
+    p.add_argument('--output',required=True); p.add_argument('--wasm-git',required=True);p.add_argument('--baseline-wasm-git')
     p.add_argument('--clang',default='clang++');p.add_argument('--cxx',default='g++');p.add_argument('--node',default='node')
     p.add_argument('--validate',default='wasm-validate');p.add_argument('--wasm2wat',default='wasm2wat');p.add_argument('--strip',default='wasm-strip')
     run(p.parse_args())

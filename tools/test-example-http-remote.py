@@ -16,8 +16,8 @@ def require(value, message):
 
 
 def expected_swap_max():
-    value = os.environ.get('UWGIT_EXPECTED_CGROUP_SWAP_MAX', '0')
-    require(value in ('max', '0') or (value and value[0] in '123456789' and all(char in '0123456789' for char in value)), 'UWGIT_EXPECTED_CGROUP_SWAP_MAX must be max or canonical nonnegative decimal')
+    value = os.environ.get('WASM_GIT_EXPECTED_CGROUP_SWAP_MAX', '0')
+    require(value in ('max', '0') or (value and value[0] in '123456789' and all(char in '0123456789' for char in value)), 'WASM_GIT_EXPECTED_CGROUP_SWAP_MAX must be max or canonical nonnegative decimal')
     return value
 
 
@@ -37,11 +37,11 @@ def main():
     args = parser.parse_args()
     require(platform.system() == 'Linux', 'SSH Linux required')
     membership = Path('/proc/self/cgroup').read_text()
-    expected = os.environ['UWGIT_EXPECTED_CGROUP']
+    expected = os.environ['WASM_GIT_EXPECTED_CGROUP']
     require(membership.splitlines() == ['0::' + expected], 'existing admitted cgroup required')
     require(expected.startswith('/system.slice/docker-') and expected.endswith('.scope'), 'Docker cgroup required')
     boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
-    require(boot == os.environ['UWGIT_EXPECTED_BOOT_ID'], 'admitted boot required')
+    require(boot == os.environ['WASM_GIT_EXPECTED_BOOT_ID'], 'admitted boot required')
     cg = Path('/sys/fs/cgroup') / expected.lstrip('/')
     swap_max = expected_swap_max()
     expected_limits = {'memory.max': '68719476736', 'memory.swap.max': swap_max, 'cpuset.cpus.effective': '0-31'}
@@ -65,14 +65,14 @@ def main():
     upstream, client = repositories / 'project.git', args.output / 'client'
     commands = []
     env = dict(os.environ)
-    env.pop('UWGIT_SSH_PROGRAM', None)
-    env.pop('UWGIT_REMOTE_PROGRAM', None)
-    token = 'uwgit-fixed-loopback-example-test-token'
+    env.pop('WASM_GIT_SSH_PROGRAM', None)
+    env.pop('WASM_GIT_REMOTE_PROGRAM', None)
+    token = 'wasm-git-fixed-loopback-example-test-token'
     token_file = args.output / 'token'
     with token_file.open('xb') as stream:
         os.chmod(token_file, 0o600)
         stream.write(token.encode() + b'\n')
-    env['UWGIT_REMOTE_TOKEN'] = token
+    env['WASM_GIT_REMOTE_TOKEN'] = token
 
     def run(*arguments):
         argv = [str(args.binary), *map(str, arguments)]

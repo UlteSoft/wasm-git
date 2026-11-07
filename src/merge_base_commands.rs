@@ -1,4 +1,4 @@
-//! Ancestor and reflog graph queries over the independent uwgit object DAG.
+//! Ancestor and reflog graph queries over the independent wasm-git object DAG.
 use crate::query_commands::QueryOutput;
 use crate::repository::{MergeBaseMode, Repository, RepositoryResult};
 use clap::{ArgGroup, Parser};

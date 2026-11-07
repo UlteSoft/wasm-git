@@ -64,7 +64,7 @@ External SSH allowed-signers policy files, SSH CA/KRL policy, X.509 signatures,
 signed tags and push certificates are not implemented.
 
 Signatures cover the author, declared timestamp, key identity, canonical unsigned
-commit, original content IDs, ordered parents and message. They use uwgit-specific
+commit, original content IDs, ordered parents and message. They use wasm-git-specific
 domains and cannot be substituted for Git signatures. Both external formats store
 binary public material and binary signatures, with no ASCII armor in commit
 objects. Private key material is never stored in the repository.
@@ -160,10 +160,10 @@ Compile an external administrator-supplied JSON document into binary policy:
 
 ```sh
 wasm-git-server compile-protection protection-input.json protection.bin
-wasm-git-server --root /srv/uwgit --policy principals.bin --allow-write \
+wasm-git-server --root /srv/wasm-git --policy principals.bin --allow-write \
   --protection protection.bin --signed-authors authors.bin \
   --merge-author 'Merge service' --merge-signing-format ssh \
-  --merge-signing-key /etc/uwgit/merge-key
+  --merge-signing-key /etc/wasm-git/merge-key
 ```
 
 Repository/branch patterns accept an exact value or a final `*`. Branch patterns
@@ -193,7 +193,7 @@ the source parent chain; admission checks the resulting reachable history.
 
 ## 6. Durability, retention and recovery
 
-PR records live in shared repository metadata at `pulls/NUMBER.bin`: `UWGPR001`,
+PR records live in shared repository metadata at `pulls/NUMBER.bin`: `WGTPR001`,
 an eight-byte big-endian decoded length, and a Zstandard-compressed positional
 binary record. `counter.bin` is a binary monotonically allocated number. Neither
 file stores JSON. Updates use the repository writer lock and atomic durable

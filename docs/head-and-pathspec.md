@@ -1,6 +1,6 @@
 # HEAD、分支与共享路径选择
 
-所有能力使用 uwgit 的原始 Wasm 对象、平面树和提交 DAG。Git 只出现在独立行为对照测试中。
+所有能力使用 wasm-git 的原始 Wasm 对象、平面树和提交 DAG。Git 只出现在独立行为对照测试中。
 
 ## HEAD 的三种实际状态
 
@@ -67,12 +67,12 @@ wasm-git ls-tree DIR HEAD --name-only -- ':(literal)module[1].wasm'
 wasm-git archive DIR HEAD -o NEW_TAR -- '*.wasm' ':(exclude)private/'
 ```
 
-restore、按路径 reset、checkout 的显式路径模式、archive、ls-tree、底层 diff、clean 和 mergetool 共享相同解析器。选择在命令已准入的真实候选集合上计算，不用 pattern 遍历或绕过文件系统保护。精确路径、目录前缀、单个前导 `./`、`.`/`./` 保留；内部空组件、`.`、`..` 和 `.uwgit` 路径拒绝。
+restore、按路径 reset、checkout 的显式路径模式、archive、ls-tree、底层 diff、clean 和 mergetool 共享相同解析器。选择在命令已准入的真实候选集合上计算，不用 pattern 遍历或绕过文件系统保护。精确路径、目录前缀、单个前导 `./`、`.`/`./` 保留；内部空组件、`.`、`..` 和 `.wasm-git` 路径拒绝。
 
 普通 `*`、`?`、字符组可以跨 `/` 匹配。`:(glob)` 中普通通配符不跨 `/`，完整组件 `**` 表示递归目录。`:(literal)` 按原字符匹配；`:(icase)` 忽略大小写；`:(top)` 使用本来就以 DIR 为根的路径。支持 `:(exclude)`、`:!`、`:^`，先取正选择器并集，再统一排除；只有排除项时从全部候选中排除。花括号作为普通字符，不做 shell 展开。单独 `:` 表示无路径限制。
 
 每个正选择器必须在排除前匹配，排除项可以不匹配；全部排除可以得到空结果。未匹配、非法 magic 或无效 glob 在任何发布前失败。不支持的 attr magic 明确报错，不静默当成普通字符串。
 
-add 的 -A/--all 纳入受控删除及新 Wasm 文件，-u/--update 只更新已有受控路径；-n/--dry-run 不改 index，-f/--force 可明确加入忽略的 Wasm 文件。目录选择跳过普通文本，仍验证所选 Wasm 文件头；.gitignore/.uwgitignore、嵌套仓库、符号链接和特殊文件保护继续生效。通配符和目录不能替未命名 legacy 提交猜文件名，首次建立映射仍需明确实际路径。
+add 的 -A/--all 纳入受控删除及新 Wasm 文件，-u/--update 只更新已有受控路径；-n/--dry-run 不改 index，-f/--force 可明确加入忽略的 Wasm 文件。目录选择跳过普通文本，仍验证所选 Wasm 文件头；.gitignore/.wasm-gitignore、嵌套仓库、符号链接和特殊文件保护继续生效。通配符和目录不能替未命名 legacy 提交猜文件名，首次建立映射仍需明确实际路径。
 
 这些基础能力不表示全部 Git 选项已经齐备；索引冲突 stages、交互 patch、日期元数据等剩余差异仍见[能力矩阵](git-command-coverage.md)。

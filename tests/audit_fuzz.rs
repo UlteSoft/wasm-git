@@ -313,10 +313,10 @@ struct Evidence {
 
 impl Evidence {
     fn new() -> Self {
-        let dir = std::env::var_os("UWGIT_AUDIT_FUZZ_REPORT_DIR")
+        let dir = std::env::var_os("WASM_GIT_AUDIT_FUZZ_REPORT_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
-                std::env::temp_dir().join(format!("uwgit-audit-fuzz-{}", std::process::id()))
+                std::env::temp_dir().join(format!("wasm-git-audit-fuzz-{}", std::process::id()))
             });
         assert!(
             dir.is_absolute()
@@ -391,11 +391,11 @@ fn deterministic_extended_byte_fuzz_with_replay_receipts() {
         |label, mutation, old, new| evidence.case(label, mutation, old, new),
         true,
     );
-    let random_cases = std::env::var("UWGIT_AUDIT_FUZZ_CASES")
+    let random_cases = std::env::var("WASM_GIT_AUDIT_FUZZ_CASES")
         .map(|value| {
             value
                 .parse::<usize>()
-                .expect("UWGIT_AUDIT_FUZZ_CASES must be an integer")
+                .expect("WASM_GIT_AUDIT_FUZZ_CASES must be an integer")
         })
         .unwrap_or(10_000);
     assert!(

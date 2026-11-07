@@ -539,7 +539,7 @@ fn go_language_is_not_a_runtime_format_signature() {
 #[test]
 fn explicit_sidecars_reach_inspect_diff_and_queries_and_report_bad_conventions() {
     use std::{fs, process::Command};
-    let root = std::env::temp_dir().join(format!("uwgit-language-cli-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("wasm-git-language-cli-{}", std::process::id()));
     fs::create_dir_all(&root).unwrap();
     let old = sample();
     let (_, _, _, ops) = body(&old);
@@ -619,16 +619,16 @@ fn timed_language_debug_fuzz() {
         fs,
         time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
-    let worker: u64 = std::env::var("UWGIT_DEBUG_WORKER")
+    let worker: u64 = std::env::var("WASM_GIT_DEBUG_WORKER")
         .unwrap()
         .parse()
         .unwrap();
-    let seconds: u64 = std::env::var("UWGIT_DEBUG_SECONDS")
+    let seconds: u64 = std::env::var("WASM_GIT_DEBUG_SECONDS")
         .unwrap()
         .parse()
         .unwrap();
     assert!((1..=600).contains(&seconds));
-    let output = std::path::PathBuf::from(std::env::var_os("UWGIT_DEBUG_OUTPUT").unwrap());
+    let output = std::path::PathBuf::from(std::env::var_os("WASM_GIT_DEBUG_OUTPUT").unwrap());
     let allowed = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join(".tmp")
         .canonicalize()
@@ -636,7 +636,7 @@ fn timed_language_debug_fuzz() {
     assert!(output.canonicalize().unwrap().starts_with(allowed));
     let case_dir = output.join(format!("inputs-{worker}"));
     fs::create_dir(&case_dir).unwrap();
-    let start: u128 = std::env::var("UWGIT_DEBUG_START_MS")
+    let start: u128 = std::env::var("WASM_GIT_DEBUG_START_MS")
         .unwrap()
         .parse()
         .unwrap();

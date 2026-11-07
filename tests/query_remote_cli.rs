@@ -21,7 +21,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
-            "uwgit-query-remote-{}-{}",
+            "wasm-git-query-remote-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -49,9 +49,9 @@ fn command(args: &[&str]) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_wasm-git"));
     command
         .args(args)
-        .env_remove("UWGIT_REMOTE_TOKEN")
-        .env_remove("UWGIT_SSH_PROGRAM")
-        .env_remove("UWGIT_REMOTE_PROGRAM");
+        .env_remove("WASM_GIT_REMOTE_TOKEN")
+        .env_remove("WASM_GIT_SSH_PROGRAM")
+        .env_remove("WASM_GIT_REMOTE_PROGRAM");
     command
 }
 fn success(output: Output) -> String {
@@ -99,7 +99,7 @@ fn response() -> Value {
         "state":{"format":1,"head":"main","branches":{"main":A,"topic":B},"tags":{"v1":A}},"tip":null})
 }
 fn frame_json(metadata: &[u8], payload: &[u8]) -> Vec<u8> {
-    let mut bytes = b"UWGRPC02".to_vec();
+    let mut bytes = b"WGTRPC02".to_vec();
     bytes.extend_from_slice(&(metadata.len() as u32).to_be_bytes());
     bytes.extend_from_slice(&(payload.len() as u64).to_be_bytes());
     bytes.extend_from_slice(metadata);
@@ -110,7 +110,7 @@ fn frame(metadata: &Value, payload: &[u8]) -> Vec<u8> {
     frame_json(&native::response_bytes(metadata), payload)
 }
 fn decode_request(bytes: &[u8]) -> Value {
-    assert_eq!(&bytes[..8], b"UWGRPC02");
+    assert_eq!(&bytes[..8], b"WGTRPC02");
     let metadata = u32::from_be_bytes(bytes[8..12].try_into().unwrap()) as usize;
     let payload = u64::from_be_bytes(bytes[12..20].try_into().unwrap());
     assert_eq!(payload, 0, "advertisement query sent an object payload");
@@ -190,7 +190,7 @@ fn read_request(stream: &mut TcpStream) -> Request {
         assert!(header.len() <= 32768);
     }
     let headers = String::from_utf8(header).unwrap();
-    assert!(headers.starts_with("POST /v1/uwgit HTTP/1.1\r\n"));
+    assert!(headers.starts_with("POST /v1/wasm-git HTTP/1.1\r\n"));
     let length = headers
         .lines()
         .skip(1)
@@ -307,17 +307,17 @@ fn configured_remote_query_ignores_objects_tracking_and_existing_local_locks_wit
     let peer = Peer::new(frame(&response(), &[]));
     run(&["remote", s(&repo), "add", "origin", &peer.url()]);
     fs::write(
-        repo.join(".uwgit/objects/not-an-object"),
+        repo.join(".wasm-git/objects/not-an-object"),
         b"unrelated broken local store",
     )
     .unwrap();
     fs::write(
-        repo.join(".uwgit/remotes/origin.tracking.bin"),
+        repo.join(".wasm-git/remotes/origin.tracking.bin"),
         b"unrelated broken tracking",
     )
     .unwrap();
     for lock in ["write.lock", "remote.lock", "index.lock"] {
-        fs::write(repo.join(".uwgit").join(lock), b"external owner").unwrap();
+        fs::write(repo.join(".wasm-git").join(lock), b"external owner").unwrap();
     }
     let before = snapshot(&repo);
     let report: Value = serde_json::from_str(&run(&["ls-remote", s(&repo), "--json"])).unwrap();
@@ -339,15 +339,15 @@ fn missing_or_invalid_configuration_never_creates_metadata_or_repairs_inputs() {
     assert_eq!(missing.status.code(), Some(1));
     assert!(missing.stdout.is_empty());
     assert_eq!(snapshot(&repo), before);
-    assert!(!repo.join(".uwgit/remotes").exists());
-    fs::create_dir(repo.join(".uwgit/remotes")).unwrap();
+    assert!(!repo.join(".wasm-git/remotes").exists());
+    fs::create_dir(repo.join(".wasm-git/remotes")).unwrap();
     for contents in [
         b"invalid JSON".as_slice(),
         br#"{"version":2,"name":"origin","url":"http://localhost/x","allow_insecure_http":false}"#,
         br#"{"version":1,"name":"wrong","url":"http://localhost/x","allow_insecure_http":false}"#,
         br#"{"version":1,"name":"origin","url":"file:///tmp/x","allow_insecure_http":false}"#,
     ] {
-        fs::write(repo.join(".uwgit/remotes/origin.bin"), contents).unwrap();
+        fs::write(repo.join(".wasm-git/remotes/origin.bin"), contents).unwrap();
         let before = snapshot(&repo);
         let output = command(&["ls-remote", s(&repo)]).output().unwrap();
         assert_eq!(output.status.code(), Some(1));
@@ -355,7 +355,7 @@ fn missing_or_invalid_configuration_never_creates_metadata_or_repairs_inputs() {
         assert_eq!(snapshot(&repo), before);
     }
     fs::write(
-        repo.join(".uwgit/remotes/origin.bin"),
+        repo.join(".wasm-git/remotes/origin.bin"),
         vec![b' '; 1024 * 1024 + 1],
     )
     .unwrap();
@@ -382,7 +382,7 @@ fn symlinked_remote_configuration_is_rejected_without_following_it_or_writing() 
         .unwrap(),
     )
     .unwrap();
-    let remotes = repo.join(".uwgit/remotes");
+    let remotes = repo.join(".wasm-git/remotes");
     fs::create_dir(&remotes).unwrap();
     symlink(outside.join("origin.bin"), remotes.join("origin.bin")).unwrap();
     let before = snapshot(&repo);
@@ -503,7 +503,7 @@ fn http_query_uses_the_existing_private_token_and_safe_cleartext_policy() {
     let peer = Peer::new(frame(&response(), &[]));
     success(
         command(&["ls-remote", &peer.url(), "--allow-insecure-http"])
-            .env("UWGIT_REMOTE_TOKEN", "fixed-query-token")
+            .env("WASM_GIT_REMOTE_TOKEN", "fixed-query-token")
             .output()
             .unwrap(),
     );
@@ -519,7 +519,7 @@ fn http_query_uses_the_existing_private_token_and_safe_cleartext_policy() {
         .unwrap()
         .contains("requires --allow-insecure-http"));
     let invalid = command(&["ls-remote", &peer.url()])
-        .env("UWGIT_REMOTE_TOKEN", "bad\ntoken")
+        .env("WASM_GIT_REMOTE_TOKEN", "bad\ntoken")
         .output()
         .unwrap();
     assert_eq!(invalid.status.code(), Some(1));
@@ -536,19 +536,19 @@ fn ssh_query_preserves_safe_arguments_and_sends_only_the_advertise_frame() {
     let request = t.path("request");
     let argv = t.path("arguments");
     fs::write(&reply, frame(&response(), &[])).unwrap();
-    fs::write(&shim, b"#!/bin/sh\nset -eu\ntest -z \"${UWGIT_REMOTE_TOKEN+x}\"\nprintf '%s\\n' \"$@\" > \"$UWGIT_QUERY_ARGV\"\ncat > \"$UWGIT_QUERY_REQUEST\"\ncat \"$UWGIT_QUERY_REPLY\"\n").unwrap();
+    fs::write(&shim, b"#!/bin/sh\nset -eu\ntest -z \"${WASM_GIT_REMOTE_TOKEN+x}\"\nprintf '%s\\n' \"$@\" > \"$WASM_GIT_QUERY_ARGV\"\ncat > \"$WASM_GIT_QUERY_REQUEST\"\ncat \"$WASM_GIT_QUERY_REPLY\"\n").unwrap();
     fs::set_permissions(&shim, fs::Permissions::from_mode(0o700)).unwrap();
     let output = command(&[
         "ls-remote",
         "ssh://query@localhost:2222/tmp/query'root/project.git",
         "--heads",
     ])
-    .env("UWGIT_SSH_PROGRAM", &shim)
-    .env("UWGIT_REMOTE_PROGRAM", "program with ' quote")
-    .env("UWGIT_QUERY_ARGV", &argv)
-    .env("UWGIT_QUERY_REQUEST", &request)
-    .env("UWGIT_QUERY_REPLY", &reply)
-    .env("UWGIT_REMOTE_TOKEN", "must-not-reach-ssh")
+    .env("WASM_GIT_SSH_PROGRAM", &shim)
+    .env("WASM_GIT_REMOTE_PROGRAM", "program with ' quote")
+    .env("WASM_GIT_QUERY_ARGV", &argv)
+    .env("WASM_GIT_QUERY_REQUEST", &request)
+    .env("WASM_GIT_QUERY_REPLY", &reply)
+    .env("WASM_GIT_REMOTE_TOKEN", "must-not-reach-ssh")
     .output()
     .unwrap();
     assert_eq!(
@@ -565,5 +565,5 @@ fn ssh_query_preserves_safe_arguments_and_sends_only_the_advertise_frame() {
     ));
     assert!(args.contains("'program with '\\'' quote' server --stdio --root '/tmp/query'\\''root'"));
     assert!(!args.contains("must-not-reach-ssh"));
-    assert!(!t.path(".uwgit").exists());
+    assert!(!t.path(".wasm-git").exists());
 }

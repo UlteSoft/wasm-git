@@ -13,8 +13,10 @@ use wasm_git::repository::{Commit, Repository, Tree};
 struct Temp(PathBuf);
 impl Temp {
     fn new(label: &str) -> Self {
-        let p =
-            std::env::temp_dir().join(format!("uwgit-history-gc-{}-{label}", std::process::id()));
+        let p = std::env::temp_dir().join(format!(
+            "wasm-git-history-gc-{}-{label}",
+            std::process::id()
+        ));
         fs::create_dir(&p).unwrap();
         Self(p)
     }
@@ -39,14 +41,14 @@ fn run(threads: &str, args: &[&str]) -> serde_json::Value {
 }
 fn object(repo: &Path, kind: u8, payload: &[u8]) -> String {
     let raw = [
-        b"UWGO\0\0\0\x02".as_slice(),
+        b"WGTO\0\0\0\x02".as_slice(),
         &[kind],
         &(payload.len() as u64).to_be_bytes(),
         payload,
     ]
     .concat();
     let id = format!("{:x}", Sha256::digest(&raw));
-    fs::write(repo.join(".uwgit/objects").join(&id), raw).unwrap();
+    fs::write(repo.join(".wasm-git/objects").join(&id), raw).unwrap();
     id
 }
 fn leb(mut n: usize) -> Vec<u8> {
@@ -106,7 +108,7 @@ fn history(path: &Path, revisions: usize) -> (Repository, Vec<String>) {
         ids.push(object(path, 2, &commit.to_bytes().unwrap()));
     }
     fs::write(
-        path.join(".uwgit/refs/main"),
+        path.join(".wasm-git/refs/main"),
         native::reference(ids.last().unwrap()),
     )
     .unwrap();
@@ -114,7 +116,7 @@ fn history(path: &Path, revisions: usize) -> (Repository, Vec<String>) {
     (repo, ids)
 }
 fn pack(path: &Path) -> PathBuf {
-    let entries: Vec<_> = fs::read_dir(path.join(".uwgit/packs"))
+    let entries: Vec<_> = fs::read_dir(path.join(".wasm-git/packs"))
         .unwrap()
         .map(|e| e.unwrap().path())
         .collect();
@@ -163,14 +165,14 @@ fn gc_preview_is_read_only_default_compacts_and_pruning_is_explicit() {
     let (repo, _) = history(&t.0.join("repo"), 2);
     let dangling = object(&repo.root, 1, &image(9, 0));
     let before = repo.bundle_bytes(None).unwrap();
-    let count = fs::read_dir(repo.root.join(".uwgit/objects"))
+    let count = fs::read_dir(repo.root.join(".wasm-git/objects"))
         .unwrap()
         .count();
     let plan = run("0", &["gc", repo.root.to_str().unwrap(), "-n"]);
     assert_eq!(plan["dry_run"], true);
-    assert!(!repo.root.join(".uwgit/packs").exists());
+    assert!(!repo.root.join(".wasm-git/packs").exists());
     assert_eq!(
-        fs::read_dir(repo.root.join(".uwgit/objects"))
+        fs::read_dir(repo.root.join(".wasm-git/objects"))
             .unwrap()
             .count(),
         count

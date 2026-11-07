@@ -1,4 +1,4 @@
-//! Object and reference plumbing for uwgit's native object format.
+//! Object and reference plumbing for wasm-git's native object format.
 use super::*;
 
 #[derive(Clone, Copy)]

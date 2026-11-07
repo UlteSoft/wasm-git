@@ -35,7 +35,7 @@ fn compare(old: &str, new: &str, feature: &str, core3: bool) -> Value {
         }
     }
     let root = std::env::temp_dir().join(format!(
-        "uwgit-proposal-{}-{}",
+        "wasm-git-proposal-{}-{}",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));

@@ -44,7 +44,7 @@ include!("feature_upstream.rs");
 static LEGACY_EXCEPTIONS: UpstreamFeature = proposal!(
     "legacy_exceptions", "Legacy Exception Handling", "inactive", "", "core",
     "https://github.com/WebAssembly/exception-handling/blob/main/proposals/exception-handling/legacy/Exceptions.md",
-    "Superseded in October 2023; discouraged by its explainer and inactive in the community website features inventory. uwgit retains the historical encoding."
+    "Superseded in October 2023; discouraged by its explainer and inactive in the community website features inventory. wasm-git retains the historical encoding."
 );
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -250,7 +250,7 @@ pub(crate) fn run(args: &[String]) -> Result<String, String> {
     if args.json {
         return serde_json::to_string_pretty(&serde_json::json!({
             "upstream_revision": UPSTREAM_REVISION, "upstream_sha256": UPSTREAM_SHA256,
-            "source": "https://github.com/WebAssembly/proposals", "decoder": "wasmparser 0.249.0 + uwgit patches",
+            "source": "https://github.com/WebAssembly/proposals", "decoder": "wasmparser 0.249.0 + wasm-git patches",
             "selected_standard": args.standard, "retention_policy": policy, "features": entries,
         })).map_err(|error| error.to_string());
     }

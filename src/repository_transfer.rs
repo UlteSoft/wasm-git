@@ -358,7 +358,7 @@ mod tests {
     impl Temp {
         fn new() -> Self {
             let p = std::env::temp_dir().join(format!(
-                "uwgit-transfer-{}-{}",
+                "wasm-git-transfer-{}-{}",
                 std::process::id(),
                 NEXT.fetch_add(1, Ordering::Relaxed)
             ));

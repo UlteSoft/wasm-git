@@ -1,10 +1,10 @@
-# uwgit 使用手册
+# wasm-git 使用手册
 
 **版本：** 2026-11-07 · [English](USER_MANUAL.eu_US.md) · [文档目录](README.zh_CN.md)
 
 ## 1. 约定与准备
 
-示例使用启用 client feature 的 `wasm-git`。`DIR` 是 uwgit 仓库目录，不是 `.uwgit`
+示例使用启用 client feature 的 `wasm-git`。`DIR` 是 wasm-git 仓库目录，不是 `.wasm-git`
 元数据目录。独立审计参数指普通文件；暂存树路径相对于 `DIR`。
 `REV` 表示受支持的修订表达式，例如分支、标签、完整提交 ID、`HEAD` 或 `HEAD~1`。
 `TARGET_ID`、`REVIEWED_HEAD_ID` 等名称是占位符，必须替换为操作返回的实际完整 ID。
@@ -139,7 +139,7 @@ wasm-git diff old.wasm new.wasm --old-debug-file old.wasm.map --new-debug-file n
 每个成功接入的文件记录名称、字节数、SHA-256、格式和关联依据。
 `matching_code_payload` 表示独立 DWARF 文件的 code payload 与原模块完全相同，不表示作者签名。
 不含 code 的 DWARF、source map、符号表标记为 `explicit_input_unverified`：关联由调用者提供，
-uwgit 无法证明编译器为当前模块生成了它。`embedded_reference` 表示映射内嵌于原 Wasm。
+wasm-git 无法证明编译器为当前模块生成了它。`embedded_reference` 表示映射内嵌于原 Wasm。
 DWARF PC 仍使用原模块 code payload 基址，`metadata_source` 标识元数据偏移所属的外部文件。
 source-map 名称没有伪造的 JSON 字节偏移。格式不匹配时记录诊断，原始字节审计继续；
 显式指定的文件不存在则报告 I/O 错误。内嵌引用不会触发文件或网络访问。
@@ -179,9 +179,9 @@ custom-section 审计覆盖。支持某种格式不等于所有语言都会输�
 ## 6. 创建与应用二进制补丁
 
 ```sh
-wasm-git patch old.wasm new.wasm --output update.uwgp
-wasm-git apply old.wasm update.uwgp --check
-wasm-git apply old.wasm update.uwgp --output restored.wasm
+wasm-git patch old.wasm new.wasm --output update.wgp
+wasm-git apply old.wasm update.wgp --check
+wasm-git apply old.wasm update.wgp --output restored.wasm
 ```
 
 源文件必须与补丁预期原字节一致。验证成功后发布新目标文件，不覆盖已有目标。
@@ -189,12 +189,12 @@ wasm-git apply old.wasm update.uwgp --output restored.wasm
 也可从同一仓库快照读取提交内容：
 
 ```sh
-wasm-git patch main topic --repo ./history --file modules/app.wasm --output update.uwgp
-wasm-git apply main update.uwgp --repo ./history --file modules/app.wasm --check
+wasm-git patch main topic --repo ./history --file modules/app.wasm --output update.wgp
+wasm-git apply main update.wgp --repo ./history --file modules/app.wasm --check
 ```
 
 `--file` 选择命名树路径。补丁操作不会提交或更新引用。
-JSON 是审阅报告，`.uwgp` 才包含二进制还原数据。
+JSON 是审阅报告，`.wgp` 才包含二进制还原数据。
 
 ## 7. 建立单模块历史
 
@@ -330,7 +330,7 @@ untracked 文件。Revert 创建反向提交并保留旧历史。
 
 Trace/blame 在预算内报告字节来源候选与 frontier；重复字节不证明唯一来源。
 其他查询包括 `rev-list`、`show-ref`、`for-each-ref`、`shortlog`、`range-diff`、`describe`、
-`archive` 和不切换工作区的 `bisect`。它们基于 uwgit 实际对象模型，选项子集请查看帮助。
+`archive` 和不切换工作区的 `bisect`。它们基于 wasm-git 实际对象模型，选项子集请查看帮助。
 
 引用事件包含 UTC Unix 时间戳。`reflog DIR` 保留共享事件视图；
 `reflog DIR show [REF]` 按新到旧显示指定日志，默认 HEAD。`list` 列出有记录的名字，
@@ -343,8 +343,8 @@ Trace/blame 在预算内报告字节来源候选与 frontier；重复字节不�
 
 ```sh
 wasm-git clone ./history ./peer
-wasm-git bundle ./peer peer.uwgb
-wasm-git unbundle ./history peer.uwgb incoming
+wasm-git bundle ./peer peer.wgb
+wasm-git unbundle ./history peer.wgb incoming
 wasm-git remote ./peer add origin https://host.example/project
 wasm-git fetch ./peer origin
 wasm-git push ./peer origin main:main
@@ -356,7 +356,7 @@ Unbundle 在验证及快进规则下更新显式接收分支。Fetch 安装已�
 完整 clone 保留广告分支与标签，随后可用 `restore DIR --source HEAD --staged --worktree`
 物化树文件。
 
-HTTP 凭据通过 `UWGIT_REMOTE_TOKEN` 提供，不保存到 remote 配置。
+HTTP 凭据通过 `WASM_GIT_REMOTE_TOKEN` 提供，不保存到 remote 配置。
 非 loopback 使用 HTTPS；明文远端需要明确允许。SSH 使用远端服务程序与系统账户策略，
 详见部署手册。
 
@@ -419,7 +419,7 @@ wasm-git sign-commit ./work EXPECTED_HEAD_ID \
   --author 'Alice <alice@example.org>' --key author.key
 ```
 
-默认密钥为 uwgit 二进制 Ed25519 格式。`--format ssh` 接受 OpenSSH 密钥；
+默认密钥为 wasm-git 二进制 Ed25519 格式。`--format ssh` 接受 OpenSSH 密钥；
 `--format openpgp` 使用完整 GPG 指纹签名、使用公钥证书导入信任。
 agent、撤销与验证行为见[签名与 PR 手册](WASMHUB.zh_CN.md)。私钥不得进入源码控制。
 验证区分密码学有效性和信任表内的作者/公钥绑定。签名时间戳是签署者声明，不是可信时间证明。

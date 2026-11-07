@@ -14,7 +14,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new(label: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
-            "uwgit-custom-reader-{label}-{}-{}",
+            "wasm-git-custom-reader-{label}-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -405,7 +405,7 @@ fn threshold_and_padded_short_names_stay_original_while_raw_transport_stays_exac
             old.bytes.as_slice(),
         ),
     ] {
-        let patch_path = tmp.path(&format!("{label}.uwgp"));
+        let patch_path = tmp.path(&format!("{label}.wgp"));
         run_json(&["patch", before_path, after_path, "--output", &patch_path]);
         let encoded = std::fs::read(&patch_path).unwrap();
         let patch = BytePatch::from_bytes(&encoded).unwrap();
@@ -436,7 +436,7 @@ fn threshold_and_padded_short_names_stay_original_while_raw_transport_stays_exac
         assert_eq!(event["edit"]["old_hex"], hex(&old.bytes[a.start..a.end]));
         assert_eq!(event["edit"]["new_hex"], hex(&new.bytes[b.start..b.end]));
     }
-    assert!(!Path::new(&repo).join(".uwgit/write.lock").exists());
+    assert!(!Path::new(&repo).join(".wasm-git/write.lock").exists());
     assert_eq!(std::fs::read(old_path).unwrap(), old.bytes);
     assert_eq!(std::fs::read(new_path).unwrap(), new.bytes);
 }

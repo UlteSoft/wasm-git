@@ -36,7 +36,7 @@ fn pool() -> &'static rayon::ThreadPool {
         };
         rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
-            .thread_name(|i| format!("uwgit-worker-{i}"))
+            .thread_name(|i| format!("wasm-git-worker-{i}"))
             .build()
             .expect("create bounded Wasm worker pool")
     })

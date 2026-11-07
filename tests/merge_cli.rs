@@ -14,7 +14,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new(label: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
-            "uwgit-merge-{label}-{}-{}",
+            "wasm-git-merge-{label}-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -141,7 +141,7 @@ fn snapshot(directory: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
 }
 
 fn store_snapshot(repo: &str) -> BTreeMap<PathBuf, Vec<u8>> {
-    snapshot(&Path::new(repo).join(".uwgit"))
+    snapshot(&Path::new(repo).join(".wasm-git"))
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -329,10 +329,13 @@ fn exact_fast_forward_and_manual_choices_preserve_untrusted_bytes_with_failed_va
         success(&["switch", &repo, "right"]);
         let target = commit(&repo, &input, &selected, "preserve unknown bytes");
         success(&["switch", &repo, "main"]);
-        let objects = snapshot(&Path::new(&repo).join(".uwgit/objects"));
+        let objects = snapshot(&Path::new(&repo).join(".wasm-git/objects"));
         let result = json_success(&["merge", &repo, &target, "-m", "fast forward"]);
         assert_eq!(result["status"], "fast_forward");
-        assert_eq!(snapshot(&Path::new(&repo).join(".uwgit/objects")), objects);
+        assert_eq!(
+            snapshot(&Path::new(&repo).join(".wasm-git/objects")),
+            objects
+        );
         let checkout = tmp.path("fast-forward.wasm");
         success(&["checkout", &repo, "HEAD", &checkout]);
         assert_eq!(std::fs::read(checkout).unwrap(), selected);
@@ -667,11 +670,14 @@ fn fast_forward_creates_no_objects_and_repeated_merge_is_a_noop() {
     success(&["switch", &repo, "right"]);
     let target = commit(&repo, &input, &functions(3, 2, 0), "right");
     success(&["switch", &repo, "main"]);
-    let objects = snapshot(&Path::new(&repo).join(".uwgit/objects"));
+    let objects = snapshot(&Path::new(&repo).join(".wasm-git/objects"));
     let result = json_success(&["merge", &repo, &target, "-m", "fast forward"]);
     assert_eq!(result["status"], "fast_forward");
     assert_eq!(json_success(&["show", &repo, "HEAD"])["id"], target);
-    assert_eq!(snapshot(&Path::new(&repo).join(".uwgit/objects")), objects);
+    assert_eq!(
+        snapshot(&Path::new(&repo).join(".wasm-git/objects")),
+        objects
+    );
     let before = store_snapshot(&repo);
     assert_eq!(
         json_success(&["merge", &repo, &target, "-m", "again"])["status"],

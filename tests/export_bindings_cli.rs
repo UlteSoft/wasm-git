@@ -42,7 +42,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
-            "uwgit-export-bindings-{}-{}",
+            "wasm-git-export-bindings-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -675,7 +675,7 @@ fn candidate_notes_preserve_four_profile_raw_edits_patches_and_repository_trace(
                 &pair.old_path,
             ),
         ] {
-            let patch = pair.temp.path(&format!("{direction}.uwgp"));
+            let patch = pair.temp.path(&format!("{direction}.wgp"));
             let output = pair.temp.path(&format!("{direction}.wasm"));
             run_json(&["patch", old_path, new_path, "--output", &patch]);
             let encoded = std::fs::read(&patch).unwrap();

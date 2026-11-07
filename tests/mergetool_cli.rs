@@ -10,7 +10,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let root = std::env::temp_dir().join(format!(
-            "uwgit-mergetool-{}-{}",
+            "wasm-git-mergetool-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -93,8 +93,8 @@ fn export_is_a_frozen_three_way_snapshot_and_explicit_tool_staging_never_moves_h
     let temp = Temp::new();
     let root = temp.path("repo");
     let (ours, theirs) = pending(&root);
-    let index = fs::read(root.join(".uwgit/index")).unwrap();
-    let original_pending = fs::read(root.join(".uwgit/pending.bin")).unwrap();
+    let index = fs::read(root.join(".wasm-git/index")).unwrap();
+    let original_pending = fs::read(root.join(".wasm-git/pending.bin")).unwrap();
     let output = temp.path("review");
     let report = json(&["mergetool", p(&root), "--output", p(&output)]);
     assert_eq!(report["ours"], ours);
@@ -106,9 +106,9 @@ fn export_is_a_frozen_three_way_snapshot_and_explicit_tool_staging_never_moves_h
             module(value)
         );
     }
-    assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), index);
+    assert_eq!(fs::read(root.join(".wasm-git/index")).unwrap(), index);
     assert_eq!(
-        fs::read(root.join(".uwgit/pending.bin")).unwrap(),
+        fs::read(root.join(".wasm-git/pending.bin")).unwrap(),
         original_pending
     );
     let tool = temp.path("select-remote.sh");
@@ -131,7 +131,7 @@ fn export_is_a_frozen_three_way_snapshot_and_explicit_tool_staging_never_moves_h
     assert_eq!(fs::read(root.join("a.wasm")).unwrap(), module(2));
     assert_eq!(ok(&["rev-parse", p(&root), "HEAD"]), ours);
     assert_eq!(
-        fs::read(root.join(".uwgit/pending.bin")).unwrap(),
+        fs::read(root.join(".wasm-git/pending.bin")).unwrap(),
         original_pending
     );
     json(&["merge", p(&root), "--continue", "--resolved-index"]);
@@ -155,8 +155,8 @@ fn failed_tools_invalid_outputs_symlinks_and_changed_inputs_cannot_stage_results
     let temp = Temp::new();
     let root = temp.path("repo");
     pending(&root);
-    let index = fs::read(root.join(".uwgit/index")).unwrap();
-    let pending = fs::read(root.join(".uwgit/pending.bin")).unwrap();
+    let index = fs::read(root.join(".wasm-git/index")).unwrap();
+    let pending = fs::read(root.join(".wasm-git/pending.bin")).unwrap();
     for (position, body) in [
         "exit 7",
         "printf invalid > \"$MERGED\"",
@@ -180,8 +180,11 @@ fn failed_tools_invalid_outputs_symlinks_and_changed_inputs_cannot_stage_results
         ])
         .status
         .success());
-        assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), index);
-        assert_eq!(fs::read(root.join(".uwgit/pending.bin")).unwrap(), pending);
+        assert_eq!(fs::read(root.join(".wasm-git/index")).unwrap(), index);
+        assert_eq!(
+            fs::read(root.join(".wasm-git/pending.bin")).unwrap(),
+            pending
+        );
         assert_eq!(fs::read(root.join("a.wasm")).unwrap(), module(2));
     }
 }
@@ -191,8 +194,8 @@ fn concurrent_index_changes_are_detected_and_metadata_exports_are_rejected_befor
     let temp = Temp::new();
     let root = temp.path("repo");
     pending(&root);
-    let index = fs::read(root.join(".uwgit/index")).unwrap();
-    let forbidden = root.join(".uwgit/review");
+    let index = fs::read(root.join(".wasm-git/index")).unwrap();
+    let forbidden = root.join(".wasm-git/review");
     assert!(
         !execute(&["mergetool", p(&root), "--output", p(&forbidden)])
             .status
@@ -202,7 +205,7 @@ fn concurrent_index_changes_are_detected_and_metadata_exports_are_rejected_befor
     let tool = temp.path("change-index.sh");
     script(
         &tool,
-        "cp \"$REMOTE\" \"$MERGED\"\nprintf editor-change > \"$UWGIT_TEST_INDEX\"",
+        "cp \"$REMOTE\" \"$MERGED\"\nprintf editor-change > \"$WASM_GIT_TEST_INDEX\"",
     );
     let output = temp.path("changed-index");
     let result = Command::new(env!("CARGO_BIN_EXE_wasm-git"))
@@ -215,14 +218,14 @@ fn concurrent_index_changes_are_detected_and_metadata_exports_are_rejected_befor
             p(&tool),
             "--stage",
         ])
-        .env("UWGIT_TEST_INDEX", root.join(".uwgit/index"))
+        .env("WASM_GIT_TEST_INDEX", root.join(".wasm-git/index"))
         .output()
         .unwrap();
     assert!(!result.status.success());
     assert_eq!(
-        fs::read(root.join(".uwgit/index")).unwrap(),
+        fs::read(root.join(".wasm-git/index")).unwrap(),
         b"editor-change"
     );
-    fs::write(root.join(".uwgit/index"), index).unwrap();
+    fs::write(root.join(".wasm-git/index"), index).unwrap();
     ok(&["fsck", p(&root)]);
 }

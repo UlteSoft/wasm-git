@@ -1,7 +1,7 @@
 //! Durable PR snapshots, exact merge leases, recovery evidence and GC roots.
 use super::*;
 use crate::pull::*;
-const MAGIC: &[u8] = b"UWGPR001";
+const MAGIC: &[u8] = b"WGTPR001";
 const MAX_RECORD: usize = 16 * 1024 * 1024;
 
 fn text(value: &str, limit: usize, empty: bool) -> RepositoryResult<()> {

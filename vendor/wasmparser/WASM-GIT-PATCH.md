@@ -1,4 +1,4 @@
-# uwgit local reader bounds patch
+# wasm-git local reader bounds patch
 
 This directory retains all 72 regular files from the wasmparser 0.249.0 crate.
 The canonical crate SHA-256 is `30538cae9a794215f490b532df01c557e2e2bfac92569482554acd0992a102ea`.

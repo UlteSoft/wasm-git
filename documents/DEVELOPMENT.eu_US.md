@@ -1,4 +1,4 @@
-# uwgit Development and Verification Guide
+# wasm-git Development and Verification Guide
 
 **Edition:** 2026-11-07 · [简体中文](DEVELOPMENT.zh_CN.md) · [Library](README.eu_US.md)
 
@@ -75,10 +75,10 @@ The Git reference integration tests require an independent Git executable with
 `update-ref --batch-updates` support (Git 2.50 or newer). They normalize hash width
 and absent-OID output spelling, and probe the dangling-symref protection fixed
 in Git 2.52. Legacy Git outcomes are asserted separately for those two cases;
-uwgit always enforces the existence guard. For two mutually conflicting new ref
+wasm-git always enforces the existence guard. For two mutually conflicting new ref
 names, native batches reject both independent of input order; the oracle also
 accepts Git's newer behavior of retaining the first creation, checking its exact
-ref state. Reference, index, and worktree postconditions remain checked. The uwgit executable itself never invokes Git.
+ref state. Reference, index, and worktree postconditions remain checked. The wasm-git executable itself never invokes Git.
 
 Use focused checks after a localized change. Typical suites cover
 `structured_diff_cli`, `call_dependencies_cli`, `custom_audit_cli`,
@@ -120,10 +120,10 @@ DWARF evidence rather than rewriting it to the expected source line.
 ```sh
 python3 tools/test-cpp-intent.py \
   --output "$PWD/.tmp/cpp-intent-run1" \
-  --uwgit "$CARGO_TARGET_DIR/release/wasm-git"
+  --wasm-git "$CARGO_TARGET_DIR/release/wasm-git"
 python3 tools/test-debug-symbols.py \
   --output "$PWD/.tmp/debug-symbols-run1" \
-  --uwgit "$CARGO_TARGET_DIR/release/wasm-git"
+  --wasm-git "$CARGO_TARGET_DIR/release/wasm-git"
 ```
 
 Build the release client first and supply the compiler options shown by each
@@ -138,7 +138,7 @@ mapping succeeds.
 `tools/test-debug-languages.py` extends this with real Objective-C/Objective-C++,
 MoonBit classic Wasm and WasmGC, AssemblyScript, ordinary Go and optional Zig.
 Supply installed `--clang`, `--moon`, `--moon-home`, `--asc`, `--node`, `--go` and
-optionally `--zig`, plus `--uwgit` and a fresh `.tmp/` `--output`. It never installs
+optionally `--zig`, plus `--wasm-git` and a fresh `.tmp/` `--output`. It never installs
 dependencies. The Objective-C cases check method symbols and controlled method
 edits without linking/executing an Objective-C runtime. Source-map and Zig cases
 also execute the exported test function. Every pair checks exact byte replay and

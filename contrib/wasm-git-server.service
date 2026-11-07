@@ -4,16 +4,16 @@ After=network.target
 
 [Service]
 Type=simple
-User=uwgit
-Group=uwgit
-ExecStart=/usr/local/bin/wasm-git-server --root /srv/uwgit --listen 127.0.0.1:9419 --token-file /etc/uwgit/token --allow-write
+User=wasm-git
+Group=wasm-git
+ExecStart=/usr/local/bin/wasm-git-server --root /srv/wasm-git --listen 127.0.0.1:9419 --token-file /etc/wasm-git/token --allow-write
 Restart=on-failure
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=/srv/uwgit
+ReadWritePaths=/srv/wasm-git
 
 [Install]
 WantedBy=multi-user.target

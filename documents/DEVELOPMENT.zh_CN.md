@@ -1,4 +1,4 @@
-# uwgit 开发与验证指南
+# wasm-git 开发与验证指南
 
 **版本：** 2026-11-07 · [English](DEVELOPMENT.eu_US.md) · [文档目录](README.zh_CN.md)
 
@@ -60,10 +60,10 @@ Fuzz 目标编译检查不是实际 fuzz 或 ASan 运行。Ignored 项只有在�
 Git 对照集成测试需要独立 Git 可执行文件支持 `update-ref --batch-updates`
 （Git 2.50 或更新版本）。测试统一摘要宽度和缺失 OID 的输出写法，并探测
 Git 2.52 修复的 dangling symref 保护。对于涉及该修复的两种情况，旧 Git
-结果单独断言；uwgit 始终执行引用存在性保护。两个新增引用名称互相冲突时，原生
+结果单独断言；wasm-git 始终执行引用存在性保护。两个新增引用名称互相冲突时，原生
 批次与输入顺序无关地拒绝两者；对照程序也接受新版 Git 保留首个创建的结果，并
 精确断言其引用状态。引用、index 与工作区的最终
-状态仍须核对。uwgit 可执行程序本身不调用 Git。
+状态仍须核对。wasm-git 可执行程序本身不调用 Git。
 
 局部改动采用相关检查。常用 suite 包括 structured_diff_cli、call_dependencies_cli、
 custom_audit_cli、section_diff_cli、debug_symbols、proposal_diff_cli、history_gc_cli、
@@ -92,10 +92,10 @@ pack_fork_cli、server_hosting_cli、server_expansion。跨层发布前适合执
 ```sh
 python3 tools/test-cpp-intent.py \
   --output "$PWD/.tmp/cpp-intent-run1" \
-  --uwgit "$CARGO_TARGET_DIR/release/wasm-git"
+  --wasm-git "$CARGO_TARGET_DIR/release/wasm-git"
 python3 tools/test-debug-symbols.py \
   --output "$PWD/.tmp/debug-symbols-run1" \
-  --uwgit "$CARGO_TARGET_DIR/release/wasm-git"
+  --wasm-git "$CARGO_TARGET_DIR/release/wasm-git"
 ```
 
 先构建 release client，并按各脚本 --help 配置编译器。
@@ -106,7 +106,7 @@ C++ 测试需要 Clang/LLD、本机 C++、Node 和 WABT；调试测试还需 Rus
 
 `tools/test-debug-languages.py` 增加真实 Objective-C/Objective-C++、MoonBit 普通 Wasm 与
 WasmGC、AssemblyScript、普通 Go，以及可选的 Zig。提供已安装的 `--clang`、`--moon`、
-`--moon-home`、`--asc`、`--node`、`--go`，可选 `--zig`，同时指定 `--uwgit` 和全新的
+`--moon-home`、`--asc`、`--node`、`--go`，可选 `--zig`，同时指定 `--wasm-git` 和全新的
 `.tmp/` `--output` 目录；脚本不安装依赖。Objective-C 样例核对方法符号和受控方法修改，
 不链接或执行 Objective-C 运行时。source-map 与 Zig 样例还会执行导出的测试函数。
 所有样例核对原字节还原、单/多线程 diff 一致性。Go 样例将 Wasm 函数索引入口提升到虚拟 PC

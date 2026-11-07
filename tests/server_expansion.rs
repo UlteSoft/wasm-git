@@ -11,7 +11,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let p = std::env::temp_dir().join(format!(
-            "uwgit-expansion-{}-{}",
+            "wasm-git-expansion-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
@@ -337,7 +337,7 @@ fn concurrent_pool_maintenance_cannot_release_or_replace_replication_pins() {
     let gate = fs::OpenOptions::new()
         .read(true)
         .write(true)
-        .open(source.root.join(".uwgit/pool.gate"))
+        .open(source.root.join(".wasm-git/pool.gate"))
         .unwrap();
     gate.lock().unwrap();
     for args in [

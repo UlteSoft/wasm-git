@@ -93,7 +93,7 @@ fn repository_parent(settings: &Settings, name: &str, create: bool) -> Result<Pa
 }
 
 fn namespace_directory(path: &Path) -> Result<(), String> {
-    match fs::symlink_metadata(path.join(".uwgit")) {
+    match fs::symlink_metadata(path.join(".wasm-git")) {
         Ok(_) => Err("server namespaces must not be nested inside a repository".into()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.to_string()),
@@ -652,9 +652,9 @@ fn read_headers<R: Read>(reader: &mut R) -> Result<BTreeMap<String, String>, Str
     let mut lines = text[..text.len() - 4].split("\r\n");
     if !matches!(
         lines.next(),
-        Some("POST /v1/uwgit HTTP/1.1" | "POST /v1/uwgit HTTP/1.0")
+        Some("POST /v1/wasm-git HTTP/1.1" | "POST /v1/wasm-git HTTP/1.0")
     ) {
-        return Err("expected POST /v1/uwgit HTTP/1.1".into());
+        return Err("expected POST /v1/wasm-git HTTP/1.1".into());
     }
     let mut headers = BTreeMap::new();
     for line in lines {
@@ -1190,17 +1190,17 @@ mod tests {
     #[test]
     fn http_framing_rejects_ambiguity_and_oversized_headers() {
         for request in [
-            "POST /v1/uwgit HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\n",
-            "POST /v1/uwgit HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n",
-            "POST /v1/uwgit HTTP/1.1\r\nHost : x\r\n\r\n",
-            "POST /v1/uwgit HTTP/1.1\r\n\r\n",
-            "GET /v1/uwgit HTTP/1.1\r\nHost: x\r\n\r\n",
+            "POST /v1/wasm-git HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\n",
+            "POST /v1/wasm-git HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n",
+            "POST /v1/wasm-git HTTP/1.1\r\nHost : x\r\n\r\n",
+            "POST /v1/wasm-git HTTP/1.1\r\n\r\n",
+            "GET /v1/wasm-git HTTP/1.1\r\nHost: x\r\n\r\n",
         ] {
             assert!(read_headers(&mut request.as_bytes()).is_err());
         }
         assert!(read_headers(&mut vec![b'x'; MAX_HEADER + 1].as_slice()).is_err());
         assert!(read_headers(
-            &mut b"POST /v1/uwgit HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n".as_slice()
+            &mut b"POST /v1/wasm-git HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n".as_slice()
         )
         .is_ok());
     }
@@ -1319,7 +1319,7 @@ mod tests {
         let worker = std::thread::spawn(move || {
             connection(server, &settings, Instant::now() + Duration::from_secs(10))
         });
-        client.write_all(b"POST /v1/uwgit HTTP/1.1\r\nHost: x\r\nContent-Length: 4096\r\nExpect: 100-continue\r\n\r\n").unwrap();
+        client.write_all(b"POST /v1/wasm-git HTTP/1.1\r\nHost: x\r\nContent-Length: 4096\r\nExpect: 100-continue\r\n\r\n").unwrap();
         // No body and no write shutdown: receiving the final response and EOF
         // must not depend on sending bytes that the rejected client will omit.
         let mut response = Vec::new();
@@ -1381,7 +1381,7 @@ mod tests {
             }
         }
         let path = std::env::temp_dir().join(format!(
-            "uwgit-token-boundary-{}-{}",
+            "wasm-git-token-boundary-{}-{}",
             crate::platform_fs::process_id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

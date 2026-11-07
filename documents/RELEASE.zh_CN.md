@@ -20,13 +20,13 @@ Windows 包无需额外安装 VC redistributable。打包时检查两个可执�
 导入表，发现动态 CRT 依赖就拒绝发布。
 
 Cargo 默认仍只构建客户端；`--no-default-features --features server` 只构建
-服务端，`--features server` 构建两者。对象、压缩包和网络协议保持 uwgit 原生
+服务端，`--features server` 构建两者。对象、压缩包和网络协议保持 wasm-git 原生
 二进制格式，不表示原生 Git 格式互通。
 
 ## 2. WASI Preview 1 的两个构建档位
 
 两份 Wasm 都是仅导入 `wasi_snapshot_preview1` 的命令模块。MVP 与 Core 2.0
-表示 **uwgit 可执行文件本身** 使用的指令范围，不限制被审计 Wasm 的功能范围。
+表示 **wasm-git 可执行文件本身** 使用的指令范围，不限制被审计 Wasm 的功能范围。
 两份构建共用完整的无损解析器和 custom-section 支持。
 
 `tools/build-wasi.py` 使用仅对本次命令生效的 `RUSTC_BOOTSTRAP=1` 和

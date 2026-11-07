@@ -26,7 +26,7 @@ impl CorpusMode {
             None | Some("fixed-mutations") => Ok(Self::FixedMutations),
             Some("originals-only") => Ok(Self::OriginalsOnly),
             Some(value) => Err(format!(
-                "unknown UWGIT_CORPUS_MODE {value:?}; expected originals-only or fixed-mutations"
+                "unknown WASM_GIT_CORPUS_MODE {value:?}; expected originals-only or fixed-mutations"
             )),
         }
     }
@@ -668,15 +668,15 @@ fn external_path(name: &str, temporary: bool) -> PathBuf {
 #[test]
 #[ignore = "requires an explicitly supplied read-only uwvm2-ros examples corpus and TMPDIR output paths"]
 fn uwvm_examples_external_corpus() {
-    let mode = match std::env::var("UWGIT_CORPUS_MODE") {
+    let mode = match std::env::var("WASM_GIT_CORPUS_MODE") {
         Ok(value) => CorpusMode::parse(Some(&value)),
         Err(std::env::VarError::NotPresent) => CorpusMode::parse(None),
-        Err(error) => Err(format!("invalid UWGIT_CORPUS_MODE: {error}")),
+        Err(error) => Err(format!("invalid WASM_GIT_CORPUS_MODE: {error}")),
     }
     .expect("valid corpus mode required before reading external inputs");
-    let root = external_path("UWGIT_UWVM_EXAMPLES_ROOT", false);
-    let report_path = external_path("UWGIT_UWVM_CORPUS_REPORT", true);
-    let build = external_path("UWGIT_UWVM_BUILD_ROOT", true);
+    let root = external_path("WASM_GIT_UWVM_EXAMPLES_ROOT", false);
+    let report_path = external_path("WASM_GIT_UWVM_CORPUS_REPORT", true);
+    let build = external_path("WASM_GIT_UWVM_BUILD_ROOT", true);
     let examples = root.join("examples");
     let canonical_root = root
         .canonicalize()

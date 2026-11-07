@@ -1,4 +1,4 @@
-# uwgit Documentation Library
+# wasm-git Documentation Library
 
 [简体中文](README.zh_CN.md) · [Project overview](../README.eu_US.md)
 
@@ -9,6 +9,9 @@ and deployment responsibilities. Examples use the actual `wasm-git` and
 project-specific `.eu_US.md` and `.zh_CN.md` suffix convention.
 
 ## Reading guide
+
+- [Local Web GUI](WEBGUI.eu_US.md) — bilingual client operations, full command access,
+  audit previews and independent server supervision. [中文](WEBGUI.zh_CN.md)
 
 - [WasmHub integration](WASMHUB.eu_US.md) — SSH/OpenPGP signing, durable PRs,
   reviews/CI, branch protection and merge recovery. [中文](WASMHUB.zh_CN.md)
@@ -26,7 +29,7 @@ project-specific `.eu_US.md` and `.zh_CN.md` suffix convention.
   binary authorization policies, hooks, audit, trusted authors, shared forks,
   object pools, limits, backups, and recovery. [中文](SERVER_ADMINISTRATION.zh_CN.md)
 - [Binary-format reference](BINARY_FORMAT.eu_US.md) — current object, manifest,
-  `UWGPACK4`, patch, control-record, signature, and RPC layouts and validation
+  `WGTPACK4`, patch, control-record, signature, and RPC layouts and validation
   requirements. [中文](BINARY_FORMAT.zh_CN.md)
 - [Development and verification](DEVELOPMENT.eu_US.md) — project-local `.tmp/`
   output, cgroups, build combinations, independent restoration checks, compiler
@@ -43,8 +46,8 @@ regression tests remain essential when implementing independent tooling.
 “Exact” refers to original bytes and evidence with explicit bounds. Function or
 source correspondences can remain ambiguous. “Supported” must identify whether
 it means retained storage, known framing, typed analysis, validation, or runtime
-execution; uwgit does not execute Wasm as part of an audit. Git-like workflows
-use uwgit-native formats and a documented subset of options. Pre-release formats
+execution; wasm-git does not execute Wasm as part of an audit. Git-like workflows
+use wasm-git-native formats and a documented subset of options. Pre-release formats
 may change without migration.
 
 Update both language editions in the same change. Keep command examples and

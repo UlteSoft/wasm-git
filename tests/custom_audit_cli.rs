@@ -47,7 +47,7 @@ fn compare(a: &[u8], b: &[u8]) -> audit::AuditDiff {
 }
 fn report(a: &[u8], b: &[u8]) -> Value {
     let dir = std::env::temp_dir().join(format!(
-        "uwgit-custom-test-{}-{}",
+        "wasm-git-custom-test-{}-{}",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
@@ -424,7 +424,7 @@ fn duplicate_symbols_do_not_receive_a_weight_bonus() {
 }
 #[test]
 fn malformed_optional_formats_survive_repository_gc_and_restore() {
-    let dir = std::env::temp_dir().join(format!("uwgit-custom-repo-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("wasm-git-custom-repo-{}", std::process::id()));
     let run = |args: &[&str]| {
         let o = Command::new(env!("CARGO_BIN_EXE_wasm-git"))
             .args(args)

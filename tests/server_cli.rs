@@ -23,7 +23,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
-            "uwgit-server-{}-{}",
+            "wasm-git-server-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -46,7 +46,7 @@ impl Drop for Temp {
 }
 fn command(args: &[&str]) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_wasm-git"));
-    command.args(args).env_remove("UWGIT_REMOTE_TOKEN");
+    command.args(args).env_remove("WASM_GIT_REMOTE_TOKEN");
     command
 }
 fn run(args: &[&str]) -> String {
@@ -96,7 +96,7 @@ fn metadata(repo: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
         }
     }
     let mut files = BTreeMap::new();
-    visit(repo, &repo.join(".uwgit"), &mut files);
+    visit(repo, &repo.join(".wasm-git"), &mut files);
     files
 }
 fn packet(repository: &str, operation: Value, payload: &[u8]) -> Vec<u8> {
@@ -104,7 +104,7 @@ fn packet(repository: &str, operation: Value, payload: &[u8]) -> Vec<u8> {
 }
 fn decode(bytes: &[u8]) -> (Value, Vec<u8>) {
     assert!(bytes.len() >= 20);
-    assert_eq!(&bytes[..8], b"UWGRPC02");
+    assert_eq!(&bytes[..8], b"WGTRPC02");
     let metadata = u32::from_be_bytes(bytes[8..12].try_into().unwrap()) as usize;
     let payload = usize::try_from(u64::from_be_bytes(bytes[12..20].try_into().unwrap())).unwrap();
     assert_eq!(bytes.len(), 20 + metadata + payload);
@@ -225,7 +225,7 @@ impl Server {
         let authorization = token.map_or(String::new(), |token| {
             format!("Authorization: Bearer {token}\r\n")
         });
-        let mut request = format!("POST /v1/uwgit HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n{authorization}\r\n", bytes.len()).into_bytes();
+        let mut request = format!("POST /v1/wasm-git HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n{authorization}\r\n", bytes.len()).into_bytes();
         request.extend_from_slice(bytes);
         self.raw(&request)
     }
@@ -336,7 +336,7 @@ fn early_http_rejections_deliver_complete_bodies_with_unread_request_input() {
         ),
     ] {
         let mut request =
-            format!("POST /v1/uwgit HTTP/1.1\r\nHost: localhost\r\n{headers}\r\n").into_bytes();
+            format!("POST /v1/wasm-git HTTP/1.1\r\nHost: localhost\r\n{headers}\r\n").into_bytes();
         request.extend_from_slice(&body);
         let (status, received) = server.raw(&request);
         assert_eq!(status, expected_status);
@@ -418,20 +418,20 @@ fn actual_http_framing_rejects_ambiguous_lengths_and_malformed_rpc() {
     let before = metadata(&repo);
     let server = Server::start(&temp, 6, false, false);
     for request in [
-        "POST /v1/uwgit HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\n",
-        "POST /v1/uwgit HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n",
+        "POST /v1/wasm-git HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\n",
+        "POST /v1/wasm-git HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n",
     ] {
         assert_eq!(server.raw(request.as_bytes()).0, 400);
     }
     let authorization = format!("Authorization: Bearer {TOKEN}\r\n");
     assert_eq!(
         server
-            .raw(format!("POST /v1/uwgit HTTP/1.1\r\nHost: x\r\n{authorization}\r\n").as_bytes())
+            .raw(format!("POST /v1/wasm-git HTTP/1.1\r\nHost: x\r\n{authorization}\r\n").as_bytes())
             .0,
         411
     );
-    assert_eq!(server.raw(format!("POST /v1/uwgit HTTP/1.1\r\nHost: x\r\n{authorization}Content-Length: +1\r\n\r\n").as_bytes()).0, 400);
-    assert_eq!(server.raw(format!("POST /v1/uwgit HTTP/1.1\r\nHost: x\r\n{authorization}Content-Length: 67108865\r\n\r\n").as_bytes()).0, 413);
+    assert_eq!(server.raw(format!("POST /v1/wasm-git HTTP/1.1\r\nHost: x\r\n{authorization}Content-Length: +1\r\n\r\n").as_bytes()).0, 400);
+    assert_eq!(server.raw(format!("POST /v1/wasm-git HTTP/1.1\r\nHost: x\r\n{authorization}Content-Length: 67108865\r\n\r\n").as_bytes()).0, 413);
     let mut bad = packet("project", json!({"kind":"fetch"}), &[]);
     bad.push(0);
     let (status, body) = server.request(&bad, Some(TOKEN));
@@ -458,7 +458,7 @@ fn stdio_is_one_complete_framed_request_and_rejects_trailing_or_traversal() {
     let (response, payload) = decode(&output.stdout);
     assert_eq!(response["ok"], true, "{response}");
     assert_eq!(response["state"]["head"], "main");
-    assert!(payload.starts_with(b"UWGB\0\0\0\x02"));
+    assert!(payload.starts_with(b"WGTB\0\0\0\x02"));
     let mut extra = request.clone();
     extra.push(0);
     let output = stdio(&temp, &extra);
@@ -583,7 +583,11 @@ fn truncated_mutation_operands_never_delete_or_publish_a_reference() {
         assert_eq!(response["ok"], true, "{response}");
         assert!(response["tip"].is_null());
         assert!(payload.is_empty());
-        assert!(!project.join(".uwgit").join(directory).join(name).exists());
+        assert!(!project
+            .join(".wasm-git")
+            .join(directory)
+            .join(name)
+            .exists());
     }
     server.finish();
     assert_eq!(tip(&project), initial);
@@ -630,7 +634,7 @@ fn actual_http_clone_accepts_dotted_and_65_to_128_byte_repository_names() {
         let url = format!("http://{}/{name}", server.address);
         let local = temp.path(&format!("named-clone-{index}"));
         let result = command(&["clone", &url, local.to_str().unwrap()])
-            .env("UWGIT_REMOTE_TOKEN", TOKEN)
+            .env("WASM_GIT_REMOTE_TOKEN", TOKEN)
             .output()
             .unwrap();
         assert!(

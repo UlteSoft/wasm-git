@@ -112,8 +112,8 @@ fn destination(path: &Path) -> RepositoryResult<PathBuf> {
     if parent.components().any(|part| {
         part.as_os_str()
             .to_string_lossy()
-            .eq_ignore_ascii_case(".uwgit")
-    }) || name.to_string_lossy().eq_ignore_ascii_case(".uwgit")
+            .eq_ignore_ascii_case(".wasm-git")
+    }) || name.to_string_lossy().eq_ignore_ascii_case(".wasm-git")
     {
         return Err("worktree destination must be outside repository metadata".into());
     }
@@ -336,7 +336,7 @@ impl Repository {
             object_id(format!("{}:{}", target.display(), unique_name("worktree")).as_bytes());
         let result = (|| {
             fs::create_dir(&target).map_err(|error| error.to_string())?;
-            let metadata = target.join(".uwgit");
+            let metadata = target.join(".wasm-git");
             fs::create_dir(&metadata).map_err(|error| error.to_string())?;
             fs::create_dir(metadata.join("tmp")).map_err(|error| error.to_string())?;
             write_new_file(&metadata.join("HEAD"), &encode_reference(branch, false)?)?;
@@ -438,8 +438,8 @@ impl Repository {
 
     pub fn repair_worktree(&self, target: &Path) -> RepositoryResult<Value> {
         let target = canonical(target)?;
-        require_directory(&target.join(".uwgit"))?;
-        let metadata = target.join(".uwgit");
+        require_directory(&target.join(".wasm-git"))?;
+        let metadata = target.join(".wasm-git");
         if marker(&metadata.join("commondir"))?
             != canonical(&self.common_metadata)?
                 .to_str()
@@ -501,7 +501,7 @@ impl Repository {
         if records.entries[&id].locked.is_some() {
             return Err("linked worktree is locked".into());
         }
-        if open_common(&target, &target.join(".uwgit"))? != canonical(&self.common_metadata)? {
+        if open_common(&target, &target.join(".wasm-git"))? != canonical(&self.common_metadata)? {
             return Err("worktree common directory changed".into());
         }
         fs::rename(&target, &new_path).map_err(|error| error.to_string())?;
@@ -577,7 +577,7 @@ impl Repository {
         if record.locked.is_some() {
             return Err("linked worktree is locked".into());
         }
-        if open_common(&target, &target.join(".uwgit"))? != canonical(&self.common_metadata)? {
+        if open_common(&target, &target.join(".wasm-git"))? != canonical(&self.common_metadata)? {
             return Err("linked worktree common directory changed".into());
         }
         fs::remove_dir_all(&target).map_err(|error| {
@@ -618,7 +618,7 @@ pub(super) fn reference_head_origin(
             "HEAD transaction worktree moved; restore its registered path before recovery".into(),
         );
     }
-    let metadata = root.join(".uwgit");
+    let metadata = root.join(".wasm-git");
     require_directory(&metadata)?;
     require_directory(&metadata.join("tmp"))?;
     if !pack_storage::supported_format(&read_regular(&metadata.join("format"))?) {

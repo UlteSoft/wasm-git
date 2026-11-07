@@ -2,7 +2,7 @@
 # Sourced after entering the frozen source tree. Selecting targets, rather than
 # test-name filters, excludes every present/future test in the mutation harness.
 skip_fuzz=${skip_fuzz:-0}
-[[ $skip_fuzz == 0 || $skip_fuzz == 1 ]] || { echo 'UWGIT_SKIP_FUZZ must be 0 or 1' >&2; exit 2; }
+[[ $skip_fuzz == 0 || $skip_fuzz == 1 ]] || { echo 'WASM_GIT_SKIP_FUZZ must be 0 or 1' >&2; exit 2; }
 regular_targets=()
 regular_filters=()
 if [[ $skip_fuzz == 1 ]]; then

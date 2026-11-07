@@ -309,7 +309,7 @@ fn cli_function_analysis_respects_unknown_declaration_frontiers() {
 fn binding_fixture(old: &str, new: &str) -> (serde_json::Value, String, Vec<u8>, Vec<u8>) {
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let directory = std::env::temp_dir().join(format!(
-        "uwgit-binding-{}-{}",
+        "wasm-git-binding-{}-{}",
         std::process::id(),
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));

@@ -13,7 +13,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let root = std::env::temp_dir().join(format!(
-            "uwgit-index-listing-{}-{}",
+            "wasm-git-index-listing-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -127,7 +127,7 @@ fn wasm(value: u32) -> Vec<u8> {
 }
 fn id(kind: u8, bytes: &[u8]) -> String {
     let mut hash = Sha256::new();
-    hash.update(b"UWGO\0\0\0\x02");
+    hash.update(b"WGTO\0\0\0\x02");
     hash.update([kind]);
     hash.update((bytes.len() as u64).to_be_bytes());
     hash.update(bytes);
@@ -261,7 +261,7 @@ fn directories_do_not_hide_nested_repositories_symlinks_or_special_files() {
     t.write("broken/plain.txt", b"ordinary\n");
     symlink("absent", t.0.join("broken/alias")).unwrap();
     t.write("marker/nested/private.txt", b"nested user bytes");
-    symlink("absent", t.0.join("marker/nested/.uwgit")).unwrap();
+    symlink("absent", t.0.join("marker/nested/.wasm-git")).unwrap();
     t.write("marker/plain.txt", b"ordinary\n");
     t.write("special/plain.txt", b"ordinary\n");
     assert!(Command::new("mkfifo")
@@ -327,7 +327,10 @@ fn abbreviations_consider_unselected_unpublished_images_and_saved_original_sides
         ]),
         format!("{} a.wasm", &first_id[..length])
     );
-    assert_eq!(fs::read_dir(t.0.join(".uwgit/objects")).unwrap().count(), 0);
+    assert_eq!(
+        fs::read_dir(t.0.join(".wasm-git/objects")).unwrap().count(),
+        0
+    );
 
     ok(&["hash-object", t.root(), "-w", "--stdin"], Some(&second));
     ok(
@@ -342,7 +345,7 @@ fn abbreviations_consider_unselected_unpublished_images_and_saved_original_sides
         &["update-index", t.root(), "--force-remove", "old.wasm"],
         None,
     );
-    fs::remove_file(t.0.join(".uwgit/objects").join(&second_id)).unwrap();
+    fs::remove_file(t.0.join(".wasm-git/objects").join(&second_id)).unwrap();
     assert_eq!(
         t.query(&["--stage", "--abbrev=4", "--", "a.wasm"]),
         expected
@@ -402,7 +405,7 @@ fn abbreviations_extend_for_a_stored_native_tree_even_when_the_wasm_image_is_unp
             && full.starts_with(abbreviation)
             && !tree_id.starts_with(abbreviation)
     );
-    assert!(!t.0.join(".uwgit/objects").join(full).exists());
+    assert!(!t.0.join(".wasm-git/objects").join(full).exists());
 }
 
 #[test]
@@ -496,10 +499,10 @@ fn unnamed_history_and_malformed_or_unmatched_queries_fail_before_emitting_any_r
     ] {
         t.reject(&args);
     }
-    fs::write(t.0.join(".uwgit/index.lock"), b"held").unwrap();
+    fs::write(t.0.join(".wasm-git/index.lock"), b"held").unwrap();
     t.reject(&["--eol"]);
     t.reject(&["--others", "--directory"]);
-    fs::remove_file(t.0.join(".uwgit/index.lock")).unwrap();
+    fs::remove_file(t.0.join(".wasm-git/index.lock")).unwrap();
 }
 
 #[test]

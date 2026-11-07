@@ -24,7 +24,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let p = std::env::temp_dir().join(format!(
-            "uwgit-sections-{}-{}",
+            "wasm-git-sections-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
@@ -398,7 +398,7 @@ fn unknown_encoding_history_survives_gc_fork_and_bundle_transfer() {
     run(&["fsck", &root]);
     let fork = t.path("fork");
     run(&["fork", &root, &fork]);
-    let bundle = t.path("history.uwgb");
+    let bundle = t.path("history.wgb");
     run(&["bundle", &root, &bundle]);
     let peer = t.path("peer");
     run(&["init", &peer]);

@@ -10,7 +10,7 @@ mod block_delta;
 mod planning;
 use std::io::{Seek, SeekFrom};
 
-const MAGIC: &[u8; 8] = b"UWGPACK4";
+const MAGIC: &[u8; 8] = b"WGTPACK4";
 const MAX_INDEX: u64 = 64 * 1024 * 1024;
 const MAX_OBJECT: u64 = 4 * 1024 * 1024 * 1024;
 const FIXED_INDEX: usize = 256 * 4;
@@ -913,8 +913,10 @@ mod tests {
             (3, vec![0, 0, 0, 0, 1, 0], false, "length mismatch"),
             (4, vec![0, 0, 0, 0, 1, 0], true, "trailing bytes"),
         ] {
-            let path = std::env::temp_dir()
-                .join(format!("uwgit-pack-bounds-{}-{case}", std::process::id()));
+            let path = std::env::temp_dir().join(format!(
+                "wasm-git-pack-bounds-{}-{case}",
+                std::process::id()
+            ));
             let repo = Repository::init(&path).unwrap();
             fs::create_dir(repo.common_metadata.join("packs")).unwrap();
             let mut compressed = compress(&instructions).unwrap();
@@ -953,7 +955,7 @@ mod tests {
     }
     #[test]
     fn network_fast_reads_still_verify_original_object_ids_with_valid_pack_checksums() {
-        let path = std::env::temp_dir().join(unique_name("uwgit-network-hash"));
+        let path = std::env::temp_dir().join(unique_name("wasm-git-network-hash"));
         let repo = Repository::init(&path).unwrap();
         let tip = repo.commit(WASM_HEADER, "base").unwrap();
         let blob = repo.read_commit_id(&tip).unwrap().wasm;
@@ -1003,8 +1005,10 @@ mod tests {
                 })
                 .collect();
             let raw = raw_pack(&objects);
-            let path = std::env::temp_dir()
-                .join(format!("uwgit-pack-index-{}-{label}", std::process::id()));
+            let path = std::env::temp_dir().join(format!(
+                "wasm-git-pack-index-{}-{label}",
+                std::process::id()
+            ));
             fs::write(&path, &raw).unwrap();
             let mut file = File::open(&path).unwrap();
             let error = index(&mut file).err().unwrap();

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Refresh source metadata, never parser switches or uwgit repository objects.
+"""Refresh source metadata, never parser switches or wasm-git repository objects.
 
 The official JSON is consumed in memory. The checked-in result is Rust source,
 compiled into the client/server library. No runtime network access or JSON cache.

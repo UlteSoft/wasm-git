@@ -4,7 +4,7 @@
 
 ## Scope
 
-uwgit retains its native Wasm objects, binary control records, and network protocol.
+wasm-git retains its native Wasm objects, binary control records, and network protocol.
 The comparison concerns usable version-control and hosting workflows, rather than
 Git object/wire compatibility. A command name alone does not establish parity:
 publication, rejection, recovery, and original-byte preservation must work.
@@ -97,5 +97,5 @@ Finite tests do not prove complete Git parity or universal source-intent recover
 
 Local tests use project `.tmp/` through `TMPDIR` and the 64 GiB cgroup. Run logs,
 profiles and reference checkouts are excluded from publication. Repository marker
-`UWGRPO\0\x03` and audit schema 3 reject superseded pre-release records; immutable
+`WGTRPO\0\x03` and audit schema 3 reject superseded pre-release records; immutable
 object and pack encodings are unchanged. See the [format reference](BINARY_FORMAT.eu_US.md).

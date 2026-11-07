@@ -9,7 +9,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let root = std::env::temp_dir().join(format!(
-            "uwgit-maintenance-{}-{}",
+            "wasm-git-maintenance-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -81,7 +81,7 @@ fn cleanup_previews_and_force_removes_only_untracked_nonignored_regular_paths() 
     let temp = Temp::new();
     let root = &temp.0;
     seed(root, 1);
-    fs::write(root.join(".uwgitignore"), "*.log\ncache/\n").unwrap();
+    fs::write(root.join(".wasm-gitignore"), "*.log\ncache/\n").unwrap();
     fs::write(root.join("keep.log"), b"keep").unwrap();
     fs::write(root.join("junk.txt"), b"remove").unwrap();
     fs::create_dir(root.join("cache")).unwrap();
@@ -93,18 +93,18 @@ fn cleanup_previews_and_force_removes_only_untracked_nonignored_regular_paths() 
     fs::write(root.join("nested/keep"), b"keep").unwrap();
     let before = snapshot(root);
     assert!(!execute(&["clean", path(root)]).status.success());
-    let plan = json(&["clean", path(root), "-n", "-d", "-e", ".uwgitignore"]);
+    let plan = json(&["clean", path(root), "-n", "-d", "-e", ".wasm-gitignore"]);
     assert!(plan["files"]
         .as_array()
         .unwrap()
         .iter()
         .any(|value| value == "junk.txt"));
     assert_eq!(snapshot(root), before);
-    let removed = json(&["clean", path(root), "-f", "-d", "-e", ".uwgitignore"]);
+    let removed = json(&["clean", path(root), "-f", "-d", "-e", ".wasm-gitignore"]);
     assert_eq!(removed["files"], plan["files"]);
     for keep in [
         "module.wasm",
-        ".uwgitignore",
+        ".wasm-gitignore",
         "keep.log",
         "cache/keep",
         "nested/keep",
@@ -126,9 +126,9 @@ fn cleanup_ignored_only_exclusions_path_scopes_and_worktree_lock_are_exact() {
         fs::write(root.join(name), name).unwrap();
     }
     let before = snapshot(root);
-    fs::write(root.join(".uwgit/index.lock"), b"held").unwrap();
+    fs::write(root.join(".wasm-git/index.lock"), b"held").unwrap();
     assert!(!execute(&["clean", path(root), "-f", "-x"]).status.success());
-    fs::remove_file(root.join(".uwgit/index.lock")).unwrap();
+    fs::remove_file(root.join(".wasm-git/index.lock")).unwrap();
     assert_eq!(snapshot(root), before);
     json(&["clean", path(root), "-f", "-X", "-e", "b.log"]);
     assert!(!root.join("a.log").exists());
@@ -200,7 +200,7 @@ fn gc_dry_run_plans_and_explicit_prune_retains_reflog_closures() {
     assert_eq!(order, vec![child.clone(), dangling.clone()]);
     let removed = json(&["gc", path(root), "--prune=now"]);
     assert_eq!(removed["removed"], plan["deletion_order"]);
-    assert!(!root.join(".uwgit/objects").join(dangling).exists());
+    assert!(!root.join(".wasm-git/objects").join(dangling).exists());
     ok(&["fsck", path(root)]);
     let log = json(&["reflog", path(root)]);
     assert!(log.as_array().unwrap().len() >= 3);
@@ -217,7 +217,7 @@ fn every_gc_deletion_prefix_retains_a_complete_object_graph() {
     let _c = ok(&["commit-tree", path(root), &tree, "-p", &b, "-m", "c"]);
     let plan = json(&["gc", path(root), "-n"]);
     for id in plan["deletion_order"].as_array().unwrap() {
-        fs::remove_file(root.join(".uwgit/objects").join(id.as_str().unwrap())).unwrap();
+        fs::remove_file(root.join(".wasm-git/objects").join(id.as_str().unwrap())).unwrap();
         ok(&["fsck", path(root)]);
     }
 }
@@ -229,13 +229,17 @@ fn gc_pins_auxiliary_recovery_state_and_maintenance_rejects_unimplemented_tasks(
     seed(root, 1);
     let tree = ok(&["write-tree", path(root)]);
     ok(&["commit-tree", path(root), &tree, "-m", "dangling"]);
-    fs::write(root.join(".uwgit/notes.bin"), b"future auxiliary metadata").unwrap();
-    let index = fs::read(root.join(".uwgit/index")).unwrap();
+    fs::write(
+        root.join(".wasm-git/notes.bin"),
+        b"future auxiliary metadata",
+    )
+    .unwrap();
+    let index = fs::read(root.join(".wasm-git/index")).unwrap();
     let result = json(&["gc", path(root), "--prune=now"]);
     assert!(result["removed"].as_array().unwrap().is_empty());
-    assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), index);
+    assert_eq!(fs::read(root.join(".wasm-git/index")).unwrap(), index);
     assert_eq!(
-        fs::read(root.join(".uwgit/notes.bin")).unwrap(),
+        fs::read(root.join(".wasm-git/notes.bin")).unwrap(),
         b"future auxiliary metadata"
     );
     let before = snapshot(root);
@@ -363,7 +367,7 @@ fn timestamp_selectors_and_expiry_use_checked_utc_and_strict_boundaries() {
     let second = seed(root, 2);
     let third = seed(root, 3);
     for name in ["reflog", "head-reflog.bin"] {
-        let file = root.join(".uwgit").join(name);
+        let file = root.join(".wasm-git").join(name);
         let mut entries: Vec<ReflogEntry> = binary::decode(&fs::read(&file).unwrap()).unwrap();
         for entry in &mut entries {
             entry.unix_seconds = match entry.new.as_deref() {
@@ -416,7 +420,7 @@ fn reflog_expiry_validates_every_worktree_before_writes_and_respects_single_work
     seed(root, 1);
     let linked = root.join("linked");
     json(&["worktree", path(root), "add", path(&linked), "-b", "topic"]);
-    let log_path = linked.join(".uwgit/head-reflog.bin");
+    let log_path = linked.join(".wasm-git/head-reflog.bin");
     let original = fs::read(&log_path).unwrap();
     fs::write(&log_path, b"corrupt").unwrap();
     let before = snapshot(root);
@@ -427,7 +431,7 @@ fn reflog_expiry_validates_every_worktree_before_writes_and_respects_single_work
     );
     assert_eq!(snapshot(root), before);
     fs::write(&log_path, &original).unwrap();
-    fs::write(linked.join(".uwgit/pending.bin"), b"pending recovery").unwrap();
+    fs::write(linked.join(".wasm-git/pending.bin"), b"pending recovery").unwrap();
     let before = snapshot(root);
     assert!(
         !execute(&["reflog", path(root), "expire", "--all", "--expire=all"])
@@ -435,7 +439,7 @@ fn reflog_expiry_validates_every_worktree_before_writes_and_respects_single_work
             .success()
     );
     assert_eq!(snapshot(root), before);
-    fs::remove_file(linked.join(".uwgit/pending.bin")).unwrap();
+    fs::remove_file(linked.join(".wasm-git/pending.bin")).unwrap();
     json(&[
         "reflog",
         path(root),

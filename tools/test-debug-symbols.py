@@ -96,7 +96,7 @@ console.log(instance.exports.entry(3)>>>0);})().catch(e=>{console.error(e);proce
                 command=[args.tinygo,'build','-target=wasm-unknown','-gc=leaking','-scheduler=none','-panic=trap','-opt=2','-o',wasm,path]
             run(command); commands.append(list(map(str,command))); modules.append(wasm)
             value=run([args.node,execute,wasm]).strip(); assert value==(b'32' if variant=='old' else b'33'), (name,variant,value)
-            mapdata=json.loads(run([args.uwgit,'debug-map',wasm,'--json']))
+            mapdata=json.loads(run([args.wasm_git,'debug-map',wasm,'--json']))
             (folder/'map.json').write_text(json.dumps(mapdata,indent=2))
             assert mapdata['debug_summary']['source_ranges']>0, (name,mapdata['debug_summary'])
             assert any('calculate' in (s.get('name') or '') for s in mapdata['debug_info']['symbols']), name
@@ -112,8 +112,8 @@ console.log(instance.exports.entry(3)>>>0);})().catch(e=>{console.error(e);proce
                 if strip_names: p.write_bytes(remove_names(module.read_bytes()))
                 pair.append(p)
             command=['diff',*pair,'--format','json','--compact']; start=time.monotonic()
-            output=run([args.uwgit,'--threads','1',*command]); elapsed=time.monotonic()-start
-            assert output==run([args.uwgit,'--threads','0',*command]), (name,'parallel mismatch')
+            output=run([args.wasm_git,'--threads','1',*command]); elapsed=time.monotonic()-start
+            assert output==run([args.wasm_git,'--threads','0',*command]), (name,'parallel mismatch')
             report=json.loads(output); (root/name/f'diff-{strip_names}.json').write_bytes(output)
             replay(pair[0].read_bytes(),pair[1].read_bytes(),report['audit']['edits'])
             assert report['summary']['functions_changed']==1, (name,report['summary'])
@@ -134,6 +134,6 @@ console.log(instance.exports.entry(3)>>>0);})().catch(e=>{console.error(e);proce
 
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('--output',required=True);p.add_argument('--uwgit',required=True)
+    p=argparse.ArgumentParser();p.add_argument('--output',required=True);p.add_argument('--wasm-git',required=True)
     p.add_argument('--clang',default='clang-21');p.add_argument('--rustc',default='rustc');p.add_argument('--tinygo',default='tinygo');p.add_argument('--node',default='node')
     main(p.parse_args())

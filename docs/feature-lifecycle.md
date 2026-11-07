@@ -9,7 +9,7 @@ wasm-git features legacy_exceptions
 此命令离线读取编译进共用库的社区快照，client/server 使用同一份资料。
 不访问网络，不创建仓库状态；内部对象、补丁、pack 和传输仍为原有二进制格式。
 JSON 仅作为可选的对外报告。更新工具在内存中读取社区提供的 JSON，生成 Rust 源码，
-不把它放入 `.uwgit`，也不引入运行时 JSON 缓存。
+不把它放入 `.wasm-git`，也不引入运行时 JSON 缓存。
 
 ## 社区复核（2026-11-06）
 
@@ -38,7 +38,7 @@ Phase 4（标准化阶段）、Phase 5（已标准化）和并入主规范后的
 - Acquire-Release Atomics、FP16、Extended Name Section：Phase 2。
 - Shared-Everything Threads：Phase 1，区别于普通 threads。
 - JS Promise Integration 和 Web Content Security Policy：Phase 5、尚未并入主规范，
-  属于宿主集成，不声称 uwgit 实现 JavaScript 执行环境。
+  属于宿主集成，不声称 wasm-git 实现 JavaScript 执行环境。
 
 完整清单与精确来源由 `features --json` 提供。`coverage` 分别表示已知 Core 指令及操作数、
 部分 Core 投影、custom 约定、普通 import 结构、Component 外层、宿主/文本或尚未审阅。
@@ -53,7 +53,7 @@ Component Model 只审计外层；FP16 不能冒充已实现。详见[标准支�
 2. 官方 inactive/撤回/替代的已实现特性标为 `deprecated`，继续默认识别、diff、保存、
    patch、GC 和还原。弃用不是非法编码，也不是停止支持。
 3. 从完整上游清单消失的条目保留旧 ID、名称和来源，状态记为 `missing`。
-   已实现条目在 uwgit 中暂标 `deprecated` 并注明需要核对改名/移除，不能把“消失”
+   已实现条目在 wasm-git 中暂标 `deprecated` 并注明需要核对改名/移除，不能把“消失”
    冒充官方已投票否决。确认改名后保留旧 ID 并补充新身份；不得静默删除旧记录。
 4. 新编码替代旧编码时分别保留读取规则和固定二进制测试；若不能消除编码歧义，
    明确报告不确定性，不用新版解释强行改写历史。

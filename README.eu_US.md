@@ -1,8 +1,8 @@
-# uwgit
+# wasm-git
 
 [简体中文](README.zh_CN.md) · [Documentation](documents/README.eu_US.md)
 
-uwgit is a native WebAssembly audit and version-history system. It preserves the
+wasm-git is a native WebAssembly audit and version-history system. It preserves the
 original binary and explains changes without converting it through WAT or
 replacing it with a normalized representation. The command-line client is
 `wasm-git`; the independently selectable server is `wasm-git-server`.
@@ -30,6 +30,22 @@ The [white paper](documents/WHITEPAPER.eu_US.md) explains the evidence model and
 implementation boundaries. The [user manual](documents/USER_MANUAL.eu_US.md)
 covers practical workflows; the [server manual](documents/SERVER_ADMINISTRATION.eu_US.md)
 covers deployment and recovery.
+
+## Local Web GUI
+
+The independent Python interface supports English / 简体中文, repository review
+and operations, complete native command access, and separate server supervision.
+Missing native executables are built from this checkout using Cargo.
+
+```sh
+python3 webgui/client.py start --open
+python3 webgui/server.py start --root /path/to/hosting-root --open
+python3 webgui/client.py stop
+python3 webgui/server.py stop
+```
+
+See the [Web GUI manual](documents/WEBGUI.eu_US.md) for audit previews,
+signing/PR command forms, managed services, limits and lifecycle controls.
 
 ## Build the client, server, or both
 
@@ -76,9 +92,9 @@ A section report is not a whole-module patch and does not recompute cross-sectio
 call, export, or signature dependencies. Use a complete diff for those questions.
 
 ```sh
-wasm-git patch old.wasm new.wasm --output change.uwgp
-wasm-git apply old.wasm change.uwgp --check
-wasm-git apply old.wasm change.uwgp --output restored.wasm
+wasm-git patch old.wasm new.wasm --output change.wgp
+wasm-git apply old.wasm change.wgp --check
+wasm-git apply old.wasm change.wgp --output restored.wasm
 ```
 
 Patch and export destinations must be new files. Application verifies the source
@@ -108,7 +124,7 @@ references. Deleting the source pathname does not remove the fork's hard links.
 ## Deploy a repository service
 
 ```sh
-wasm-git-server --root /srv/uwgit --listen 127.0.0.1:9419
+wasm-git-server --root /srv/wasm-git --listen 127.0.0.1:9419
 ```
 
 Create repositories under the service root first. HTTP is read-only by default.
@@ -134,7 +150,7 @@ reason. Symbols and similarity scores are evidence for review, not proof of
 source-code intent, authorship, or behavioral equivalence.
 
 Repository state uses native binary formats. JSON is generated for users or
-imported as explicit external configuration. uwgit does not read Git object
+imported as explicit external configuration. wasm-git does not read Git object
 stores, speak Git wire protocols, or migrate superseded pre-release formats.
 See the manuals for unsupported Git options and resource limits.
 

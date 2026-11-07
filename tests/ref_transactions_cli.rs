@@ -14,7 +14,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
-            "uwgit-ref-transactions-{}-{}",
+            "wasm-git-ref-transactions-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -122,24 +122,24 @@ fn one_snapshot_creates_updates_deletes_verifies_and_preserves_wasm_index_and_he
     let (first, second) = seed(&root);
     ok(&["branch", p(&root), "topic", &first]);
     ok(&["tag", p(&root), "old", &first]);
-    let index = fs::read(root.join(".uwgit/index")).unwrap();
+    let index = fs::read(root.join(".wasm-git/index")).unwrap();
     let bytes = fs::read(root.join("a.wasm")).unwrap();
-    let before: Vec<Value> = native::log_value(&fs::read(root.join(".uwgit/reflog")).unwrap());
+    let before: Vec<Value> = native::log_value(&fs::read(root.join(".wasm-git/reflog")).unwrap());
     assert!(success(batch(&root, &format!("update refs/heads/topic HEAD {first}\ncreate refs/tags/release topic\ndelete refs/tags/old {first}\nverify refs/heads/main {second}\nverify refs/heads/absent\n"))).is_empty());
     assert_eq!(ok(&["rev-parse", p(&root), "topic"]), second);
     // Every operand resolves against the original snapshot, including topic.
     assert_eq!(ok(&["rev-parse", p(&root), "release"]), first);
-    assert!(!root.join(".uwgit/tags/old").exists());
-    assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), index);
+    assert!(!root.join(".wasm-git/tags/old").exists());
+    assert_eq!(fs::read(root.join(".wasm-git/index")).unwrap(), index);
     assert_eq!(fs::read(root.join("a.wasm")).unwrap(), bytes);
     assert_eq!(ok(&["rev-parse", p(&root), "HEAD"]), second);
-    let after: Vec<Value> = native::log_value(&fs::read(root.join(".uwgit/reflog")).unwrap());
+    let after: Vec<Value> = native::log_value(&fs::read(root.join(".wasm-git/reflog")).unwrap());
     assert_eq!(&after[..before.len()], before);
     assert_eq!(after.len(), before.len() + 3);
     assert!(after[before.len()..]
         .iter()
         .all(|entry| entry["operation"] == "atomic fixture"));
-    assert!(!root.join(".uwgit/ref-transaction.bin").exists());
+    assert!(!root.join(".wasm-git/ref-transaction.bin").exists());
     ok(&["fsck", p(&root)]);
 }
 
@@ -225,7 +225,7 @@ fn nul_fields_c_quoting_and_zero_updates_use_native_ids() {
     );
     assert_eq!(ok(&["rev-parse", p(&root), "release/one"]), second);
     success(batch(&root, &format!("update refs/tags/release/one {zero} {second}\nupdate refs/tags/second {zero} {second}\n")));
-    assert!(!root.join(".uwgit/tags/release").exists());
+    assert!(!root.join(".wasm-git/tags/release").exists());
 }
 
 #[test]
@@ -299,8 +299,8 @@ fn prepare_acknowledgement_holds_writer_lock_until_commit_and_never_publishes_ea
         rx.recv_timeout(Duration::from_secs(10)).unwrap(),
         "prepare: ok"
     );
-    assert!(!root.join(".uwgit/tags/held").exists());
-    assert!(root.join(".uwgit/write.lock").is_file());
+    assert!(!root.join(".wasm-git/tags/held").exists());
+    assert!(root.join(".wasm-git/write.lock").is_file());
     assert!(!execute(&["show-ref", p(&root)], &[]).status.success());
     assert!(
         !execute(&["update-ref", p(&root), "refs/tags/racer", &second], &[])
@@ -320,7 +320,7 @@ fn prepare_acknowledgement_holds_writer_lock_until_commit_and_never_publishes_ea
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(!root.join(".uwgit/write.lock").exists());
+    assert!(!root.join(".wasm-git/write.lock").exists());
     assert_eq!(ok(&["rev-parse", p(&root), "held"]), second);
 }
 
@@ -332,7 +332,7 @@ fn prefix_replacements_and_multiple_explicit_transactions_keep_independent_lease
     ok(&["branch", p(&root), "topic", &first]);
     success(batch(&root, &format!("start\ncreate refs/heads/topic/sub {second}\ndelete refs/heads/topic {first}\ncommit\nstart\ncreate refs/heads/topic {first}\ndelete refs/heads/topic/sub {second}\nprepare\ncommit\n")));
     assert_eq!(ok(&["rev-parse", p(&root), "topic"]), first);
-    assert!(root.join(".uwgit/refs/topic").is_file());
+    assert!(root.join(".wasm-git/refs/topic").is_file());
     let output = batch(&root, &format!("start\ncreate refs/tags/committed {first}\ncommit\nstart\nupdate refs/heads/topic {second} {second}\ncommit\n"));
     assert!(!output.status.success());
     assert_eq!(ok(&["rev-parse", p(&root), "committed"]), first);
@@ -377,8 +377,8 @@ fn partial_batches_publish_only_accepted_refs_and_preserve_original_wasm_work_an
     );
     assert_eq!(ok(&["rev-parse", p(&root), "topic"]), second);
     assert_eq!(ok(&["rev-parse", p(&root), "release"]), first);
-    assert!(!root.join(".uwgit/tags/obsolete").exists());
-    for path in [".uwgit/index", "a.wasm", ".uwgit/HEAD"] {
+    assert!(!root.join(".wasm-git/tags/obsolete").exists());
+    for path in [".wasm-git/index", "a.wasm", ".wasm-git/HEAD"] {
         assert_eq!(
             fs::read(root.join(path)).unwrap(),
             original
@@ -388,7 +388,7 @@ fn partial_batches_publish_only_accepted_refs_and_preserve_original_wasm_work_an
                 .1
         );
     }
-    let changes = native::log_value(&fs::read(root.join(".uwgit/reflog")).unwrap())
+    let changes = native::log_value(&fs::read(root.join(".wasm-git/reflog")).unwrap())
         .into_iter()
         .filter(|entry| entry["operation"] == "partial fixture")
         .collect::<Vec<_>>();
@@ -396,7 +396,7 @@ fn partial_batches_publish_only_accepted_refs_and_preserve_original_wasm_work_an
     assert!(changes
         .iter()
         .all(|entry| entry["reference"] != "refs/heads/missing"));
-    assert!(!root.join(".uwgit/ref-transaction.bin").exists());
+    assert!(!root.join(".wasm-git/ref-transaction.bin").exists());
     ok(&["fsck", p(&root)]);
 }
 
@@ -586,16 +586,18 @@ fn corruption_and_system_failures_are_never_downgraded_to_partial_rejections() {
         let (_, second) = seed(&root);
         match damage {
             "registry" => {
-                fs::write(root.join(".uwgit/worktrees.bin"), b"corrupt registry").unwrap()
+                fs::write(root.join(".wasm-git/worktrees.bin"), b"corrupt registry").unwrap()
             }
-            "object" => {
-                fs::write(root.join(".uwgit/objects").join(&second), b"corrupt object").unwrap()
-            }
-            "journal" => fs::create_dir(root.join(".uwgit/ref-transaction.bin")).unwrap(),
-            "lock" => fs::write(root.join(".uwgit/write.lock"), b"external writer\n").unwrap(),
+            "object" => fs::write(
+                root.join(".wasm-git/objects").join(&second),
+                b"corrupt object",
+            )
+            .unwrap(),
+            "journal" => fs::create_dir(root.join(".wasm-git/ref-transaction.bin")).unwrap(),
+            "lock" => fs::write(root.join(".wasm-git/write.lock"), b"external writer\n").unwrap(),
             _ => {
-                fs::remove_file(root.join(".uwgit/reflog")).unwrap();
-                fs::create_dir(root.join(".uwgit/reflog")).unwrap();
+                fs::remove_file(root.join(".wasm-git/reflog")).unwrap();
+                fs::create_dir(root.join(".wasm-git/reflog")).unwrap();
             }
         }
         let before = image(&root);
@@ -622,11 +624,11 @@ fn partial_worktree_protection_rejects_occupied_refs_but_keeps_unrelated_success
     let zero = "0".repeat(64);
     ok(&["branch", p(&root), "topic", &first]);
     ok(&["worktree", p(&root), "add", p(&peer), "topic"]);
-    let peer_index = fs::read(peer.join(".uwgit/index")).unwrap();
+    let peer_index = fs::read(peer.join(".wasm-git/index")).unwrap();
     let peer_bytes = fs::read(peer.join("a.wasm")).unwrap();
     assert_eq!(success(partial(&root, &format!("create refs/tags/accepted {second}\nupdate refs/heads/topic {second} {first}\nupdate refs/heads/main {first} {second}\n"), false)), format!("rejected refs/heads/main {first} {second} reference is checked out in a worktree\nrejected refs/heads/topic {second} {first} reference is checked out in a worktree\n").into_bytes());
     assert_eq!(ok(&["rev-parse", p(&peer), "HEAD"]), first);
-    assert_eq!(fs::read(peer.join(".uwgit/index")).unwrap(), peer_index);
+    assert_eq!(fs::read(peer.join(".wasm-git/index")).unwrap(), peer_index);
     assert_eq!(fs::read(peer.join("a.wasm")).unwrap(), peer_bytes);
     assert_eq!(ok(&["rev-parse", p(&root), "accepted"]), second);
     assert_eq!(
@@ -731,8 +733,8 @@ fn partial_prepare_holds_the_shared_lock_and_reports_rejections_only_after_commi
             "prepare: ok"
         );
         assert!(rx.try_recv().is_err());
-        assert!(root.join(".uwgit/write.lock").is_file());
-        assert!(!root.join(".uwgit/tags/accepted").exists());
+        assert!(root.join(".wasm-git/write.lock").is_file());
+        assert!(!root.join(".wasm-git/tags/accepted").exists());
         assert!(!execute(&["show-ref", p(&root)], &[]).status.success());
         if ending != "eof" {
             writeln!(input, "{ending}").unwrap();
@@ -760,10 +762,10 @@ fn partial_prepare_holds_the_shared_lock_and_reports_rejections_only_after_commi
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        assert!(!root.join(".uwgit/write.lock").exists());
-        assert!(!root.join(".uwgit/ref-transaction.bin").exists());
+        assert!(!root.join(".wasm-git/write.lock").exists());
+        assert!(!root.join(".wasm-git/ref-transaction.bin").exists());
         assert_eq!(
-            root.join(".uwgit/tags/accepted").exists(),
+            root.join(".wasm-git/tags/accepted").exists(),
             ending == "commit"
         );
         assert!(rx.recv_timeout(Duration::from_secs(10)).is_err());

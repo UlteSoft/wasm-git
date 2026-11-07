@@ -19,7 +19,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new(label: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
-            "uwgit-porcelain-{label}-{}-{}",
+            "wasm-git-porcelain-{label}-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -96,7 +96,7 @@ fn metadata(temp: &Temp) -> BTreeMap<PathBuf, Vec<u8>> {
         }
     }
     let mut result = BTreeMap::new();
-    visit(&temp.0, &temp.0.join(".uwgit"), &mut result);
+    visit(&temp.0, &temp.0.join(".wasm-git"), &mut result);
     result
 }
 
@@ -303,7 +303,7 @@ fn invalid_paths_and_corrupt_index_leave_repository_bytes_unchanged() {
     for path in [
         "../outside.wasm",
         "/tmp/outside.wasm",
-        ".uwgit/format",
+        ".wasm-git/format",
         "././module.wasm",
         "x/../module.wasm",
         "x\\module.wasm",
@@ -312,12 +312,12 @@ fn invalid_paths_and_corrupt_index_leave_repository_bytes_unchanged() {
         failure(&["add", temp.root(), path]);
         assert_eq!(metadata(&temp), before);
     }
-    let inside = temp.path(".uwgit/tmp/new-output");
+    let inside = temp.path(".wasm-git/tmp/new-output");
     failure(&["restore", temp.root(), "HEAD", "--output", &inside]);
     assert_eq!(metadata(&temp), before);
-    let index_path = temp.path(".uwgit/index");
+    let index_path = temp.path(".wasm-git/index");
     // The encoded length exceeds both payload and 32-bit address space.
-    let mut corrupt = b"UWGITIDX\x01".to_vec();
+    let mut corrupt = b"WASMGIDX\x01".to_vec();
     corrupt.extend_from_slice(&u64::MAX.to_le_bytes());
     corrupt.extend_from_slice(&8u64.to_le_bytes());
     corrupt.extend_from_slice(A);
@@ -359,7 +359,7 @@ fn config_is_literal_validated_data_and_rejects_noncanonical_metadata() {
     success(&["config", temp.root(), "--unset", "user.name"]);
     failure(&["config", temp.root(), "user.name"]);
     fs::write(
-        temp.path(".uwgit/config"),
+        temp.path(".wasm-git/config"),
         b"{\"format\":1,\"values\":{\"user.name\":\"a\",\"user.name\":\"b\"}}\n",
     )
     .unwrap();
@@ -650,11 +650,11 @@ fn symlink_tracking_and_metadata_redirection_are_refused() {
     symlink(&outside.0, temp.path("linked-dir")).unwrap();
     failure(&["add", temp.root(), "linked-dir/module.wasm"]);
     assert_eq!(metadata(&temp), before);
-    fs::remove_file(temp.path(".uwgit/index")).unwrap();
-    symlink(outside.path("module.wasm"), temp.path(".uwgit/index")).unwrap();
+    fs::remove_file(temp.path(".wasm-git/index")).unwrap();
+    symlink(outside.path("module.wasm"), temp.path(".wasm-git/index")).unwrap();
     failure(&["add", temp.root(), "module.wasm"]);
     assert_eq!(fs::read(outside.path("module.wasm")).unwrap(), B);
-    assert!(fs::symlink_metadata(temp.path(".uwgit/index"))
+    assert!(fs::symlink_metadata(temp.path(".wasm-git/index"))
         .unwrap()
         .file_type()
         .is_symlink());
@@ -670,18 +670,24 @@ fn metadata_staging_directory_symlink_is_rejected_before_any_write() {
     temp.commit("base");
     let outside = Temp::new("metadata-outside");
     outside.write(C);
-    let original_index = fs::read(temp.path(".uwgit/index")).unwrap();
-    let original_head = fs::read(temp.path(".uwgit/HEAD")).unwrap();
-    fs::remove_dir(temp.path(".uwgit/tmp")).unwrap();
-    symlink(&outside.0, temp.path(".uwgit/tmp")).unwrap();
+    let original_index = fs::read(temp.path(".wasm-git/index")).unwrap();
+    let original_head = fs::read(temp.path(".wasm-git/HEAD")).unwrap();
+    fs::remove_dir(temp.path(".wasm-git/tmp")).unwrap();
+    symlink(&outside.0, temp.path(".wasm-git/tmp")).unwrap();
     temp.write(B);
     failure(&["add", temp.root(), "module.wasm"]);
     failure(&["config", temp.root(), "user.name", "must not write"]);
-    assert_eq!(fs::read(temp.path(".uwgit/index")).unwrap(), original_index);
-    assert_eq!(fs::read(temp.path(".uwgit/HEAD")).unwrap(), original_head);
+    assert_eq!(
+        fs::read(temp.path(".wasm-git/index")).unwrap(),
+        original_index
+    );
+    assert_eq!(
+        fs::read(temp.path(".wasm-git/HEAD")).unwrap(),
+        original_head
+    );
     assert_eq!(fs::read(outside.path("module.wasm")).unwrap(), C);
     assert_eq!(fs::read_dir(&outside.0).unwrap().count(), 1);
-    assert!(!Path::new(&temp.path(".uwgit/index.lock")).exists());
+    assert!(!Path::new(&temp.path(".wasm-git/index.lock")).exists());
 }
 
 #[test]

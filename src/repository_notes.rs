@@ -47,8 +47,9 @@ fn encode_note(note: &Note) -> RepositoryResult<Vec<u8>> {
     require_id(&note.target)?;
     let payload = crate::binary::encode(note).map_err(|error| error.to_string())?;
     let mut custom = Vec::new();
-    push_u32(14, &mut custom);
-    custom.extend_from_slice(b"uwgit.notes.v1");
+    const NAME: &[u8] = b"wasm-git.notes.v1";
+    push_u32(NAME.len() as u32, &mut custom);
+    custom.extend_from_slice(NAME);
     custom.extend_from_slice(&payload);
     let mut module = WASM_HEADER.to_vec();
     module.push(0);
@@ -69,7 +70,7 @@ fn decode_note(bytes: &[u8]) -> RepositoryResult<Note> {
             }
             | wasmparser::Payload::End(_) => {}
             wasmparser::Payload::CustomSection(reader)
-                if reader.name() == "uwgit.notes.v1" && payload.is_none() =>
+                if reader.name() == "wasm-git.notes.v1" && payload.is_none() =>
             {
                 payload = Some(reader.data())
             }
@@ -99,7 +100,7 @@ pub(super) fn retention_roots(snapshot: &Snapshot) -> RepositoryResult<Vec<Strin
         .manifest
         .refs
         .iter()
-        .filter(|(name, _)| name.starts_with("uwgit-notes-"))
+        .filter(|(name, _)| name.starts_with("wasm-git-notes-"))
         .map(|(_, id)| id.clone());
     let reachable = reachable_from_roots(roots, &snapshot.objects)?;
     Ok(reachable
@@ -115,7 +116,7 @@ pub(super) fn retention_roots(snapshot: &Snapshot) -> RepositoryResult<Vec<Strin
 impl Repository {
     pub fn notes(&self, namespace: &str, request: NotesRequest) -> RepositoryResult<Value> {
         validate_ref_name(namespace)?;
-        let branch = format!("uwgit-notes-{namespace}");
+        let branch = format!("wasm-git-notes-{namespace}");
         validate_ref_name(&branch)?;
         let _lock = self.lock()?;
         let snapshot = self.snapshot()?;

@@ -31,7 +31,7 @@ mod index_restore;
 mod replay_worktree;
 pub use replay_worktree::{replay_control, replay_start, try_replay_control};
 
-const MAGIC: &[u8; 9] = b"UWGITIDX\x06";
+const MAGIC: &[u8; 9] = b"WASMGIDX\x06";
 #[cfg(test)]
 const WASM: &[u8; 8] = b"\0asm\x01\0\0\0";
 const USAGE: &str = "tree commands: add DIR [-A|-u] [-f] [-n] [-N|--intent-to-add] [--sparse] [--] PATHSPEC...; status DIR; commit DIR [-a|--all] [--amend] [--allow-empty] [-m MESSAGE]; rm DIR [--cached] [-f] [--] [FILE...]; mv DIR [--] OLD NEW; restore DIR [--source REV] [--staged] [--worktree|-W] [--overlay] [--ignore-skip-worktree-bits] [--output NEW_FILE] [--] [PATH...]; restore DIR [--ours|--theirs|--merge|-m|--ignore-unmerged] [--ignore-skip-worktree-bits] -- PATHSPEC...; reset DIR [--soft|--mixed|--hard] [REV]; reset DIR [REV] -- PATH...; branch DIR [NAME [REV]|-d NAME|-D NAME|-m [OLD] NEW|-M [OLD] NEW|-c [OLD] NEW|-C [OLD] NEW|-f NAME [REV]|-r|-a|-vv|-u REMOTE/BRANCH [LOCAL_BRANCH]|--set-upstream-to REMOTE/BRANCH [LOCAL_BRANCH]|--unset-upstream [LOCAL_BRANCH]]; switch DIR NAME|-; switch DIR -c NAME [REV]; switch DIR --detach [REV]; switch DIR --orphan NAME; ls-files DIR; stash DIR [push [-m MESSAGE]|list|apply ID|pop ID|drop ID]; config DIR [KEY [VALUE]|--unset KEY]; tag DIR [NAME [REV]|-d NAME]; reflog DIR; rev-parse DIR REV (including @{upstream}, @{u}, NAME@{upstream}, NAME@{u}); cat-file DIR REV";
@@ -563,7 +563,7 @@ fn read_record<T: Serialize + DeserializeOwned>(path: &Path) -> Result<Option<T>
 impl State {
     fn open(root: &str) -> Result<Self, String> {
         let repo = Repository::open(root)?;
-        let metadata = repo.root.join(".uwgit");
+        let metadata = repo.root.join(".wasm-git");
         Ok(Self { repo, metadata })
     }
 
@@ -695,7 +695,7 @@ impl State {
         if let Some(bytes) = replacement {
             self.create_parents(path)?;
             let temporary = parent.join(format!(
-                ".uwgit-worktree-{}-{}.tmp",
+                ".wasm-git-worktree-{}-{}.tmp",
                 crate::platform_fs::process_id(),
                 SEQUENCE.fetch_add(1, Ordering::Relaxed)
             ));
@@ -1055,7 +1055,7 @@ pub fn remove_linked_worktree(source: &str, target: &str, force: bool) -> Result
                 return Err("worktree remove refuses symbolic links or special files".into());
             }
             if kind.is_dir() {
-                if full.join(".uwgit").exists() || full.join(".git").exists() {
+                if full.join(".wasm-git").exists() || full.join(".git").exists() {
                     return Err("worktree contains a nested repository".into());
                 }
                 directories.push(full);
@@ -1090,7 +1090,7 @@ pub fn move_linked_worktree(source: &str, target: &str, new_path: &str) -> Resul
     let result = source.move_linked_worktree(&state.repo.root, Path::new(new_path));
     if !state.repo.root.exists() {
         if let Ok(moved) = crate::platform_fs::canonicalize(new_path) {
-            lock.0 = moved.join(".uwgit/index.lock");
+            lock.0 = moved.join(".wasm-git/index.lock");
         }
     }
     json_text(&result?)
@@ -1338,7 +1338,7 @@ fn scan_untracked(state: &State, tracked: &BTreeSet<String>) -> Result<Vec<Strin
                 .to_str()
                 .ok_or("non-UTF-8 worktree path")?
                 .to_owned();
-            if p.split('/').any(|v| v.eq_ignore_ascii_case(".uwgit")) {
+            if p.split('/').any(|v| v.eq_ignore_ascii_case(".wasm-git")) {
                 continue;
             }
             let kind = e
@@ -1946,7 +1946,7 @@ pub fn assert_worktree_target_safe(
     validate_files(files)?;
     let state = State {
         repo: repo.clone(),
-        metadata: repo.root.join(".uwgit"),
+        metadata: repo.root.join(".wasm-git"),
     };
     if let Some(i) = state.index()? {
         require_resolved_index(&i)?;
@@ -1961,7 +1961,7 @@ pub fn assert_worktree_target_safe(
 pub fn worktree_legacy_path(repo: &Repository) -> Result<Option<String>, String> {
     let state = State {
         repo: repo.clone(),
-        metadata: repo.root.join(".uwgit"),
+        metadata: repo.root.join(".wasm-git"),
     };
     Ok(state.index()?.and_then(|index| index.legacy_path))
 }
@@ -1971,7 +1971,7 @@ pub fn assert_worktree_revision_safe(
 ) -> Result<(), String> {
     let state = State {
         repo: repo.clone(),
-        metadata: repo.root.join(".uwgit"),
+        metadata: repo.root.join(".wasm-git"),
     };
     let Some(index) = state.index()? else {
         return Ok(());

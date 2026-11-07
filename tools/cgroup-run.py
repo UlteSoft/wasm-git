@@ -17,7 +17,7 @@ def main():
     if not command:
         parser.error("provide a command after --")
     root = Path(__file__).resolve().parents[1]
-    name = f"uwgit-test-{os.getpid()}-{time.time_ns()}"
+    name = f"wasm-git-test-{os.getpid()}-{time.time_ns()}"
     scratch = root / ".tmp" / name
     scratch.mkdir(parents=True)
     temporary = scratch / "temp"

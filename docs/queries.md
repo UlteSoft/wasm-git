@@ -28,7 +28,7 @@ wasm-git count-objects DIR [-v|--verbose] [-H|--human-readable]
 
 format 支持 `%(refname)`、`%(objectname)`、`%(objecttype)`、`%(objectsize)`、`%(HEAD)` 和 `%(upstream)`；当前 branch 的 HEAD atom 为 `*`，其他为一个空格。upstream 输出完整 `refs/remotes/REMOTE/BRANCH`，未配置时为空。refname/upstream 支持 `:short`、`:lstrip=N`／`:strip=N` 和 `:rstrip=N`。正数从指定端剥离组件，负数表示保留该数量的另一端组件，超出组件数时分别得到空串或完整名称。N 为有符号 64 位整数，最小负值及超过 32 位范围的值在双架构上有相同的有界行为。
 
-short 按 uwgit 的实际解析规则检查完整快照中的 branches、tags、tracking 和已存提交前缀；名称筛选和图筛选不会让被隐藏的歧义消失。若简称仍有歧义，输出完整 `refs/...`，不输出 uwgit 尚不能解析的 Git `heads/...` 等缩写。已失效 upstream 仍有配置名称，不能缩写成另一个本地分支。不会从工作文件或索引生成引用。
+short 按 wasm-git 的实际解析规则检查完整快照中的 branches、tags、tracking 和已存提交前缀；名称筛选和图筛选不会让被隐藏的歧义消失。若简称仍有歧义，输出完整 `refs/...`，不输出 wasm-git 尚不能解析的 Git `heads/...` 等缩写。已失效 upstream 仍有配置名称，不能缩写成另一个本地分支。不会从工作文件或索引生成引用。
 
 支持 `%%` 与 ASCII `%00` 至 `%7f`，可含 NUL，每行末尾仍加 LF；其他文字可直接写 UTF-8。`--omit-empty` 省略格式展开为空的整行，空格或 NUL 均不算空串。未知 atom、modifier 或非 ASCII hex escape 明确拒绝，format 总长限 64 KiB。JSON 与 format/omit-empty 互斥。sort 支持上述 atom 和名称 modifier；objectsize 按实际 payload 字节数值排序，其余为字符串，可加 `-` 降序，多次 sort 的最后一个是主键。默认按完整 refname，等值保持原全名次序。count 是无符号 64 位整数，0 不限行数，超出实际行数时有界截取；在格式与 omit-empty 之前计数。引用查询的 JSON 仍为 `{schema_version, head, head_tip, refs:[...]}`。
 

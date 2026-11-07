@@ -39,7 +39,7 @@ impl Index {
         }
     }
     pub fn bytes(&self) -> Vec<u8> {
-        [b"UWGITIDX\x06".as_slice(), &binary::encode(self).unwrap()].concat()
+        [b"WASMGIDX\x06".as_slice(), &binary::encode(self).unwrap()].concat()
     }
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -81,7 +81,7 @@ pub fn pending_value(bytes: &[u8]) -> Value {
 }
 pub fn index_value(bytes: &[u8]) -> Value {
     serde_json::to_value(
-        binary::decode::<Index>(bytes.strip_prefix(b"UWGITIDX\x06").unwrap()).unwrap(),
+        binary::decode::<Index>(bytes.strip_prefix(b"WASMGIDX\x06").unwrap()).unwrap(),
     )
     .unwrap()
 }
@@ -210,7 +210,7 @@ pub fn manifest(
 
 /// Independent binary control fixture, deliberately not the production encoder.
 pub fn reference(value: &str) -> Vec<u8> {
-    let mut out = b"UWGREF\0\x01".to_vec();
+    let mut out = b"WGTREF\0\x01".to_vec();
     if value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit()) {
         out.push(1);
         for i in (0..64).step_by(2) {

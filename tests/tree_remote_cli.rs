@@ -26,7 +26,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
-            "uwgit-tree-remote-{}-{}",
+            "wasm-git-tree-remote-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -45,9 +45,9 @@ impl Drop for Temp {
 fn command(args: &[&str]) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_wasm-git"));
     cmd.args(args)
-        .env_remove("UWGIT_SSH_PROGRAM")
-        .env_remove("UWGIT_REMOTE_PROGRAM")
-        .env_remove("UWGIT_REMOTE_TOKEN");
+        .env_remove("WASM_GIT_SSH_PROGRAM")
+        .env_remove("WASM_GIT_REMOTE_PROGRAM")
+        .env_remove("WASM_GIT_REMOTE_TOKEN");
     cmd
 }
 fn output(result: Output) -> String {
@@ -124,14 +124,14 @@ fn metadata(repository: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
         }
     }
     let mut result = BTreeMap::new();
-    visit(repository, &repository.join(".uwgit"), &mut result);
+    visit(repository, &repository.join(".wasm-git"), &mut result);
     result
 }
 fn rpc_packet(operation: &Value, payload: &[u8]) -> Vec<u8> {
     native::packet("project", operation.clone(), payload)
 }
 fn rpc_metadata(packet: &[u8]) -> Value {
-    assert_eq!(&packet[..8], b"UWGRPC02");
+    assert_eq!(&packet[..8], b"WGTRPC02");
     let length = u32::from_be_bytes(packet[8..12].try_into().unwrap()) as usize;
     assert_eq!(u64::from_be_bytes(packet[12..20].try_into().unwrap()), 0);
     assert_eq!(packet.len(), 20 + length);
@@ -208,7 +208,7 @@ impl Server {
     fn run(&self, args: &[&str]) -> String {
         output(
             command(args)
-                .env("UWGIT_REMOTE_TOKEN", TOKEN)
+                .env("WASM_GIT_REMOTE_TOKEN", TOKEN)
                 .output()
                 .unwrap(),
         )
@@ -222,7 +222,7 @@ impl Server {
         stream
             .set_write_timeout(Some(Duration::from_secs(5)))
             .unwrap();
-        write!(stream, "POST /v1/uwgit HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {TOKEN}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", packet.len()).unwrap();
+        write!(stream, "POST /v1/wasm-git HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {TOKEN}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", packet.len()).unwrap();
         stream.write_all(&packet).unwrap();
         let mut response = Vec::new();
         stream.read_to_end(&mut response).unwrap();
@@ -410,7 +410,7 @@ fn http_bundle_preserves_legacy_parent_bytes_and_explicit_tree_anchor() {
 }
 
 fn object(kind: u8, payload: &[u8]) -> (String, Vec<u8>) {
-    let mut encoded = b"UWGO\0\0\0\x02".to_vec();
+    let mut encoded = b"WGTO\0\0\0\x02".to_vec();
     encoded.push(kind);
     encoded.extend_from_slice(&(payload.len() as u64).to_be_bytes());
     encoded.extend_from_slice(payload);
@@ -452,7 +452,7 @@ fn tree_bundle(
     let mut objects: BTreeMap<_, _> = blobs.iter().cloned().collect();
     objects.insert(tree_id, tree);
     objects.insert(commit_id.clone(), commit);
-    let mut bundle = b"UWGB\0\0\0\x02".to_vec();
+    let mut bundle = b"WGTB\0\0\0\x02".to_vec();
     bundle.extend_from_slice(&(manifest.len() as u64).to_be_bytes());
     bundle.extend_from_slice(&manifest);
     bundle.extend_from_slice(&(objects.len() as u64).to_be_bytes());
@@ -543,14 +543,14 @@ fn ssh_client_stdio_roundtrips_multi_module_and_empty_tree_bundles() {
     let temp = Temp::new();
     let (work, upstream, initial) = seed(&temp);
     let shim = temp.path("ssh-program");
-    fs::write(&shim, b"#!/bin/sh\nset -eu\nexec \"$UWGIT_TREE_TEST_BINARY\" server --stdio --root \"$UWGIT_TREE_TEST_ROOT\"\n").unwrap();
+    fs::write(&shim, b"#!/bin/sh\nset -eu\nexec \"$WASM_GIT_TREE_TEST_BINARY\" server --stdio --root \"$WASM_GIT_TREE_TEST_ROOT\"\n").unwrap();
     fs::set_permissions(&shim, fs::Permissions::from_mode(0o700)).unwrap();
     let ssh = |args: &[&str]| {
         output(
             command(args)
-                .env("UWGIT_SSH_PROGRAM", &shim)
-                .env("UWGIT_TREE_TEST_BINARY", env!("CARGO_BIN_EXE_wasm-git"))
-                .env("UWGIT_TREE_TEST_ROOT", temp.path("repositories"))
+                .env("WASM_GIT_SSH_PROGRAM", &shim)
+                .env("WASM_GIT_TREE_TEST_BINARY", env!("CARGO_BIN_EXE_wasm-git"))
+                .env("WASM_GIT_TREE_TEST_ROOT", temp.path("repositories"))
                 .output()
                 .unwrap(),
         )
@@ -630,7 +630,7 @@ fn resolution_worktree(repository: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> 
         for entry in fs::read_dir(directory).unwrap() {
             let entry = entry.unwrap();
             let file = entry.path();
-            if file == root.join(".uwgit") {
+            if file == root.join(".wasm-git") {
                 continue;
             }
             let kind = entry.file_type().unwrap();
@@ -827,7 +827,7 @@ fn remote_resolution_scenario(
     }
     let (their_tip, our_tip) = (tip(&left), tip(&right));
     transfer(&["push", path(&left)]);
-    let index_before = fs::read(right.join(".uwgit/index")).unwrap();
+    let index_before = fs::read(right.join(".wasm-git/index")).unwrap();
     let files_before = resolution_worktree(&right);
     let conflict = network(&[
         "pull",
@@ -855,13 +855,16 @@ fn remote_resolution_scenario(
             .any(|row| row["path"] == name && row["status"] == "conflict"));
     }
     assert_eq!(tip(&right), our_tip);
-    assert_eq!(fs::read(right.join(".uwgit/index")).unwrap(), index_before);
+    assert_eq!(
+        fs::read(right.join(".wasm-git/index")).unwrap(),
+        index_before
+    );
     assert_eq!(resolution_worktree(&right), files_before);
 
     transfer(&["push", path(&right), "origin", "HEAD:review_right"]);
     let no_index = temp.path("no-index-resolution");
     transfer(&["clone", url, path(&no_index)]);
-    assert!(!no_index.join(".uwgit/index").exists());
+    assert!(!no_index.join(".wasm-git/index").exists());
     assert_eq!(
         run(&["rev-parse", path(&no_index), "review_right"]).trim(),
         our_tip
@@ -881,7 +884,7 @@ fn remote_resolution_scenario(
     .unwrap();
     assert_eq!(rejected.status.code(), Some(1));
     assert_eq!(metadata(&no_index), no_index_before);
-    assert!(!no_index.join(".uwgit/index").exists());
+    assert!(!no_index.join(".wasm-git/index").exists());
 
     let unknown = [HEADER, &[14, 2, 0xaa, 0xbb]].concat();
     let custom = [HEADER, &[0, 9, 4, b'n', b'a', b'm', b'e', 1, 2, 0x80, 0]].concat();
@@ -917,7 +920,7 @@ fn remote_resolution_scenario(
     // The reviewed index, not a later dirty worktree, is the supplied result.
     write(&right, B, &wasm(99));
     fs::write(right.join("local-note"), b"untracked caller bytes").unwrap();
-    let supplied_index = fs::read(right.join(".uwgit/index")).unwrap();
+    let supplied_index = fs::read(right.join(".wasm-git/index")).unwrap();
     let dirty_worktree = resolution_worktree(&right);
     let before_rejected = metadata(&right);
     let rejected = command(&[
@@ -952,7 +955,7 @@ fn remote_resolution_scenario(
         json!([our_tip, their_tip])
     );
     assert_eq!(
-        fs::read(right.join(".uwgit/index")).unwrap(),
+        fs::read(right.join(".wasm-git/index")).unwrap(),
         supplied_index
     );
     assert_eq!(resolution_worktree(&right), dirty_worktree);
@@ -985,11 +988,11 @@ fn remote_resolution_scenario(
             .any(|row| row["path"] == name && row["status"] == status));
     }
     resolution_profiles(upstream, &merged_tip);
-    let left_index = fs::read(left.join(".uwgit/index")).unwrap();
+    let left_index = fs::read(left.join(".wasm-git/index")).unwrap();
     let left_worktree = resolution_worktree(&left);
     transfer(&["fetch", path(&left)]);
     assert_eq!(tip(&left), their_tip);
-    assert_eq!(fs::read(left.join(".uwgit/index")).unwrap(), left_index);
+    assert_eq!(fs::read(left.join(".wasm-git/index")).unwrap(), left_index);
     assert_eq!(resolution_worktree(&left), left_worktree);
     transfer(&[
         "pull",
@@ -1081,7 +1084,7 @@ fn remote_resolution_scenario(
         GC_FILE,
         FUTURE_FILE,
     ]);
-    let empty_index = fs::read(right.join(".uwgit/index")).unwrap();
+    let empty_index = fs::read(right.join(".wasm-git/index")).unwrap();
     let retained_worktree = resolution_worktree(&right);
     let empty_report = value(&[
         "merge",
@@ -1105,18 +1108,21 @@ fn remote_resolution_scenario(
         value(&["show", path(&right), "HEAD"])["parents"],
         json!([empty_our_tip, empty_their_tip])
     );
-    assert_eq!(fs::read(right.join(".uwgit/index")).unwrap(), empty_index);
+    assert_eq!(
+        fs::read(right.join(".wasm-git/index")).unwrap(),
+        empty_index
+    );
     assert_eq!(resolution_worktree(&right), retained_worktree);
     run(&["tag", path(&right), "empty_resolution"]);
     transfer(&["push", path(&right)]);
     transfer(&["push", path(&right), "origin", "--tags"]);
     let before_empty_fetch = resolution_worktree(&left);
-    let index_before_empty_fetch = fs::read(left.join(".uwgit/index")).unwrap();
+    let index_before_empty_fetch = fs::read(left.join(".wasm-git/index")).unwrap();
     transfer(&["fetch", path(&left)]);
     assert_eq!(tip(&left), empty_their_tip);
     assert_eq!(resolution_worktree(&left), before_empty_fetch);
     assert_eq!(
-        fs::read(left.join(".uwgit/index")).unwrap(),
+        fs::read(left.join(".wasm-git/index")).unwrap(),
         index_before_empty_fetch
     );
     transfer(&[
@@ -1182,7 +1188,7 @@ fn real_http_transfers_reviewed_index_merges_prefix_conversions_and_empty_resolu
     let server = Server::start(&temp);
     remote_resolution_scenario(&temp, &upstream, &server.url(), |args| {
         command(args)
-            .env("UWGIT_REMOTE_TOKEN", TOKEN)
+            .env("WASM_GIT_REMOTE_TOKEN", TOKEN)
             .output()
             .unwrap()
     });
@@ -1195,7 +1201,7 @@ fn ssh_stdio_transfers_reviewed_index_merges_prefix_conversions_and_empty_resolu
     let temp = Temp::new();
     let (_, upstream, _) = seed(&temp);
     let shim = temp.path("resolution-ssh-program");
-    fs::write(&shim, b"#!/bin/sh\nset -eu\nexec \"$UWGIT_TREE_TEST_BINARY\" server --stdio --root \"$UWGIT_TREE_TEST_ROOT\"\n").unwrap();
+    fs::write(&shim, b"#!/bin/sh\nset -eu\nexec \"$WASM_GIT_TREE_TEST_BINARY\" server --stdio --root \"$WASM_GIT_TREE_TEST_ROOT\"\n").unwrap();
     fs::set_permissions(&shim, fs::Permissions::from_mode(0o700)).unwrap();
     let url = format!(
         "ssh://test@localhost{}/project",
@@ -1203,9 +1209,9 @@ fn ssh_stdio_transfers_reviewed_index_merges_prefix_conversions_and_empty_resolu
     );
     remote_resolution_scenario(&temp, &upstream, &url, |args| {
         command(args)
-            .env("UWGIT_SSH_PROGRAM", &shim)
-            .env("UWGIT_TREE_TEST_BINARY", env!("CARGO_BIN_EXE_wasm-git"))
-            .env("UWGIT_TREE_TEST_ROOT", temp.path("repositories"))
+            .env("WASM_GIT_SSH_PROGRAM", &shim)
+            .env("WASM_GIT_TREE_TEST_BINARY", env!("CARGO_BIN_EXE_wasm-git"))
+            .env("WASM_GIT_TREE_TEST_ROOT", temp.path("repositories"))
             .output()
             .unwrap()
     });

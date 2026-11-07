@@ -10,7 +10,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
-            "uwgit-history-{}-{}",
+            "wasm-git-history-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -83,7 +83,7 @@ fn metadata(root: &str) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
     }
     let root = std::path::Path::new(root);
     let mut result = BTreeMap::new();
-    visit(root, &root.join(".uwgit"), &mut result);
+    visit(root, &root.join(".wasm-git"), &mut result);
     result
 }
 

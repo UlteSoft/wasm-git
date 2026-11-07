@@ -1060,7 +1060,7 @@ mod tests {
     struct Temp(PathBuf);
     impl Temp {
         fn new() -> Self {
-            let path = std::env::temp_dir().join(unique_name("uwgit-ref-recovery"));
+            let path = std::env::temp_dir().join(unique_name("wasm-git-ref-recovery"));
             fs::create_dir(&path).unwrap();
             Self(path)
         }

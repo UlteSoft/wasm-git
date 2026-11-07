@@ -8,7 +8,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let root = std::env::temp_dir().join(format!(
-            "uwgit-history-queries-{}-{}",
+            "wasm-git-history-queries-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -60,7 +60,7 @@ fn shortlog_counts_actual_changed_module_paths_and_explicit_subject_groups() {
     commit(root, "a.wasm", 1, "initial");
     commit(root, "a.wasm", 2, "update");
     commit(root, "b.wasm", 3, "update");
-    let before = fs::read(root.join(".uwgit/index")).unwrap();
+    let before = fs::read(root.join(".wasm-git/index")).unwrap();
     let report = json(&["shortlog", p(root), "-s", "-n"]);
     assert_eq!(report["commits"], 3);
     assert_eq!(report["groups"][0]["key"], "a.wasm");
@@ -69,7 +69,7 @@ fn shortlog_counts_actual_changed_module_paths_and_explicit_subject_groups() {
     let report = json(&["shortlog", p(root), "--group=subject", "-n"]);
     assert_eq!(report["groups"][0]["key"], "update");
     assert_eq!(report["groups"][0]["count"], 2);
-    assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), before);
+    assert_eq!(fs::read(root.join(".wasm-git/index")).unwrap(), before);
 }
 
 #[test]
@@ -154,7 +154,7 @@ fn range_and_resource_failures_are_explicit_and_queries_write_nothing() {
     let root = &temp.0;
     let base = commit(root, "a.wasm", 1, "root");
     let tip = commit(root, "a.wasm", 2, "tip");
-    let before = fs::read(root.join(".uwgit/reflog")).unwrap();
+    let before = fs::read(root.join(".wasm-git/reflog")).unwrap();
     for extra in [vec!["--max-commits", "0"], vec!["--max-bytes", "0"]] {
         let mut args = vec!["range-diff", p(root)];
         let range = format!("{base}..{tip}");
@@ -165,5 +165,5 @@ fn range_and_resource_failures_are_explicit_and_queries_write_nothing() {
     assert!(!execute(&["range-diff", p(root), "HEAD", "HEAD"])
         .status
         .success());
-    assert_eq!(fs::read(root.join(".uwgit/reflog")).unwrap(), before);
+    assert_eq!(fs::read(root.join(".wasm-git/reflog")).unwrap(), before);
 }

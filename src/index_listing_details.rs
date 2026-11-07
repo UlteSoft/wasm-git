@@ -18,7 +18,7 @@ fn entries(state: &State) -> Result<(BTreeMap<String, bool>, BTreeSet<String>), 
                 .file_name()
                 .into_string()
                 .map_err(|_| "ls-files requires UTF-8 worktree paths")?;
-            if name.eq_ignore_ascii_case(".git") || name.eq_ignore_ascii_case(".uwgit") {
+            if name.eq_ignore_ascii_case(".git") || name.eq_ignore_ascii_case(".wasm-git") {
                 continue;
             }
             let path = if parent.is_empty() {
@@ -31,7 +31,7 @@ fn entries(state: &State) -> Result<(BTreeMap<String, bool>, BTreeSet<String>), 
             let mut boundary =
                 metadata.file_type().is_symlink() || !(metadata.is_file() || metadata.is_dir());
             if metadata.is_dir() && !boundary {
-                for marker in [".git", ".uwgit"] {
+                for marker in [".git", ".wasm-git"] {
                     match fs::symlink_metadata(entry.path().join(marker)) {
                         Ok(_) => boundary = true,
                         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}

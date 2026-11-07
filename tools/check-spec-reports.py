@@ -13,9 +13,9 @@ ORIGINALS_ONLY_SKIP_REASON = (
 
 
 def corpus_mode(value: str | None = None) -> str:
-    mode = value if value is not None else os.environ.get("UWGIT_CORPUS_MODE", "fixed-mutations")
+    mode = value if value is not None else os.environ.get("WASM_GIT_CORPUS_MODE", "fixed-mutations")
     if mode not in MODES:
-        raise ValueError(f"unknown UWGIT_CORPUS_MODE {mode!r}; expected {' or '.join(MODES)}")
+        raise ValueError(f"unknown WASM_GIT_CORPUS_MODE {mode!r}; expected {' or '.join(MODES)}")
     return mode
 
 
@@ -121,6 +121,6 @@ if __name__ == "__main__":
     parser.add_argument("inputs", type=Path)
     parser.add_argument("evidence", type=Path)
     parser.add_argument("--corpus-mode", choices=MODES,
-                        help="expected report mode; defaults to UWGIT_CORPUS_MODE or fixed-mutations")
+                        help="expected report mode; defaults to WASM_GIT_CORPUS_MODE or fixed-mutations")
     args = parser.parse_args()
     print(json.dumps(verify(args.inputs, args.evidence, args.corpus_mode), indent=2))

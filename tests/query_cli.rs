@@ -24,7 +24,7 @@ struct Temp {
 impl Temp {
     fn new() -> Self {
         let base = std::env::temp_dir().join(format!(
-            "uwgit-query-{}-{}",
+            "wasm-git-query-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -97,9 +97,9 @@ fn s(path: &Path) -> &str {
 fn invoke(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_wasm-git"))
         .args(args)
-        .env_remove("UWGIT_REMOTE_TOKEN")
-        .env_remove("UWGIT_SSH_PROGRAM")
-        .env_remove("UWGIT_REMOTE_PROGRAM")
+        .env_remove("WASM_GIT_REMOTE_TOKEN")
+        .env_remove("WASM_GIT_SSH_PROGRAM")
+        .env_remove("WASM_GIT_REMOTE_PROGRAM")
         .output()
         .unwrap()
 }
@@ -179,8 +179,8 @@ impl History {
         let donor_commit = value(&["show", donor.root(), "HEAD"]);
         let orphan = donor_commit["wasm"].as_str().unwrap();
         fs::copy(
-            donor.path(&format!(".uwgit/objects/{orphan}")),
-            t.path(&format!(".uwgit/objects/{orphan}")),
+            donor.path(&format!(".wasm-git/objects/{orphan}")),
+            t.path(&format!(".wasm-git/objects/{orphan}")),
         )
         .unwrap();
         t.stage("a.wasm", C);
@@ -215,7 +215,7 @@ impl History {
     fn tracking(&self) {
         // A fixed, already-fetched tracking record, using the published transport
         // schema. No remote process is needed for local provenance queries.
-        self.t.write(".uwgit/remotes/origin.tracking.bin", &native::tracking_bytes(json!({
+        self.t.write(".wasm-git/remotes/origin.tracking.bin", &native::tracking_bytes(json!({
             "version":1,"remote":"origin","url":"ssh://test@localhost/tmp/query.git",
             "state":{"format":1,"head":"main","branches":{"main":self.first},"tags":{"remote-only":self.tip}}
         })));
@@ -315,7 +315,7 @@ fn tree_queries_report_real_flat_ids_exact_stored_lengths_and_no_invented_modes(
     for row in report["entries"].as_array().unwrap() {
         let path = row["path"].as_str().unwrap();
         let id = row["object_id"].as_str().unwrap();
-        let stored = fs::read(t.path(&format!(".uwgit/objects/{id}"))).unwrap();
+        let stored = fs::read(t.path(&format!(".wasm-git/objects/{id}"))).unwrap();
         assert_eq!(format!("{:x}", Sha256::digest(&stored)), id);
         assert_eq!(row["stored_byte_len"], stored.len() as u64);
         let expected: &[u8] = match path {
@@ -421,7 +421,7 @@ fn refs_text_json_filters_head_and_suffix_boundary_are_explicit() {
         let name = row["name"].as_str().unwrap();
         assert_eq!(row["id"], expected[name]);
         assert_eq!(row["kind"], "commit");
-        let file = fs::read(t.path(&format!(".uwgit/objects/{}", expected[name]))).unwrap();
+        let file = fs::read(t.path(&format!(".wasm-git/objects/{}", expected[name]))).unwrap();
         assert_eq!(row["stored_byte_len"], file.len() as u64);
         assert_eq!(
             row["byte_len"].as_u64().unwrap(),
@@ -683,7 +683,7 @@ fn object_counts_use_unique_physical_objects_payload_bytes_and_explicit_roots() 
     let report = t.json(&["count-objects", t.root(), "-v", "-H"]);
     let mut counts: BTreeMap<String, (u64, u64, u64)> = BTreeMap::new();
     let mut ids = BTreeSet::new();
-    for entry in fs::read_dir(t.path(".uwgit/objects")).unwrap() {
+    for entry in fs::read_dir(t.path(".wasm-git/objects")).unwrap() {
         let entry = entry.unwrap();
         assert!(entry.file_type().unwrap().is_file());
         let id = entry.file_name().into_string().unwrap();
@@ -760,8 +760,8 @@ fn corrupt_index_pending_and_dirty_missing_work_do_not_obstruct_committed_querie
         "--format=%(refname)|%(HEAD)|%(upstream)",
     ]);
     let counts = t.json(&["count-objects", t.root(), "-v"]);
-    t.write(".uwgit/index", b"invalid fixed index\0");
-    t.write(".uwgit/pending.bin", b"invalid fixed pending\xff\0");
+    t.write(".wasm-git/index", b"invalid fixed index\0");
+    t.write(".wasm-git/pending.bin", b"invalid fixed pending\xff\0");
     t.write("a.wasm", b"unfinished non-Wasm editor bytes\0");
     fs::remove_file(t.path("nested/b.wasm")).unwrap();
     t.write("private.txt", b"untracked private bytes");
@@ -805,12 +805,12 @@ fn valid_local_conflict_journal_and_staged_resolution_remain_entirely_unchanged(
         "pending query fixture",
     ]);
     assert_eq!(record.status.code(), Some(2));
-    assert!(t.path(".uwgit/pending.bin").is_file());
-    let original_index = fs::read(t.path(".uwgit/index")).unwrap();
+    assert!(t.path(".wasm-git/pending.bin").is_file());
+    let original_index = fs::read(t.path(".wasm-git/index")).unwrap();
     let original_counts = t.json(&["count-objects", t.root(), "-v"]);
     t.stage("a.wasm", D);
     t.write("a.wasm", b"more unfinished editor bytes");
-    assert_ne!(fs::read(t.path(".uwgit/index")).unwrap(), original_index);
+    assert_ne!(fs::read(t.path(".wasm-git/index")).unwrap(), original_index);
     let head = ok(&["rev-parse", t.root(), "HEAD"]).trim().to_owned();
     assert_eq!(t.json(&["ls-tree", t.root(), "HEAD"])["commit"], head);
     assert_eq!(t.json(&["show-ref", t.root(), "--json"])["head_tip"], head);
@@ -841,7 +841,7 @@ fn legacy_blob_witness_and_empty_named_tree_are_distinct_without_guessed_paths()
     assert_eq!(
         report["legacy"]["stored_byte_len"],
         fs::metadata(legacy.path(&format!(
-            ".uwgit/objects/{}",
+            ".wasm-git/objects/{}",
             show["wasm"].as_str().unwrap()
         )))
         .unwrap()
@@ -880,14 +880,17 @@ fn corrupt_authoritative_metadata_objects_and_writer_locks_fail_without_repairs(
         vec!["count-objects", t.root()],
     ];
     for (path, bytes) in [
-        (".uwgit/reflog", b"broken fixed reflog\0".as_slice()),
-        (".uwgit/refs/main", b"not-an-object-id\n".as_slice()),
+        (".wasm-git/reflog", b"broken fixed reflog\0".as_slice()),
+        (".wasm-git/refs/main", b"not-an-object-id\n".as_slice()),
         (
-            ".uwgit/remotes/origin.tracking.bin",
+            ".wasm-git/remotes/origin.tracking.bin",
             b"{broken fixed tracking".as_slice(),
         ),
-        (".uwgit/upstreams.bin", b"{broken fixed upstream".as_slice()),
-        (".uwgit/write.lock", b"fixed crashed writer\n".as_slice()),
+        (
+            ".wasm-git/upstreams.bin",
+            b"{broken fixed upstream".as_slice(),
+        ),
+        (".wasm-git/write.lock", b"fixed crashed writer\n".as_slice()),
     ] {
         let original = fs::read(t.path(path)).ok();
         t.write(path, bytes);
@@ -900,7 +903,7 @@ fn corrupt_authoritative_metadata_objects_and_writer_locks_fail_without_repairs(
             fs::remove_file(t.path(path)).unwrap();
         }
     }
-    let path = t.path(&format!(".uwgit/objects/{}", h.entries["a.wasm"]));
+    let path = t.path(&format!(".wasm-git/objects/{}", h.entries["a.wasm"]));
     let original = fs::read(&path).unwrap();
     fs::write(&path, b"corrupt fixed object bytes").unwrap();
     for args in &queries {
@@ -925,10 +928,10 @@ fn explicit_branch_queries_ignore_bad_index_pending_and_an_unrelated_index_lock(
     let t = &h.t;
     let expected = t.text(&["branch", t.root(), "--contains=HEAD", "--format=%(refname)"]);
     for (path, bytes) in [
-        (".uwgit/index", b"broken index\0".as_slice()),
-        (".uwgit/pending.bin", b"{broken pending".as_slice()),
+        (".wasm-git/index", b"broken index\0".as_slice()),
+        (".wasm-git/pending.bin", b"{broken pending".as_slice()),
         (
-            ".uwgit/index.lock",
+            ".wasm-git/index.lock",
             b"held by another index writer".as_slice(),
         ),
         ("a.wasm", b"unfinished editor text".as_slice()),
@@ -1020,7 +1023,7 @@ fn native_branch_scopes_tracking_filters_and_upstream_name_modifiers_use_real_re
         "origin/main|origin/main|refs/remotes\n"
     );
     ok(&["branch", t.root(), "origin/main", "HEAD"]);
-    fs::remove_file(t.path(".uwgit/remotes/origin.tracking.bin")).unwrap();
+    fs::remove_file(t.path(".wasm-git/remotes/origin.tracking.bin")).unwrap();
     // A gone configured target must not shorten to an unrelated local branch.
     assert_eq!(
         t.text(&[
@@ -1137,8 +1140,8 @@ fn explicit_branch_and_filtered_reference_queries_never_hide_repository_corrupti
     let h = History::new();
     let t = &h.t;
     for (path, bytes) in [
-        (".uwgit/write.lock", b"other writer".as_slice()),
-        (".uwgit/upstreams.bin", b"{broken upstream".as_slice()),
+        (".wasm-git/write.lock", b"other writer".as_slice()),
+        (".wasm-git/upstreams.bin", b"{broken upstream".as_slice()),
     ] {
         t.write(path, bytes);
         for command in ["branch", "for-each-ref"] {
@@ -1153,7 +1156,7 @@ fn explicit_branch_and_filtered_reference_queries_never_hide_repository_corrupti
         fs::remove_file(t.path(path)).unwrap();
     }
     t.write(
-        &format!(".uwgit/objects/{}", h.tip),
+        &format!(".wasm-git/objects/{}", h.tip),
         b"corrupt commit object",
     );
     for command in ["branch", "for-each-ref"] {

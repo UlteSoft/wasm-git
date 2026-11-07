@@ -4,7 +4,7 @@ use crate::repository::RepositoryState;
 use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize};
 use std::io::{Cursor, Read, Write};
 
-const MAGIC: &[u8; 8] = b"UWGRPC02";
+const MAGIC: &[u8; 8] = b"WGTRPC02";
 pub const TRANSFER_CHUNK: usize = 1024 * 1024;
 pub const MAX_BUNDLE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 pub const MAX_PACKET_BYTES: usize = 64 * 1024 * 1024;

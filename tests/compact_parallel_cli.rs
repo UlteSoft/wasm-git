@@ -15,7 +15,7 @@ struct Pair {
 impl Pair {
     fn new(a: &str, b: &str) -> Self {
         let root = std::env::temp_dir().join(format!(
-            "uwgit-compact-parallel-{}-{}",
+            "wasm-git-compact-parallel-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));

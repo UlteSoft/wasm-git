@@ -92,7 +92,7 @@ fn server_logging_failures_preserve_publication_and_readiness_errors_are_control
         }
     }
     let temp = Temp(std::env::temp_dir().join(format!(
-        "uwgit-server-log-boundary-{}-{}",
+        "wasm-git-server-log-boundary-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

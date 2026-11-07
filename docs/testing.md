@@ -1,4 +1,4 @@
-# Testing uwgit
+# Testing wasm-git
 
 The maintained verification methodology is available in
 [English](../documents/DEVELOPMENT.eu_US.md) and

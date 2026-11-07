@@ -1,4 +1,4 @@
-# uwgit Binary Format Reference
+# wasm-git Binary Format Reference
 
 **Edition:** current pre-release implementation, 2026-11-06
 [简体中文](BINARY_FORMAT.zh_CN.md) · [Library](README.eu_US.md)
@@ -7,7 +7,7 @@
 
 This reference describes the formats written by this checkout. It is not a
 promise that unreleased layouts remain stable. The repository format marker is
-the eight-byte value `UWGRPO\0\x03`. Old JSON repositories, textual control files,
+the eight-byte value `WGTRPO\0\x03`. Old JSON repositories, textual control files,
 and superseded pre-release pack layouts are rejected rather than migrated.
 Readers must validate the version, complete record, semantic invariants, and
 referenced object graph; recognizing a magic prefix is insufficient.
@@ -33,7 +33,7 @@ Overflow, truncation, trailing fields, invalid ordering, and invalid flags fail.
 ### 2.1 Object envelope and identity
 
 ```text
-8 bytes   magic = UWGO\0\0\0\x02
+8 bytes   magic = WGTO\0\0\0\x02
 1 byte    kind
 u64be     payload length
 N bytes   payload
@@ -66,7 +66,7 @@ real parents or object ID.
 The signature record has version, author, timestamp, a 32-byte key identity, and
 a byte-vector signature. Version 1 uses a public key and a 64-byte Ed25519
 signature. Its signed message is the literal domain
-`uwgit.author.commit.v1\0`, followed by the author's explicit `string`, timestamp
+`wasm-git.author.commit.v1\0`, followed by the author's explicit `string`, timestamp
 `u64be`, public key, and a length-prefixed canonical unsigned commit payload.
 The signature field is absent in that unsigned form. Strict signature verification
 and trusted-author binding are separate operations.
@@ -75,9 +75,9 @@ Versions 2 (SSH) and 3 (OpenPGP) store a positional `ExternalSignature` containi
 binary public material and detached signature bytes in the signature vector.
 SSH armor is decoded into SSHSIG; OpenPGP certificates and signatures remain binary.
 Each member is limited to 1 MiB and the envelope to 2 MiB. The 32-byte identity is
-SHA-256 of `uwgit.external.author.key.v1\0`, the version `u32be`, and the SSH wire
+SHA-256 of `wasm-git.external.author.key.v1\0`, the version `u32be`, and the SSH wire
 public key or uppercase OpenPGP primary fingerprint. The signed domain is
-`uwgit.author.commit.v2\0`, followed by the version `u32be`, author string,
+`wasm-git.author.commit.v2\0`, followed by the version `u32be`, author string,
 timestamp, key identity and length-prefixed unsigned commit. The SSH namespace
 is `commit@wasm-git`. External cryptographic checks run only on explicit verification
 or trusted receive, not ordinary object reads. See [signature policy](WASMHUB.eu_US.md).
@@ -98,7 +98,7 @@ this tree format.
 ## 3. Bundle framing and selective manifests
 
 ```text
-8 bytes   magic = UWGB\0\0\0\x02
+8 bytes   magic = WGTB\0\0\0\x02
 u64be     manifest byte length
 N bytes   manifest
 u64be     number of objects
@@ -123,11 +123,11 @@ children, then publishes the selected references.
 
 ### 4.1 Outer layout
 
-Current packs use `UWGPACK4` and are named by the SHA-256 of the complete file.
+Current packs use `WGTPACK4` and are named by the SHA-256 of the complete file.
 The embedded index and data are published as one immutable directory entry:
 
 ```text
-8 bytes   magic = UWGPACK4
+8 bytes   magic = WGTPACK4
 u32be     object count C
 1024      256 cumulative u32be fanout values
 32 * C    strictly sorted raw object IDs
@@ -181,7 +181,7 @@ must retain required bases or write a new self-sufficient representation first.
 ## 5. Offline byte patches
 
 ```text
-8 bytes   magic = UWGPAT01
+8 bytes   magic = WGTPAT01
 32 bytes  SHA-256 of the complete original file
 32 bytes  SHA-256 of the complete target file
 u64be     original length
@@ -193,7 +193,7 @@ repeated  old start/end u64be, new start/end u64be,
 
 Span lengths determine literal byte lengths; no hex or JSON payload is stored.
 These hashes identify raw Wasm files, not repository envelopes. The in-memory
-report's `format` is `uwgit-byte-patch-binary-v1`; it is not an additional string
+report's `format` is `wasm-git-byte-patch-binary-v1`; it is not an additional string
 field in the wire format.
 
 Validation checks monotonic ranges, identical-gap accounting, original byte
@@ -203,7 +203,7 @@ Application verifies before atomically publishing a new output file.
 
 ## 6. Canonical positional records and control files
 
-Cold records begin with `UWGM\0\0\0\x01` and encode a schema-defined sequence of
+Cold records begin with `WGTM\0\0\0\x01` and encode a schema-defined sequence of
 fields with bincode 1.3.3 canonical variable integers. Values 0–250 use one byte;
 251/252/253/254 introduce little-endian u16/u32/u64/u128 values respectively where
 the schema permits that width. Signed values use the codec's signed mapping.
@@ -216,13 +216,13 @@ ordering or duplicate-key encodings. Schema evolution must be explicitly reviewe
 and versioned; a type change can affect persisted bytes even if a field name is
 only an implementation detail.
 
-The index has an outer `UWGITIDX\x06` header and its current positional record.
+The index has an outer `WASMGIDX\x06` header and its current positional record.
 Configuration, index images, stash, pending/rebase state, reflog, worktrees,
 transaction journals, selective-history state, pool configuration, trust records,
 and upload metadata are binary. UTF-8 strings inside some cold recovery fields
 remain schema values; they do not represent JSON persistence.
 
-Repository marker `UWGRPO\0\x03` gates timestamped reflogs and their transaction
+Repository marker `WGTRPO\0\x03` gates timestamped reflogs and their transaction
 preimages. Version 2 repositories are rejected; no unreleased-format migration
 is performed. This change does not alter immutable object IDs or pack encoding.
 Each reflog entry is positional: `unix_seconds: u64`, `sequence: u64`,
@@ -233,16 +233,16 @@ Reference plans and their HEAD images freeze timestamps before the durable
 decision so replay does not substitute recovery time. The local HEAD log is
 bounded at 4096 entries; the shared reference log has explicit expiry.
 
-HEAD and references use `UWGREF\0\x01` plus a tag. Tag 1 is a raw 32-byte object
+HEAD and references use `WGTREF\0\x01` plus a tag. Tag 1 is a raw 32-byte object
 ID; tag 0 is a length-prefixed branch name and is valid only for symbolic HEAD.
-Writer locks use `UWGLCK\0\x01` plus a big-endian PID. The PID does not authorize
+Writer locks use `WGTLCK\0\x01` plus a big-endian PID. The PID does not authorize
 automatic lock deletion. Worktree common-directory paths use positional records.
-Private/public author key files are `UWGKEY01` plus a 32-byte seed and `UWGPUB01`
+Private/public author key files are `WGTKEY01` plus a 32-byte seed and `WGTPUB01`
 plus a 32-byte public key, respectively.
 
 ## 7. RPC and negotiated object transfer
 
-An RPC packet is `UWGRPC02`, metadata length `u32be`, payload length `u64be`, the
+An RPC packet is `WGTRPC02`, metadata length `u32be`, payload length `u64be`, the
 positional metadata record, and raw payload. Metadata is limited to 64 KiB and
 the complete packet to 64 MiB. Transfers use 1 MiB slices with a 4 GiB bundle
 limit. The envelope version and metadata's logical request version are distinct.
@@ -269,16 +269,16 @@ A count mismatch or invalid receipt cannot establish a publication outcome.
 
 `PullRequest` carries a positional `PullCommand` in its payload and returns a
 `PullReply`; successful responses bind the exact command payload SHA-256 in `tip`.
-It is not an allowed inner upload operation. Persisted PRs use `UWGPR001`, a
+It is not an allowed inner upload operation. Persisted PRs use `WGTPR001`, a
 `u64be` decoded byte count, and a Zstandard-compressed positional `PullRecord`.
 Both decoded and stored sizes are limited to 16 MiB. The counter is a positional
 binary `u64`. Field order, enum order and required options are defined in
 [pull types](../src/pull.rs); retention and recovery are specified in the
 [WasmHub guide](WASMHUB.eu_US.md).
 
-A negotiated compressed stream begins with `UWGNET01`, its total decoded length
+A negotiated compressed stream begins with `WGTNET01`, its total decoded length
 `u64be`, then repeated `u32be` frame lengths and Zstandard frames. Each non-final
-block decodes to exactly 1 MiB. The decoded stream begins with `UWGTRN01`, the
+block decodes to exactly 1 MiB. The decoded stream begins with `WGTTRN01`, the
 manifest length/content, and object count. Entries are ID-sorted. Mode 0 carries
 a full length-prefixed envelope; mode 1 carries a raw base ID, target envelope
 length, delta length, and copy/insert instructions.

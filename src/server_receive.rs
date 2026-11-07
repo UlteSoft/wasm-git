@@ -132,7 +132,7 @@ struct HookInput {
 }
 impl HookInput {
     fn new(repo: &Repository, updates: &[RefUpdate], bundle: &[u8]) -> Result<Self, String> {
-        let directory = repo.root.join(".uwgit/tmp").join(format!(
+        let directory = repo.root.join(".wasm-git/tmp").join(format!(
             "receive-{}-{}",
             crate::platform_fs::process_id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
@@ -190,24 +190,27 @@ fn hook(
     for (key, _) in std::env::vars_os() {
         if key
             .to_str()
-            .is_some_and(|k| k.starts_with("UWGIT_PUSH_OPTION_"))
+            .is_some_and(|k| k.starts_with("WASM_GIT_PUSH_OPTION_"))
         {
             command.env_remove(key);
         }
     }
     for (index, value) in context.options.iter().enumerate() {
-        command.env(format!("UWGIT_PUSH_OPTION_{index}"), value);
+        command.env(format!("WASM_GIT_PUSH_OPTION_{index}"), value);
     }
     let mut child = command
         .args(args)
         .current_dir(&context.repo.root)
-        .env("UWGIT_ACTOR", &context.settings.actor)
-        .env("UWGIT_REPOSITORY", &context.repo.root)
-        .env("UWGIT_QUARANTINE_BUNDLE", &context.input.bundle)
-        .env("UWGIT_UPDATES_FILE", &context.input.updates)
-        .env("UWGIT_PUSH_OPTION_COUNT", context.options.len().to_string())
-        .env("UWGIT_RECEIVE_TRANSACTION", context.transaction)
-        .env("UWGIT_HOOK", phase)
+        .env("WASM_GIT_ACTOR", &context.settings.actor)
+        .env("WASM_GIT_REPOSITORY", &context.repo.root)
+        .env("WASM_GIT_QUARANTINE_BUNDLE", &context.input.bundle)
+        .env("WASM_GIT_UPDATES_FILE", &context.input.updates)
+        .env(
+            "WASM_GIT_PUSH_OPTION_COUNT",
+            context.options.len().to_string(),
+        )
+        .env("WASM_GIT_RECEIVE_TRANSACTION", context.transaction)
+        .env("WASM_GIT_HOOK", phase)
         .stdin(Stdio::from(
             fs::File::open(&context.input.updates).map_err(|e| e.to_string())?,
         ))

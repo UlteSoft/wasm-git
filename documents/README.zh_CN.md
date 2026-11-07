@@ -1,4 +1,4 @@
-# uwgit 文档目录
+# wasm-git 文档目录
 
 [English](README.eu_US.md) · [项目介绍](../README.zh_CN.md)
 
@@ -7,6 +7,8 @@
 `.eu_US.md` 和 `.zh_CN.md`。
 
 ## 阅读顺序
+
+- [本地 Web 界面](WEBGUI.zh_CN.md) — 双语客户端操作、完整命令入口、审计预览与独立服务器监管。[English](WEBGUI.eu_US.md)
 
 - [WasmHub 集成](WASMHUB.zh_CN.md)：SSH/OpenPGP 签名、持久化 PR、审批/CI、分支保护
   与合并恢复。[English](WASMHUB.eu_US.md)
@@ -19,7 +21,7 @@
   交换、浅/部分历史、签名、GC 与故障处理。[English](USER_MANUAL.eu_US.md)
 - [服务端部署与运维](SERVER_ADMINISTRATION.zh_CN.md)：HTTP/SSH、二进制授权策略、hooks、
   审计、作者信任、共享 fork、对象池、边界、备份与恢复。[English](SERVER_ADMINISTRATION.eu_US.md)
-- [二进制格式参考](BINARY_FORMAT.zh_CN.md)：对象、manifest、UWGPACK4、补丁、控制记录、
+- [二进制格式参考](BINARY_FORMAT.zh_CN.md)：对象、manifest、WGTPACK4、补丁、控制记录、
   签名、RPC 布局及验证要求。[English](BINARY_FORMAT.eu_US.md)
 - [开发与验证](DEVELOPMENT.zh_CN.md)：项目 .tmp、cgroup、构建组合、独立还原、编译器判据、
   fuzz、VTune 与发布卫生。[English](DEVELOPMENT.eu_US.md)
@@ -31,7 +33,7 @@
 ## 解释规则
 
 “精确”指有明确范围的原字节与证据，函数或源码对应仍可能存在歧义。
-“支持”必须说明是无损保存、framing、类型化分析、验证还是运行执行；uwgit 审计不执行 Wasm。
+“支持”必须说明是无损保存、framing、类型化分析、验证还是运行执行；wasm-git 审计不执行 Wasm。
 类 Git 工作流使用原生格式和明确的选项子集。发行前格式可能变化且不迁移。
 
 行为更新时同步两种语言，保持命令和数值一致，不能把有限测试写成普遍正确性保证。

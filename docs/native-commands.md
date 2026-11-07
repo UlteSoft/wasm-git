@@ -1,6 +1,6 @@
 # 原生 Wasm 仓库命令
 
-这些命令直接使用 uwgit 的原始 Wasm 对象、文件树、提交 DAG 和传输协议。产品进程不通过 Git 执行版本操作。Git 仅用于独立行为对照测试。
+这些命令直接使用 wasm-git 的原始 Wasm 对象、文件树、提交 DAG 和传输协议。产品进程不通过 Git 执行版本操作。Git 仅用于独立行为对照测试。
 
 ## 对象与引用
 
@@ -43,7 +43,7 @@ wasm-git rev-list DIR A...B
 
 旧的两个裸端点形式保留“全部 base 的 JSON 数组”输出；`--text` 可明确选择逐行形式，`--json` 可为新选项形式选择 JSON。`--is-ancestor` 不输出内容，成立退出 0，不成立退出 1。新选项形式找不到 base/fork point 也退出 1，参数或对象错误退出 2；旧 JSON 形式仍以成功的空数组表示没有共同祖先。
 
-`--fork-point` 同时查看所选实际引用的当前 tip 和本机 reflog 中记录的旧/新 tip；只有唯一最佳 base 确实是某次记录的引用 tip 时才返回，不能从更早的普通共同祖先猜测。未给 TOPIC 时使用 HEAD。HEAD 使用当前工作树自己的 HEAD 日志；远端 tracking 尚无历史 reflog，仅有当前 tip 可作为证据。所有查询都使用一个已验证快照，不移动 HEAD、index、工作字节或引用，也不创建假想 merge 对象。图语义参照 [Git merge-base](https://git-scm.com/docs/git-merge-base)，对象和日志仍采用 uwgit 原生格式。
+`--fork-point` 同时查看所选实际引用的当前 tip 和本机 reflog 中记录的旧/新 tip；只有唯一最佳 base 确实是某次记录的引用 tip 时才返回，不能从更早的普通共同祖先猜测。未给 TOPIC 时使用 HEAD。HEAD 使用当前工作树自己的 HEAD 日志；远端 tracking 尚无历史 reflog，仅有当前 tip 可作为证据。所有查询都使用一个已验证快照，不移动 HEAD、index、工作字节或引用，也不创建假想 merge 对象。图语义参照 [Git merge-base](https://git-scm.com/docs/git-merge-base)，对象和日志仍采用 wasm-git 原生格式。
 
 分支、标签可使用 `feature/x` 这样的正常层级名称。空组件、`.`、`..`、`.lock` 后缀组件及 `refs/` 前缀不能作为分支名。名字最多 128 字节，使用 ASCII 字母、数字、`.`、`_`、`-`、`/`，首字符为字母或数字。名称与完整 `refs/heads/…`、`refs/tags/…`、`refs/remotes/…` 查询分别处理；同名候选有不同目标时报告歧义。
 
@@ -64,7 +64,7 @@ printf 'HEAD:modules/a.wasm\n' | wasm-git cat-file DIR --batch > /tmp/objects.bi
 printf 'info HEAD\ncontents HEAD:modules/a.wasm\nflush\n' | wasm-git cat-file DIR --batch-command --buffer
 ```
 
-对象请求可使用完整 ID、唯一对象前缀、commit 修订、`REV^{tree}` 或 `REV:PATH`。`--batch` 输出 `ID TYPE LENGTH`、分隔符、精确 payload 字节、分隔符；长度只计算 payload，不含 uwgit 对象 envelope。`--batch-check` 只输出首部。`--batch-command` 接受 `info`、`contents`、`flush`。
+对象请求可使用完整 ID、唯一对象前缀、commit 修订、`REV^{tree}` 或 `REV:PATH`。`--batch` 输出 `ID TYPE LENGTH`、分隔符、精确 payload 字节、分隔符；长度只计算 payload，不含 wasm-git 对象 envelope。`--batch-check` 只输出首部。`--batch-command` 接受 `info`、`contents`、`flush`。
 
 `-z` 只将输入分隔符改为 NUL；`-Z` 同时使用 NUL 输入和输出。二进制 payload 不做 UTF-8 转换。不存在或歧义的对象产生对应记录；对象库损坏仍失败，不伪装成缺失对象。单个请求最多 8192 字节。
 
@@ -122,13 +122,13 @@ wasm-git mergetool DIR --output NEW_DIR
 wasm-git mergetool DIR --output NEW_DIR --tool PROGRAM --stage -- modules/a.wasm
 ```
 
-注释命名空间保存为 `uwgit-notes-NAMESPACE` 分支上的普通 Wasm 文件树；每个注释是带有原始 UTF-8 文本的规范 custom-section 模块。注释可随 clone、bundle 及显式分支 push/fetch 传输，不改变当前 HEAD、index 或工作文件。bundle 的现有 unbundle 接口只发布用户选择的一个目标分支；其他注释分支需明确恢复其已导入 commit 引用。
+注释命名空间保存为 `wasm-git-notes-NAMESPACE` 分支上的普通 Wasm 文件树；每个注释是带有原始 UTF-8 文本的规范 custom-section 模块。注释可随 clone、bundle 及显式分支 push/fetch 传输，不改变当前 HEAD、index 或工作文件。bundle 的现有 unbundle 接口只发布用户选择的一个目标分支；其他注释分支需明确恢复其已导入 commit 引用。
 
 add 默认拒绝覆盖，`-f` 明确覆盖；append 保留空行；copy 默认保护已有目标。remove 多目标先完整验证，再发布一个新注释提交。注释文本最多 1 MiB，目标必须是已存储的原生对象。当前检出的注释分支受共同分支占用保护。
 
 mergetool 需要显式记录的 pending 冲突。它冻结 base/ours/theirs 的原始模块，导出缺席侧为 null，生成 manifest。可选择冲突路径；缺失或不匹配的选择器在创建目录前拒绝。每个文件使用独立导出目录，路径前缀转换不会令输出文件相撞。
 
-`--tool PROGRAM` 直接调用程序，不解析 shell 字符串。环境提供存在侧的 `BASE`、`LOCAL`、`REMOTE`，以及输出 `MERGED` 和逻辑路径 `UWGIT_PATH`；缺席侧不制造空 Wasm 文件。工具 stdout/stderr 留在导出目录。退出失败、修改输入、缺失输出、符号链接输出或非 Core Wasm 输出都不进入 index。
+`--tool PROGRAM` 直接调用程序，不解析 shell 字符串。环境提供存在侧的 `BASE`、`LOCAL`、`REMOTE`，以及输出 `MERGED` 和逻辑路径 `WASM_GIT_PATH`；缺席侧不制造空 Wasm 文件。工具 stdout/stderr 留在导出目录。退出失败、修改输入、缺失输出、符号链接输出或非 Core Wasm 输出都不进入 index。
 
 `--stage` 仅更新选定结果的 index 条目，保留其他暂存项和工作文件。显式 `--delete PATH` 表示删除该冲突项，工具不得同时生成 MERGED。发布前重新核对完整 index、pending 记录和原 HEAD。随后仍需审阅完整暂存树，并显式执行对应操作的 `--continue --resolved-index`；命令不替用户完成续作或推断其他非冲突改动。
 
@@ -145,7 +145,7 @@ wasm-git repack DIR
 wasm-git maintenance DIR run --task verify
 ```
 
-clean 必须给出 dry-run 或 force。默认遵循 `.gitignore` 与 `.uwgitignore`；`-x` 包括忽略文件，`-X` 仅选择忽略文件，`-e` 额外排除。默认不进入不含受控文件的 untracked 子目录；`-d` 或明确路径可选择它们。受控条目、`.uwgit`/`.git` 元数据、嵌套仓库、符号链接和特殊文件保留。删除前核对整个计划，并在每次删除前重查原字节摘要；中途失败报告已完成的路径。
+clean 必须给出 dry-run 或 force。默认遵循 `.gitignore` 与 `.wasm-gitignore`；`-x` 包括忽略文件，`-X` 仅选择忽略文件，`-e` 额外排除。默认不进入不含受控文件的 untracked 子目录；`-d` 或明确路径可选择它们。受控条目、`.wasm-git`/`.git` 元数据、嵌套仓库、符号链接和特殊文件保留。删除前核对整个计划，并在每次删除前重查原字节摘要；中途失败报告已完成的路径。
 
 gc 默认压缩完整对象集，`-n` 只预览；只有 `--prune=now` 且未给 `-n` 时才删除。它保留分支、标签、fetched 分支/标签、reflog、stash base 及注释目标的闭包；存在辅助恢复状态或 linked worktree 注册时采取保守整库保留。先删除不可达子提交，再到父提交、tree 和 blob，每个中断前缀仍有完整剩余对象图。已增加带索引的压缩 pack、有限深度 delta 与共享 fork；采用按历史路径分组的块级 copy/insert delta 和 Zstandard，默认使用全部可用线程；规划、压缩及清理在单次 writer lease 内完成。已增加带时间戳 reflog 的显式过期和 maintenance reflog-expire；时间型对象自动 prune 尚未实现。格式、逐字节恢复和失败规则见[压缩存储](packed-storage.md)。
 

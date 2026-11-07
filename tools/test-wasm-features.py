@@ -96,7 +96,7 @@ class LifecycleTests(unittest.TestCase):
     def test_check_is_read_only_and_update_touches_only_requested_source(self):
         scratch = Path(__file__).resolve().parents[1] / ".tmp"
         scratch.mkdir(exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="uwgit-lifecycle-", dir=scratch) as root:
+        with tempfile.TemporaryDirectory(prefix="wasm-git-lifecycle-", dir=scratch) as root:
             root = Path(root)
             source = root / "official-input.json"
             source.write_text(json.dumps(document()))

@@ -9,7 +9,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let root = std::env::temp_dir().join(format!(
-            "uwgit-worktrees-{}-{}",
+            "wasm-git-worktrees-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -72,8 +72,8 @@ fn linked_worktrees_share_original_objects_refs_and_tags_but_not_head_index_or_w
     let first = seed(&primary);
     add(&primary, &linked);
     assert_eq!(fs::read(linked.join("module.wasm")).unwrap(), wasm(1));
-    assert!(!linked.join(".uwgit/objects").exists());
-    assert!(!linked.join(".uwgit/refs").exists());
+    assert!(!linked.join(".wasm-git/objects").exists());
+    assert!(!linked.join(".wasm-git/refs").exists());
     fs::write(linked.join("module.wasm"), wasm(9)).unwrap();
     ok(&["add", p(&linked), "module.wasm"]);
     ok(&["commit", p(&linked), "-m", "linked change"]);
@@ -83,8 +83,8 @@ fn linked_worktrees_share_original_objects_refs_and_tags_but_not_head_index_or_w
     assert_eq!(ok(&["rev-parse", p(&primary), "topic"]), tip);
     assert_eq!(fs::read(primary.join("module.wasm")).unwrap(), wasm(1));
     assert_ne!(
-        fs::read(primary.join(".uwgit/index")).unwrap(),
-        fs::read(linked.join(".uwgit/index")).unwrap()
+        fs::read(primary.join(".wasm-git/index")).unwrap(),
+        fs::read(linked.join(".wasm-git/index")).unwrap()
     );
     ok(&["tag", p(&linked), "linked-tag"]);
     assert_eq!(ok(&["rev-parse", p(&primary), "linked-tag"]), tip);
@@ -105,8 +105,8 @@ fn checked_out_branches_cannot_be_switched_deleted_renamed_or_overwritten_from_a
     let linked = temp.path("linked");
     let first = seed(&primary);
     add(&primary, &linked);
-    let before = fs::read(primary.join(".uwgit/index")).unwrap();
-    let head = fs::read(primary.join(".uwgit/HEAD")).unwrap();
+    let before = fs::read(primary.join(".wasm-git/index")).unwrap();
+    let head = fs::read(primary.join(".wasm-git/HEAD")).unwrap();
     for args in [
         vec!["switch", p(&primary), "topic"],
         vec!["branch", p(&primary), "-D", "topic"],
@@ -116,8 +116,8 @@ fn checked_out_branches_cannot_be_switched_deleted_renamed_or_overwritten_from_a
     ] {
         fail(&args);
     }
-    assert_eq!(fs::read(primary.join(".uwgit/index")).unwrap(), before);
-    assert_eq!(fs::read(primary.join(".uwgit/HEAD")).unwrap(), head);
+    assert_eq!(fs::read(primary.join(".wasm-git/index")).unwrap(), before);
+    assert_eq!(fs::read(primary.join(".wasm-git/HEAD")).unwrap(), head);
     assert_eq!(fs::read(primary.join("module.wasm")).unwrap(), wasm(1));
     let duplicate = temp.path("duplicate");
     fail(&["worktree", p(&primary), "add", p(&duplicate), "topic"]);
@@ -155,7 +155,7 @@ fn worktree_locks_moves_and_force_removal_preserve_shared_history() {
     json(&["worktree", p(&primary), "move", p(&linked), p(&moved)]);
     assert!(!linked.exists());
     assert_eq!(fs::read(moved.join("module.wasm")).unwrap(), b"dirty bytes");
-    assert!(!moved.join(".uwgit/index.lock").exists());
+    assert!(!moved.join(".wasm-git/index.lock").exists());
     json(&["status", p(&moved)]);
     fail(&["worktree", p(&primary), "remove", p(&moved)]);
     json(&["worktree", p(&primary), "remove", p(&moved), "-f"]);
@@ -229,12 +229,12 @@ fn redirected_metadata_and_external_symlinks_cannot_redirect_worktree_removal() 
     fail(&["worktree", p(&primary), "remove", p(&linked), "-f"]);
     assert_eq!(fs::read(outside.join("keep")).unwrap(), b"keep");
     fs::remove_file(linked.join("redirect")).unwrap();
-    let common = fs::read(linked.join(".uwgit/commondir")).unwrap();
-    fs::remove_file(linked.join(".uwgit/commondir")).unwrap();
-    symlink(outside.join("keep"), linked.join(".uwgit/commondir")).unwrap();
+    let common = fs::read(linked.join(".wasm-git/commondir")).unwrap();
+    fs::remove_file(linked.join(".wasm-git/commondir")).unwrap();
+    symlink(outside.join("keep"), linked.join(".wasm-git/commondir")).unwrap();
     fail(&["status", p(&linked)]);
-    fs::remove_file(linked.join(".uwgit/commondir")).unwrap();
-    fs::write(linked.join(".uwgit/commondir"), common).unwrap();
+    fs::remove_file(linked.join(".wasm-git/commondir")).unwrap();
+    fs::write(linked.join(".wasm-git/commondir"), common).unwrap();
     json(&["status", p(&linked)]);
     assert_eq!(fs::read(outside.join("keep")).unwrap(), b"keep");
 }

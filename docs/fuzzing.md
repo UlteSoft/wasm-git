@@ -1,7 +1,7 @@
 # 原始字节审计 fuzz
 
 常规 `cargo test` 包含确定性的逐位翻转、插入/删除及文件头拒绝测试。
-`UWGIT_RUN_FUZZ=1 tools/test-linux.sh` 另执行长程确定性变异，输出逐例 JSONL；
+`WASM_GIT_RUN_FUZZ=1 tools/test-linux.sh` 另执行长程确定性变异，输出逐例 JSONL；
 其输入、变异、原始摘要及覆盖位置由 `check-audit-fuzz.py` 独立核对。
 
 `tools/test-fuzz-linux.sh` 增加 LLVM libFuzzer 与 AddressSanitizer 的覆盖率引导测试。
@@ -9,7 +9,7 @@
 本机只打包、传输和保存 `/tmp` 证据，不运行 fuzz binary。
 
 ```sh
-UWGIT_LIBFUZZER_RUNS=20000 tools/test-fuzz-linux.sh
+WASM_GIT_LIBFUZZER_RUNS=20000 tools/test-fuzz-linux.sh
 ```
 
 入口要求同一远端任务目录已有固定 `nightly-2026-10-18` minimal 工具链与

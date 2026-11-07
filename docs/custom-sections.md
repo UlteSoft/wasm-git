@@ -67,7 +67,7 @@ WSEA 的 envelope 解释仅检查外形、canonical CBOR 编码和非空字段�
 - `../uwvm2-ros`，基于 `ad0841780a55badbe356a696189f6f9fc6f46bc8` 的现有工作目录：`src/uwvm2/parser/wasm_custom/`、`src/uwvm2/uwvm/wasm/custom/handler.h` 的按名分派和 name 解析。
 - `../wasmtime`，`b4b23fe583173131a047141947a785b4c1c646ae`：`crates/environ/src/compile/module_environ.rs` 的 name、branch hint、调试数据处理。
 - `../WasmEdge`，`1cd04e4b35ebc86c937527f0146c2ec56fd701b3`：`lib/loader/ast/section.cpp` 与 `module.cpp` 的原始 custom 数据和 `wasmedge` AOT 处理。
-- `/tmp/uwgit-custom-20261105/wamr`，`3a6fb9a8e7871f20471c48592390b9d2342287b1`：`core/iwasm/interpreter/wasm_loader.c` 的 custom/name/branch hint 分派与保留逻辑。
+- `/tmp/wasm-git-custom-20261105/wamr`，`3a6fb9a8e7871f20471c48592390b9d2342287b1`：`core/iwasm/interpreter/wasm_loader.c` 的 custom/name/branch hint 分派与保留逻辑。
 - 项目固定的 `wasmparser 0.249.0`：`readers/core/custom.rs`、`branch_hinting.rs`、`dylink0.rs`、`linking.rs`。解释的是这些实现对应的约定，未把运行时加载时的拒绝策略搬进审计器。
 
 Core 3.0 的标准选择与全部已知 proposal 解码保持独立。未来未知 opcode 不猜测指令边界；只要外层 framing 可读，后续 custom section 仍可独立审计。更外层 framing 损坏也仍保留完整原始字节编辑和补丁。
@@ -116,7 +116,7 @@ Bad Speculation 5.1%、Back-End Bound 27.4%。这些是该 PMU 的采样估算�
 不将其百分比与 P-core 相加，也不把不同采样模式下的 CPU 时间直接拼接。
 系统的 kernel symbol 权限限制保留，项目源码行可归属；没有为采样改动系统安全配置。
 
-本机复现与证据位于 `/tmp/uwgit-custom-20261105/`：
+本机复现与证据位于 `/tmp/wasm-git-custom-20261105/`：
 `source-before/`、`source-final/`、`source-final-manifest.json`、`custom-audit-changes.patch`、
 `benchmark.py` / `benchmark.json`、`vtune-run.py` / `vtune-runs.json` / `vtune-metrics.json`、
 `before-source.csv` / `after-source.csv`、`after-uarch.csv`、`native-check.py` / `native/results.json`、

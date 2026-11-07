@@ -1,4 +1,4 @@
-# uwgit 的二进制审计与版本模型
+# wasm-git 的二进制审计与版本模型
 
 ## 依据与范围
 
@@ -47,7 +47,7 @@ full text 展示调用根与逐引用见证，short 披露证明根数量；循�
 
 `FunctionDelta` 附两侧原始函数索引和可选的未认证 `name` 符号，方便从 C++ 符号定位；两侧名称不同明确提示不等于源码重命名证明。`change_kind` 区分一般函数体/接口变化、已确认的静态函数引用重定位，以及尚不能区分重定位与改绑的引用变化。只有对齐完整、无类型/locals/控制结构/分支目标变化，且每个原始修改都是有独立唯一目标证据的 Call/RefFunc 操作数替换时，才标记 `confirmed_reference_relocation`。仍保留全部原始编辑与计数，不据此声称运行行为等价。
 
-参考 `uwvm2-ros/documents/ros/multimodule.md` 的真实 import/export 链接方式后，uwgit 不为宿主协议建立额外模块分类。
+参考 `uwvm2-ros/documents/ros/multimodule.md` 的真实 import/export 链接方式后，wasm-git 不为宿主协议建立额外模块分类。
 宿主名与字段名就是原始 import 字符串，各类外部项、签名和索引都应可比较。
 
 export 的原始 target-key 增删继续保留索引及 exact 标志，不能直接视为名称成员增删。
@@ -177,8 +177,8 @@ NaN 按原始位模式比较；多内存 memarg、bulk init 索引、EH catch �
 
 ## 原始对象与文件树
 
-仓库对象布局为 `.uwgit/{format,HEAD,refs,objects,tmp}`，另有可选的 tags、reflog、index、stash、config、remotes。
-format 文件为 `UWGRPO\0\x03`。对象、bundle、补丁和状态均采用[二进制格式](binary-format.md)；不兼容旧 JSON 仓库。
+仓库对象布局为 `.wasm-git/{format,HEAD,refs,objects,tmp}`，另有可选的 tags、reflog、index、stash、config、remotes。
+format 文件为 `WGTRPO\0\x03`。对象、bundle、补丁和状态均采用[二进制格式](binary-format.md)；不兼容旧 JSON 仓库。
 HEAD 以带 tag 的二进制记录保存分支名或 detached 提交摘要；`refs/<name>` 保存原始 32 字节摘要及版本头。
 引用名支持层级，不能包含目录穿越路径。
 
@@ -186,7 +186,7 @@ HEAD 以带 tag 的二进制记录保存分支名或 detached 提交摘要；`re
 
 | 字段 | 编码 |
 |---|---|
-| magic | `UWGO\0\0\0\x02`，8 字节 |
+| magic | `WGTO\0\0\0\x02`，8 字节 |
 | kind | 1 字节，1=原始 Core wasm，2=commit，3=文件树 |
 | length | 8 字节无符号大端长度 |
 | payload | 完整原始数据 |

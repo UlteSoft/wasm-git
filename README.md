@@ -1,8 +1,8 @@
-# uwgit
+# wasm-git
 
 **Lossless WebAssembly auditing and decentralized binary version history.**
 
-uwgit explains changes to the original Wasm bytes at section, function, block,
+wasm-git explains changes to the original Wasm bytes at section, function, block,
 instruction, custom-section, and available source-symbol levels. Its native Rust
 client and server share one engine. Repository objects, recovery state, packs,
 patches, and transport records use binary formats; JSON is an external reporting
@@ -11,6 +11,22 @@ and configuration-import interface.
 Read the project overview in [English](README.eu_US.md) or
 [简体中文](README.zh_CN.md). The locale suffixes `.eu_US` and `.zh_CN` are the
 project's documentation naming convention.
+
+## Local Web GUI
+
+The independent Python interface supports English / 简体中文, repository review
+and operations, complete native command access, and separate server supervision.
+Missing native executables are built from this checkout using Cargo.
+
+```sh
+python3 webgui/client.py start --open
+python3 webgui/server.py start --root /path/to/hosting-root --open
+python3 webgui/client.py stop
+python3 webgui/server.py stop
+```
+
+See the [Web GUI manual](documents/WEBGUI.eu_US.md) for audit previews,
+signing/PR command forms, managed services, limits and lifecycle controls.
 
 ## Build
 
@@ -28,8 +44,8 @@ The executable names are `wasm-git` and `wasm-git-server`.
 ```sh
 wasm-git diff old.wasm new.wasm --compact
 wasm-git diff old.wasm new.wasm --section code --format json
-wasm-git patch old.wasm new.wasm --output change.uwgp
-wasm-git apply old.wasm change.uwgp --output restored.wasm
+wasm-git patch old.wasm new.wasm --output change.wgp
+wasm-git apply old.wasm change.wgp --output restored.wasm
 wasm-git debug-map app.wasm --debug-file app.wasm.map --json
 ```
 
@@ -50,7 +66,7 @@ The [release guide](documents/RELEASE.eu_US.md) ([中文版](documents/RELEASE.z
 documents the Linux, Windows, macOS and WASIp1 MVP/Core 2.0 packages, CI gates,
 QEMU tests, resource limits and platform capability boundaries.
 
-uwgit uses its own repository and network formats. Git-style workflows do not
+wasm-git uses its own repository and network formats. Git-style workflows do not
 imply Git interoperability or support for every Git option. Known Wasm grammar
 and community conventions are interpreted within explicit limits; unknown bytes
 remain available for lossless audit and restoration. This is pre-release software:

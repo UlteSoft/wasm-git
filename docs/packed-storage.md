@@ -104,6 +104,6 @@ fork 前如有 loose 对象，先在源仓库现有锁内压成不可变 pack，
 显式 prune 的 keep 集若排除共享 pack 中对象，则允许重写该仓库的副本以确实删除不可达对象。
 网络传输现在也支持 have 闭包省略、同路径祖先块增量、并行 Zstandard 和原子多引用发布，见 [server](server.md)。
 
-`UWGPACK4` 支持保留共享 pack 的外部原始对象 ID 基底，总 delta 深度仍限制为 8，
+`WGTPACK4` 支持保留共享 pack 的外部原始对象 ID 基底，总 delta 深度仍限制为 8，
 并检查跨文件循环/缺失/损坏。fork 的首个私有版本可直接对共享完整基底做增量。
 多节点不可变对象池、复制确认后的本地清除与独立 fork pin 见 [服务器存储扩展](server-storage.md)。

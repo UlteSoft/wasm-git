@@ -26,7 +26,7 @@ def require(condition, message):
 def current_inputs(reference):
     """Reuse the snapshot traversal, including all files and symlink rejection."""
     source = Path(__file__).with_name("uwvm-examples-inputs.py")
-    spec = importlib.util.spec_from_file_location("uwgit_uwvm_examples_inputs", source)
+    spec = importlib.util.spec_from_file_location("wasm-git_uwvm_examples_inputs", source)
     require(spec is not None and spec.loader is not None, "cannot load input inventory helper")
     module = importlib.util.module_from_spec(spec)
     previous = sys.dont_write_bytecode
@@ -53,8 +53,8 @@ def product_command(products, index, product, description):
 
 
 def verify(run, expected_mode=None):
-    environment_mode = os.environ.get("UWGIT_CORPUS_MODE", "fixed-mutations")
-    require(environment_mode in ("originals-only", "fixed-mutations"), "unknown UWGIT_CORPUS_MODE")
+    environment_mode = os.environ.get("WASM_GIT_CORPUS_MODE", "fixed-mutations")
+    require(environment_mode in ("originals-only", "fixed-mutations"), "unknown WASM_GIT_CORPUS_MODE")
     if expected_mode is None:
         expected_mode = environment_mode
     require(expected_mode in ("originals-only", "fixed-mutations"), "unknown expected corpus mode")
@@ -299,12 +299,12 @@ def verify(run, expected_mode=None):
                 and argv.index("-o") + 1 < len(argv) and argv[argv.index("-o") + 1] == product,
                 f"compilation command does not bind exact source/output: {product}")
         checked = import_checks[product]
-        require(checked["matches_uwgit_projection"] is True and checked["unexpected_env_imports"] is False,
+        require(checked["matches_wasm-git_projection"] is True and checked["unexpected_env_imports"] is False,
                 f"missing successful independent import comparison: {product}")
         allowed_modules = {"wasi_snapshot_preview1", f"uwvm_{expected['backend']}_v1"}
         require({item["module"] for item in checked["imports"]} == allowed_modules,
                 f"wrong backend or unexpected compiled import module: {product}")
-        for key in ("objdump_details_command", "objdump_disassembly_command", "uwgit_inspect_command"):
+        for key in ("objdump_details_command", "objdump_disassembly_command", "wasm-git_inspect_command"):
             index = checked[key]
             product_command(products, index, product, f"{key} {product}")
             require(index not in inspection_commands, f"reused independent import inspection command: {product}")
@@ -346,6 +346,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run", type=Path)
     parser.add_argument("--corpus-mode", choices=("originals-only", "fixed-mutations"),
-                        help="expected report mode (otherwise UWGIT_CORPUS_MODE or fixed-mutations)")
+                        help="expected report mode (otherwise WASM_GIT_CORPUS_MODE or fixed-mutations)")
     args = parser.parse_args()
     print(json.dumps(verify(args.run, args.corpus_mode), indent=2))

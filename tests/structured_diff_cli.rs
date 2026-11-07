@@ -23,7 +23,7 @@ impl Pair {
                 .unwrap();
         }
         let root = std::env::temp_dir().join(format!(
-            "uwgit-structured-{}-{}",
+            "wasm-git-structured-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));

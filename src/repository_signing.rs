@@ -4,9 +4,9 @@ use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 #[path = "repository_external_signatures.rs"]
 mod external;
 pub use external::SignatureFormat;
-const DOMAIN: &[u8] = b"uwgit.author.commit.v1\0";
-const KEY_MAGIC: &[u8] = b"UWGKEY01";
-const PUBLIC_MAGIC: &[u8] = b"UWGPUB01";
+const DOMAIN: &[u8] = b"wasm-git.author.commit.v1\0";
+const KEY_MAGIC: &[u8] = b"WGTKEY01";
+const PUBLIC_MAGIC: &[u8] = b"WGTPUB01";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuthorSignature {
     pub version: u32,
@@ -44,7 +44,7 @@ fn payload(commit: &Commit, signature: &AuthorSignature) -> RepositoryResult<Vec
     let mut w = crate::binary::Writer(if signature.version == 1 {
         DOMAIN.to_vec()
     } else {
-        b"uwgit.author.commit.v2\0".to_vec()
+        b"wasm-git.author.commit.v2\0".to_vec()
     });
     if signature.version != 1 {
         w.u32(signature.version);

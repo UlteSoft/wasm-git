@@ -1,7 +1,7 @@
-# uwgit 0.1.1 prerelease
+# wasm-git 0.1.1 prerelease
 
 Lossless WebAssembly audit and binary version history, with shared native client
-and server sources. This prerelease uses uwgit repository/network formats; it is
+and server sources. This prerelease uses wasm-git repository/network formats; it is
 not a drop-in Git protocol implementation.
 
 - Windows release binaries statically link the C/C++ runtime. Their actual PE

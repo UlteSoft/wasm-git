@@ -24,7 +24,7 @@ wasm-git commit ./history -m 'edit one module and record a rename'
 ```
 
 add 的路径相对于 DIR；后续 add 累加或更新指定路径，不移除其他 tracked 文件。
-路径为 UTF-8 普通相对路径，可含目录；拒绝绝对路径、空组件、点、父引用、反斜杠、冒号、控制字符与任何大小写的 .uwgit。
+路径为 UTF-8 普通相对路径，可含目录；拒绝绝对路径、空组件、点、父引用、反斜杠、冒号、控制字符与任何大小写的 .wasm-git。
 树不能同时含普通文件 a 和 a/b.wasm。工作区不跟随符号链接。
 
 add、rm、mv、restore 支持 `--` 路径分隔符；它后面的参数全部按字面路径处理。
@@ -35,7 +35,7 @@ add、rm、mv、restore 支持 `--` 路径分隔符；它后面的参数全部�
 
 | 命令 | 行为 |
 |---|---|
-| `init DIR` | 创建仓库，拒绝覆盖已有 .uwgit。 |
+| `init DIR` | 创建仓库，拒绝覆盖已有 .wasm-git。 |
 | `add DIR FILE...` | 一次预读并检查全部路径，然后发布完整 index；任一参数失败不暂存前面的文件。文件的全部原字节进入 index。 |
 | `status DIR` | JSON format 2，files 按路径列出 staged added/deleted/modified/clean 与工作文件 clean/modified/deleted/untracked；同时列出未跟踪的普通 Core Wasm 文件。 |
 | `ls-files DIR` | 列出已建立 index 的路径和实际 stages；支持工作区筛选、格式及忽略规则，见[索引合同](index-stages.md)。没有本地 index 时为空。 |
@@ -49,7 +49,7 @@ add、rm、mv、restore 支持 `--` 路径分隔符；它后面的参数全部�
 
 rm 省略 FILE 仅在 index 恰好含一个文件时接受，保留旧单文件命令用法。
 删除最后一个条目后仍保存空 index，普通 commit 会记录实际空 tree，能通过历史恢复全部文件。
-status 的未跟踪扫描排除 .uwgit，不跟随目录或文件符号链接，只读取候选普通文件的八字节头；
+status 的未跟踪扫描排除 .wasm-git，不跟随目录或文件符号链接，只读取候选普通文件的八字节头；
 它不自动 add，不把非 Wasm 文件伪装成已跟踪内容。
 
 clone 复制对象、引用和 HEAD，不猜测工作目录布局，也不自动建立 index。
@@ -110,7 +110,7 @@ reset 缺省 REV 为 HEAD。clone 没有 index 时的普通历史操作保持对
 不以递归删除目录来解决文件/目录冲突。输出文件永不覆盖已有文件、目录、符号链接或元数据。
 
 所有用户文件导出共用同一边界，包括 show/checkout、restore、stash、cat-file、bundle，以及 patch/apply 的文件和仓库模式。
-输出父目录必须已存在；解析父目录别名后，任意大小写的 `.uwgit` 路径组件都会阻止导出，
+输出父目录必须已存在；解析父目录别名后，任意大小写的 `.wasm-git` 路径组件都会阻止导出，
 因此不能借助父目录符号链接写入元数据。普通父目录别名允许使用，发布使用已经解析的目录。
 末尾为分隔符、`.` 或 `..` 的请求不是新文件名；`missing/` 或 `missing/.` 不会被改写成普通文件 `missing`。
 
@@ -257,7 +257,7 @@ describe 名称解析、标签选择、归档固定元数据与 legacy 命名规
 尚未 fetch、远端分支已消失时明确失败；不退回本地 HEAD，也不接续 ancestry 或 reflog 表达式。
 从 `origin/main` 创建普通 branch/switch 不自动设置关联；可随后显式 `branch DIR -u origin/main topic`。
 
-upstream 独立保存在本地 `.uwgit/upstreams.bin`，只关联已提交的本地分支；不会进入提交、bundle 或远端传输。
+upstream 独立保存在本地 `.wasm-git/upstreams.bin`，只关联已提交的本地分支；不会进入提交、bundle 或远端传输。
 网络 clone 为有提交的初始 HEAD 设置 origin 同名关联；本地 clone 不复制源仓库的关联。
 分支重命名移动关联，删除分支先清关联；remote rename 移动关联，remote remove 清除对应关联。
 多个文件的 I/O 失败会报告已完成与不确定的步骤；不承诺跨文件事务回滚。损坏的本地关联配置会明确拒绝操作。
@@ -299,7 +299,7 @@ value 最多 4096 字节且无控制字符。没有 hook/filter 或配置命令�
 | `push DIR [REMOTE] --delete BRANCH_OR_QUALIFIED_TAG [--force-with-lease OLD_ID]` | CAS 删除远端引用，不能删除服务端当前 HEAD 分支。 |
 
 URL 是 http(s)://HOST/REPO 或 ssh://USER@HOST/ABSOLUTE/ROOT/REPO，可带端口。
-HTTP bearer token 来自 UWGIT_REMOTE_TOKEN，不写入配置；非 loopback 明文 HTTP 要显式 --allow-insecure-http。
+HTTP bearer token 来自 WASM_GIT_REMOTE_TOKEN，不写入配置；非 loopback 明文 HTTP 要显式 --allow-insecure-http。
 SSH 使用系统认证、主机密钥校验与远端 server --stdio。详细部署见 [server](server.md)。
 
 消息选项后的 `--help`、`-h` 或 `--allow-insecure-http` 均是字面消息，不触发帮助或开启传输选项。
@@ -309,7 +309,7 @@ restore、stash apply、cat-file 的 `--output` 值也可为字面 `--help` / `-
 
 ## 持久化与边界
 
-index 统一使用九字节 `UWGITIDX\x06` 头和按字段位置编码的二进制记录；完整 Wasm 图像直接存原字节。
+index 统一使用九字节 `WASMGIDX\x06` 头和按字段位置编码的二进制记录；完整 Wasm 图像直接存原字节。
 配置、stash、pending、bisect、reflog、引用事务与远端状态也采用规范二进制，校验长度、路径、
 Core 头、引用和恢复证据，不静默修复损坏元数据。不读取或迁移旧 JSON 格式。见[二进制格式](binary-format.md)。
 

@@ -16,9 +16,9 @@
 /uwvm-examples-*/
 
 # Local wasm-git repositories and generated exchange files.
-.uwgit/
-/*.uwgb
-/*.uwgp
+.wasm-git/
+/*.wgb
+/*.wgp
 
 # Python caches, logs, and macOS metadata.
 __pycache__/

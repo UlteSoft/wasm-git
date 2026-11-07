@@ -4,7 +4,7 @@
 //! versioned object envelope (including its type and payload length) is hashed
 //! with SHA-256. Commits form an immutable DAG; branch files are the only mutable
 //! history pointers. Bundles are self-contained and verified before publication.
-//! Mutations and consistent snapshots use `.uwgit/write.lock`; a crashed writer's
+//! Mutations and consistent snapshots use `.wasm-git/write.lock`; a crashed writer's
 //! lock requires manual inspection and removal before another writer proceeds.
 //!
 //! Immutable packs compress original envelopes without changing object IDs.
@@ -395,9 +395,9 @@ pub fn read_file_history(
 mod control;
 use control::{decode_reference, encode_reference};
 
-const FORMAT: &[u8] = b"UWGRPO\0\x03";
-const OBJECT_MAGIC: &[u8; 8] = b"UWGO\0\0\0\x02";
-const BUNDLE_MAGIC: &[u8; 8] = b"UWGB\0\0\0\x02";
+const FORMAT: &[u8] = b"WGTRPO\0\x03";
+const OBJECT_MAGIC: &[u8; 8] = b"WGTO\0\0\0\x02";
+const BUNDLE_MAGIC: &[u8; 8] = b"WGTB\0\0\0\x02";
 const WASM_HEADER: &[u8; 8] = b"\0asm\x01\0\0\0";
 const OBJECT_HEADER_LENGTH: usize = 17;
 const MAX_UPSTREAM_BYTES: u64 = 1024 * 1024;
@@ -853,7 +853,7 @@ impl Repository {
         let root = root.as_ref().to_path_buf();
         fs::create_dir_all(&root).map_err(|e| io_error("create repository directory", &root, e))?;
         require_directory(&root)?;
-        let metadata = root.join(".uwgit");
+        let metadata = root.join(".wasm-git");
         // Reserving the directory with create_dir never replaces an existing repo.
         fs::create_dir(&metadata).map_err(|e| io_error("initialize repository", &metadata, e))?;
         for child in ["objects", "refs", "tags", "tmp"] {
@@ -874,7 +874,7 @@ impl Repository {
     pub fn open(root: impl AsRef<Path>) -> RepositoryResult<Self> {
         let root = root.as_ref().to_path_buf();
         require_directory(&root)?;
-        let metadata = root.join(".uwgit");
+        let metadata = root.join(".wasm-git");
         require_directory(&metadata)?;
         let common_metadata = linked_worktrees::open_common(&root, &metadata)?;
         for child in ["objects", "refs", "tmp"] {
@@ -884,7 +884,7 @@ impl Repository {
         if !pack_storage::supported_format(&read_regular(&metadata.join("format"))?)
             || !pack_storage::supported_format(&read_regular(&common_metadata.join("format"))?)
         {
-            return Err("unsupported or incomplete uwgit repository format".into());
+            return Err("unsupported or incomplete wasm-git repository format".into());
         }
         let repo = Self {
             root,
@@ -3409,7 +3409,7 @@ impl Repository {
         lock._file
             .write_all(
                 &[
-                    b"UWGLCK\0\x01".as_slice(),
+                    b"WGTLCK\0\x01".as_slice(),
                     &crate::platform_fs::process_id().to_be_bytes(),
                 ]
                 .concat(),
@@ -3635,7 +3635,7 @@ impl Repository {
     /// describe such an I/O outcome as a rolled-back association change.
     fn publish_upstreams(&self, bytes: &[u8], operation: &str) -> RepositoryResult<()> {
         self.atomic_write(&self.common_metadata.join("upstreams.bin"), bytes)
-            .map_err(|error| format!("{operation}: upstream metadata publication may have occurred: {error}; inspect .uwgit/upstreams.bin before retrying"))
+            .map_err(|error| format!("{operation}: upstream metadata publication may have occurred: {error}; inspect .wasm-git/upstreams.bin before retrying"))
     }
 
     fn read_tracking(
@@ -4960,11 +4960,11 @@ pub fn validate_tree_path(path: &str) -> RepositoryResult<()> {
         || path.contains(':')
         || path.chars().any(char::is_control)
         || path.split('/').any(|part| {
-            part.is_empty() || part == "." || part == ".." || part.eq_ignore_ascii_case(".uwgit")
+            part.is_empty() || part == "." || part == ".." || part.eq_ignore_ascii_case(".wasm-git")
         })
     {
         return Err(format!(
-            "invalid tree path {path:?}: expected a normal relative path outside .uwgit"
+            "invalid tree path {path:?}: expected a normal relative path outside .wasm-git"
         ));
     }
     Ok(())
@@ -6821,7 +6821,7 @@ mod tests {
     impl TempDirectory {
         fn new() -> Self {
             // The test runner confines TMPDIR to project-local .tmp/.
-            let path = std::env::temp_dir().join(unique_name("uwgit-repository-test"));
+            let path = std::env::temp_dir().join(unique_name("wasm-git-repository-test"));
             fs::create_dir(&path).unwrap();
             Self(path)
         }
@@ -9025,8 +9025,8 @@ mod tests {
             "a/../x",
             "a//x",
             "a/./x",
-            "a/.uwgit/x",
-            ".UWGIT/x",
+            "a/.wasm-git/x",
+            ".WASM-GIT/x",
             "a\\x",
             "C:x",
             "a\nx",
@@ -9452,7 +9452,7 @@ mod tests {
         fs::create_dir(repo.root.join("new.wasm")).unwrap();
         let worktree: BTreeMap<_, _> = complete_repository_bytes(&repo)
             .into_iter()
-            .filter(|(path, _)| !path.starts_with(".uwgit"))
+            .filter(|(path, _)| !path.starts_with(".wasm-git"))
             .collect();
         let unknown = wasm(&[99, 1, 0x42]);
         let resolved = files(&[
@@ -9485,7 +9485,7 @@ mod tests {
         assert_eq!(
             complete_repository_bytes(&repo)
                 .into_iter()
-                .filter(|(path, _)| !path.starts_with(".uwgit"))
+                .filter(|(path, _)| !path.starts_with(".wasm-git"))
                 .collect::<BTreeMap<_, _>>(),
             worktree
         );
@@ -9568,7 +9568,7 @@ mod tests {
         }
         for invalid in [
             files(&[("../escape.wasm", wasm(&[]))]),
-            files(&[("a/.uwgit/b", wasm(&[]))]),
+            files(&[("a/.wasm-git/b", wasm(&[]))]),
             files(&[("a", wasm(&[])), ("a/b", wasm(&[]))]),
             files(&[("valid.wasm", b"invalid header".to_vec())]),
             files(&[("empty.wasm", Vec::new())]),

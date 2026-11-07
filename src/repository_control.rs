@@ -1,7 +1,7 @@
 //! Versioned binary control files. Display identities stay hexadecimal at the
 //! CLI boundary; on-disk direct references contain exactly 32 digest bytes.
 use super::*;
-const REF_MAGIC: &[u8; 8] = b"UWGREF\0\x01";
+const REF_MAGIC: &[u8; 8] = b"WGTREF\0\x01";
 
 pub(super) fn encode_reference(value: &str, object: bool) -> RepositoryResult<Vec<u8>> {
     if object {
@@ -64,6 +64,6 @@ mod tests {
                 assert!(decode_reference(&bytes, true).is_err());
             }
         }
-        assert_eq!(FORMAT, b"UWGRPO\0\x03");
+        assert_eq!(FORMAT, b"WGTRPO\0\x03");
     }
 }

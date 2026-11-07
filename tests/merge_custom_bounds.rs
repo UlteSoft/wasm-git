@@ -161,7 +161,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
-            "uwgit-merge-custom-bounds-{}-{}",
+            "wasm-git-merge-custom-bounds-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -220,7 +220,7 @@ fn store_snapshot(repo: &str) -> BTreeMap<PathBuf, Vec<u8>> {
             }
         }
     }
-    let root = Path::new(repo).join(".uwgit");
+    let root = Path::new(repo).join(".wasm-git");
     let mut result = BTreeMap::new();
     visit(&root, &root, &mut result);
     result

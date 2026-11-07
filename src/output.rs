@@ -41,7 +41,7 @@ fn unique_name() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |duration| duration.as_nanos());
     format!(
-        ".uwgit-output-{}-{timestamp}-{}.tmp",
+        ".wasm-git-output-{}-{timestamp}-{}.tmp",
         crate::platform_fs::process_id(),
         TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
     )
@@ -171,7 +171,7 @@ pub fn write_export_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
         component
             .as_os_str()
             .to_str()
-            .is_some_and(|part| part.eq_ignore_ascii_case(".uwgit"))
+            .is_some_and(|part| part.eq_ignore_ascii_case(".wasm-git"))
     }) {
         return Err("output must be outside repository metadata".into());
     }
@@ -184,11 +184,11 @@ pub fn create_export_directory(path: &Path) -> Result<PathBuf, String> {
         .ok_or("export directory must name a new directory")?;
     let parent = crate::platform_fs::canonicalize(parent_directory(path))
         .map_err(|error| io_error("resolve export parent", parent_directory(path), error))?;
-    if name.to_string_lossy().eq_ignore_ascii_case(".uwgit")
+    if name.to_string_lossy().eq_ignore_ascii_case(".wasm-git")
         || parent.components().any(|part| {
             part.as_os_str()
                 .to_string_lossy()
-                .eq_ignore_ascii_case(".uwgit")
+                .eq_ignore_ascii_case(".wasm-git")
         })
     {
         return Err("export directory must be outside repository metadata".into());
@@ -299,7 +299,7 @@ mod tests {
     #[test]
     fn exports_reject_metadata_components_and_preserve_internal_publication() {
         let temp = TempDirectory::new();
-        for (case, name) in [("lower", ".uwgit"), ("mixed", ".UwGiT")] {
+        for (case, name) in [("lower", ".wasm-git"), ("mixed", ".WaSm-GiT")] {
             let container = temp.path(case);
             fs::create_dir(&container).unwrap();
             let metadata = container.join(name);
@@ -315,14 +315,14 @@ mod tests {
                         .unwrap()
                         .file_name()
                         .to_string_lossy()
-                        .starts_with(".uwgit-output-")
+                        .starts_with(".wasm-git-output-")
                 }));
             }
             let internal = metadata.join("internal");
             write_new_file(&internal, b"metadata").unwrap();
             assert_eq!(fs::read(internal).unwrap(), b"metadata");
         }
-        let ordinary = temp.path(".uwgit-exports");
+        let ordinary = temp.path(".wasm-git-exports");
         fs::create_dir(&ordinary).unwrap();
         let destination = ordinary.join("result.wasm");
         write_export_file(&destination, b"complete export").unwrap();
@@ -382,7 +382,7 @@ mod tests {
                         .file_name()
                         .unwrap()
                         .to_string_lossy()
-                        .starts_with(".uwgit-output-")));
+                        .starts_with(".wasm-git-output-")));
                 }
             }
             fs::remove_file(probe).unwrap();
@@ -394,7 +394,7 @@ mod tests {
     fn exports_resolve_parent_aliases_before_metadata_check_and_publication() {
         use std::os::unix::fs::symlink;
         let temp = TempDirectory::new();
-        let metadata = temp.path(".uwgit");
+        let metadata = temp.path(".wasm-git");
         fs::create_dir(&metadata).unwrap();
         let blocked_alias = temp.path("metadata-alias");
         symlink(&metadata, &blocked_alias).unwrap();

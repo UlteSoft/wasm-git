@@ -140,7 +140,7 @@ checkout 的旧导出形式用于检查原字节新副本；还原已有路径�
 HTTP/SSH 共用的原生服务现已补入按 principal/仓库/ref 授权、只读 SSH、原子多引用接收、
 隔离区 pre-receive/post-receive、二进制身份审计、引用分页、have 闭包与二进制块增量传输，
 以及 fork 后 GC 的持续共享。部署方法、逐项限制和回归用例见 [server.md](server.md)。
-这些是 uwgit 等价工作流，不能视为 Git 对象/线协议兼容或完整托管平台。
+这些是 wasm-git 等价工作流，不能视为 Git 对象/线协议兼容或完整托管平台。
 
 ## 2026-11-06 批量接收与保留策略复查
 

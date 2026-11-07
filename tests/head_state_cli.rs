@@ -11,7 +11,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let root = std::env::temp_dir().join(format!(
-            "uwgit-head-{}-{}",
+            "wasm-git-head-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -66,10 +66,10 @@ fn detached_commits_amend_and_reset_move_only_the_actual_head_pointer() {
     let root = t.repo("root");
     let r = p(&root);
     let base = commit(&root, 1);
-    let branch = fs::read(root.join(".uwgit/refs/main")).unwrap();
+    let branch = fs::read(root.join(".wasm-git/refs/main")).unwrap();
     ok(&["switch", r, "--detach", "HEAD"]);
     assert_eq!(
-        fs::read(root.join(".uwgit/HEAD")).unwrap(),
+        fs::read(root.join(".wasm-git/HEAD")).unwrap(),
         native::reference(&base)
     );
     let quiet = run(&["symbolic-ref", r, "-q", "HEAD"]);
@@ -77,8 +77,11 @@ fn detached_commits_amend_and_reset_move_only_the_actual_head_pointer() {
     assert!(quiet.stdout.is_empty() && quiet.stderr.is_empty());
     let second = commit(&root, 2);
     assert_ne!(second, base);
-    assert_eq!(fs::read(root.join(".uwgit/refs/main")).unwrap(), branch);
-    assert_eq!(fs::read_dir(root.join(".uwgit/refs")).unwrap().count(), 1);
+    assert_eq!(fs::read(root.join(".wasm-git/refs/main")).unwrap(), branch);
+    assert_eq!(
+        fs::read_dir(root.join(".wasm-git/refs")).unwrap().count(),
+        1
+    );
     let status = json(&["status", r]);
     assert_eq!(status["detached"], true);
     assert_eq!(status["head"], second);
@@ -101,7 +104,7 @@ fn detached_commits_amend_and_reset_move_only_the_actual_head_pointer() {
     assert_eq!(ok(&["rev-parse", r, "HEAD@{1}"]), amended);
     ok(&["switch", r, "main"]);
     assert_eq!(
-        fs::read(root.join(".uwgit/HEAD")).unwrap(),
+        fs::read(root.join(".wasm-git/HEAD")).unwrap(),
         native::reference("main")
     );
     ok(&["fsck", r]);
@@ -115,9 +118,9 @@ fn orphan_starts_an_empty_root_and_keeps_untracked_files_and_existing_history() 
     let base = commit(&root, 1);
     fs::write(root.join("keep.txt"), b"untracked original").unwrap();
     fs::write(root.join("a.wasm"), wasm(2)).unwrap();
-    let before = fs::read(root.join(".uwgit/HEAD")).unwrap();
+    let before = fs::read(root.join(".wasm-git/HEAD")).unwrap();
     assert!(!run(&["switch", r, "--orphan", "fresh"]).status.success());
-    assert_eq!(fs::read(root.join(".uwgit/HEAD")).unwrap(), before);
+    assert_eq!(fs::read(root.join(".wasm-git/HEAD")).unwrap(), before);
     ok(&["restore", r, "--", "a.wasm"]);
     ok(&["checkout", r, "--orphan", "fresh"]);
     assert!(!root.join("a.wasm").exists());
@@ -178,7 +181,10 @@ fn detached_head_without_any_branch_survives_bundle_clone_gc_and_index_materiali
     ok(&["switch", r, "--detach"]);
     let tip = commit(&root, 2);
     ok(&["branch", r, "-D", "main"]);
-    assert_eq!(fs::read_dir(root.join(".uwgit/refs")).unwrap().count(), 0);
+    assert_eq!(
+        fs::read_dir(root.join(".wasm-git/refs")).unwrap().count(),
+        0
+    );
     assert_eq!(ok(&["show-ref", r, "--head"]), format!("{tip} HEAD"));
     assert_eq!(ok(&["rev-list", r, "--all", "--count"]), "2");
     assert_eq!(json(&["fsck", r])["unreachable_objects"], 0);
@@ -189,7 +195,7 @@ fn detached_head_without_any_branch_survives_bundle_clone_gc_and_index_materiali
     let clone = t.0.join("clone");
     ok(&["clone", r, p(&clone)]);
     assert_eq!(
-        fs::read(clone.join(".uwgit/HEAD")).unwrap(),
+        fs::read(clone.join(".wasm-git/HEAD")).unwrap(),
         native::reference(&tip)
     );
     ok(&[
@@ -278,7 +284,7 @@ fn detached_conflict_continuation_keeps_branch_tips_and_records_two_real_parents
     );
     assert_eq!(ok(&["rev-parse", r, "main"]), ours);
     assert_eq!(ok(&["rev-parse", r, "topic"]), theirs);
-    assert!(!root.join(".uwgit/pending.bin").exists());
+    assert!(!root.join(".wasm-git/pending.bin").exists());
     assert_eq!(fs::read(root.join("a.wasm")).unwrap(), wasm(4));
     ok(&["fsck", r]);
 }

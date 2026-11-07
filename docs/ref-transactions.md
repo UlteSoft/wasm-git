@@ -1,6 +1,6 @@
 # 原生引用事务
 
-`update-ref` 只发布 uwgit 已验证的实际 commit；Wasm、tree、commit 和 SHA-256 对象格式保持原样。单引用入口与批量入口使用同一套持久化事务。显式 HEAD 操作可以改变当前工作树的指针，index 和工作文件始终保持原字节；需要切换工作文件时使用 switch。
+`update-ref` 只发布 wasm-git 已验证的实际 commit；Wasm、tree、commit 和 SHA-256 对象格式保持原样。单引用入口与批量入口使用同一套持久化事务。显式 HEAD 操作可以改变当前工作树的指针，index 和工作文件始终保持原字节；需要切换工作文件时使用 switch。
 
 ```sh
 wasm-git update-ref DIR refs/heads/topic NEW_ID EXPECTED_OLD_ID
@@ -55,7 +55,7 @@ EOF
 wasm-git update-ref DIR --no-deref HEAD EXISTING_COMMIT_ID EXPECTED_OLD_COMMIT_ID
 ```
 
-`symref-update HEAD NEW_TARGET [ref OLD_TARGET | oid OLD_ID]` 和 `symref-verify HEAD [OLD_TARGET]` 接入同一事务。目标仅为正常 `refs/heads/NAME`；可指向尚无提交的 unborn 分支。ref 租约要求 HEAD 确实是所给符号目标，detached HEAD 失败；oid 租约比较当前真实 tip，也可将 detached HEAD 按预期非零 oid 重新附着。全零旧值要求引用不存在：在 `--no-deref` 下，即使没有 tip，符号 HEAD 也已存在，必须拒绝；切换 unborn HEAD 应使用精确 `ref OLD_TARGET` 租约。默认解引用模式的 `verify HEAD ZERO_ID` 可以检查目标分支不存在。verify 省略目标要求符号引用不存在，uwgit 正常仓库的 HEAD 因而会拒绝这一条件。
+`symref-update HEAD NEW_TARGET [ref OLD_TARGET | oid OLD_ID]` 和 `symref-verify HEAD [OLD_TARGET]` 接入同一事务。目标仅为正常 `refs/heads/NAME`；可指向尚无提交的 unborn 分支。ref 租约要求 HEAD 确实是所给符号目标，detached HEAD 失败；oid 租约比较当前真实 tip，也可将 detached HEAD 按预期非零 oid 重新附着。全零旧值要求引用不存在：在 `--no-deref` 下，即使没有 tip，符号 HEAD 也已存在，必须拒绝；切换 unborn HEAD 应使用精确 `ref OLD_TARGET` 租约。默认解引用模式的 `verify HEAD ZERO_ID` 可以检查目标分支不存在。verify 省略目标要求符号引用不存在，wasm-git 正常仓库的 HEAD 因而会拒绝这一条件。
 
 这两条符号指令要求全局 `--no-deref` 或前一条 `option no-deref`。同一事务可创建或更新目标分支，再一次性发布 HEAD；oid 修订仍从事务准备时的原快照解析，HEAD 完成日志使用最终目标分支的实际 tip。默认普通 HEAD update 仍保护已检出分支；显式 `--no-deref` 的普通 update 将 HEAD 切到真实 commit，进入 detached 状态。原生 HEAD 必须存在，删除 HEAD 和任意符号别名的创建/删除仍不在当前模型中。
 
@@ -78,7 +78,7 @@ EOF
 
 在 topic 的旧值不匹配时，reviewed 标签仍可创建；对应拒绝记录使用 `rejected REF NEW OLD REASON` 的逐行文本，未提供的值写为 64 个零。NEW/OLD 是同快照解析后的真实对象 ID，拒绝行按完整引用名排序，`-z` 仍输出换行文本。省略 OLD 的 verify 仍要求不存在，不会变成任意值校验。拒绝项没有引用、upstream 或 reflog 写入；同值 update 与 verify 成功项也不追加日志。全部项被拒绝时，处理仍成功退出且不发布事务记录或日志。
 
-可逐项拒绝的情形包括旧值不匹配、要求不存在但已存在、要求旧提交却不存在、完整 ID 指向缺失或非 commit 对象、最终名称前缀冲突，以及 uwgit 的已检出分支保护。已有引用保持其可接受的更新；两个互相冲突的新引用同时拒绝，不依赖输入先后。先过滤失败的删除条件，再检查名称结构；被拒绝的删除不能为另一项创建腾出名称。
+可逐项拒绝的情形包括旧值不匹配、要求不存在但已存在、要求旧提交却不存在、完整 ID 指向缺失或非 commit 对象、最终名称前缀冲突，以及 wasm-git 的已检出分支保护。已有引用保持其可接受的更新；两个互相冲突的新引用同时拒绝，不依赖输入先后。先过滤失败的删除条件，再检查名称结构；被拒绝的删除不能为另一项创建腾出名称。
 
 错误字段数、重复引用、非法名称、未知修订表达式、create 的零 NEW、delete 的显式零 OLD、不完整 NUL/文本记录、未知命令与选项仍是整批错误。无法读取或损坏的对象、日志、worktree 注册等元数据，以及锁或 I/O 错误也不会变成逐项拒绝。所有准备检查完成后才写入持久决定；提交后的 I/O 失败沿用下述恢复规则，不能解释为已经回滚。
 
@@ -88,11 +88,11 @@ prepare 保存接受项及其拒绝结果，并持有共享锁，不输出拒绝
 
 没有 start 或 prepare 的输入在 EOF 隐式提交；使用 start 或 prepare 后必须 commit，否则 EOF 丢弃当前事务。start 也可将此前已排队的更新纳入显式事务。prepare 验证快照后持有共享 writer 锁，响应 `prepare: ok` 后不会提前发布。abort 或 EOF 释放这个锁，不写入持久提交决定。commit/abort 后可用新的 start 开始下一笔事务；已经提交的前一笔不因后来一笔失败而撤销。各控制响应立即 flush，可用于交互管道。
 
-commit 先同步 `.uwgit/ref-transaction.bin`，保存完整引用前像、逐项旧/新值、原始 upstream 和 reflog 字节。该记录是持久提交决定：随后顺序写入配置、引用和完整日志，最后同步删除记录。返回 I/O 错误时会明确说明提交可能已经发生，不能把错误当作回滚。
+commit 先同步 `.wasm-git/ref-transaction.bin`，保存完整引用前像、逐项旧/新值、原始 upstream 和 reflog 字节。该记录是持久提交决定：随后顺序写入配置、引用和完整日志，最后同步删除记录。返回 I/O 错误时会明确说明提交可能已经发生，不能把错误当作回滚。
 
 每次获取共享 writer 锁后，查询和写入都会先检查这份记录。恢复使用保存的前像验证完整对象库和其他元数据，再一次性预检所有当前引用、upstream 和 reflog：只能是各项原像或目标像。随后幂等补齐最终结果和固定日志字节，避免重复追加。若有后来人工写入的第三种内容，整次恢复先失败，保留内容和记录，所有后续受锁操作也停止。应检查并恢复对应原像/目标像，再重试查询。进程崩溃遗留的 writer 锁仍沿用现有规则，需要人工检查并移除；不会根据 PID 猜测并自动解锁。
 
-一致性面向遵守共享锁的 uwgit 读写操作。直接读取底层多个引用文件的外部程序可能观察到安装中间态；旧版本也不识别新恢复记录，不应在恢复未完成时混用。
+一致性面向遵守共享锁的 wasm-git 读写操作。直接读取底层多个引用文件的外部程序可能观察到安装中间态；旧版本也不识别新恢复记录，不应在恢复未完成时混用。
 
 ## 验证及范围
 
@@ -102,4 +102,4 @@ HEAD 测试覆盖主/linked worktree 从任一入口打开恢复、符号与 det
 
 逐项模式另覆盖成功/拒绝混合、全拒绝保持、只为接受项记日志、原生分支保护、选项覆盖、交互拒绝输出时机，以及过滤后的接受子集逐写入前缀恢复。独立 Git 仓库对照语义拒绝、名称冲突、prepare/abort/EOF/commit、NUL、格式错误及最终引用值；Wasm 原字节、index 和工作树也必须保持。
 
-协议语义参考 [Git update-ref](https://git-scm.com/docs/git-update-ref)，实际实现和恢复记录均为 uwgit 原生。本轮仍不包含任意符号别名及 `symref-create/delete`、任意引用命名空间、网络多引用原子推送；这些仍在能力矩阵中列为剩余项。
+协议语义参考 [Git update-ref](https://git-scm.com/docs/git-update-ref)，实际实现和恢复记录均为 wasm-git 原生。本轮仍不包含任意符号别名及 `symref-create/delete`、任意引用命名空间、网络多引用原子推送；这些仍在能力矩阵中列为剩余项。

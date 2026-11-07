@@ -2,7 +2,7 @@
 
 普通单目标命令保持 stateless：冲突只输出 JSON、退出 2，不改 index、工作文件或建立记录。
 已有 index 时，显式 `--record-conflict` 使用原生冻结队列，自动准备完整步骤的 stage 0 和真实冲突侧。
-merge 使用 version 3 journal；单目标 pick/revert 使用兼容的 version 2。对象、Wasm 图像、引用和传输仍全部由 uwgit 实现。
+merge 使用 version 3 journal；单目标 pick/revert 使用兼容的 version 2。对象、Wasm 图像、引用和传输仍全部由 wasm-git 实现。
 
 ```sh
 wasm-git merge DIR REV --record-conflict -m MESSAGE

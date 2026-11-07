@@ -4,7 +4,7 @@ use bincode::Options;
 use serde::{de::DeserializeOwned, Serialize};
 use std::fmt::Write as _;
 
-const MAGIC: &[u8; 8] = b"UWGM\0\0\0\x01";
+const MAGIC: &[u8; 8] = b"WGTM\0\0\0\x01";
 
 /// Unambiguous display identities without allocating a JSON representation.
 pub(crate) fn text_key<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {

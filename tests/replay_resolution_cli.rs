@@ -18,7 +18,7 @@ struct Temp {
 impl Temp {
     fn new() -> Self {
         let base = std::env::temp_dir().join(format!(
-            "uwgit-replay-resolution-{}-{}",
+            "wasm-git-replay-resolution-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -141,7 +141,7 @@ fn snapshot(root: &Path) -> BTreeMap<PathBuf, Entry> {
 fn worktree(t: &Temp) -> BTreeMap<PathBuf, Entry> {
     snapshot(&t.repo)
         .into_iter()
-        .filter(|(path, _)| !path.starts_with(".uwgit"))
+        .filter(|(path, _)| !path.starts_with(".wasm-git"))
         .collect()
 }
 fn unchanged_at(root: &Path, args: &[&str]) {
@@ -219,7 +219,7 @@ fn reviewed_cherry_pick_commits_one_parent_and_preserves_complete_index_and_dirt
     t.write("a.wasm", b"unfinished editor bytes\0\xff");
     fs::remove_file(t.path("chosen/unknown.wasm")).unwrap();
     t.write("private.txt", b"untracked private data");
-    let index = fs::read(t.path(".uwgit/index")).unwrap();
+    let index = fs::read(t.path(".wasm-git/index")).unwrap();
     let working = worktree(&t);
     let report = resolve(
         &t,
@@ -256,7 +256,7 @@ fn reviewed_cherry_pick_commits_one_parent_and_preserves_complete_index_and_dirt
         hex(UNKNOWN)
     );
     assert!(!file(&report, "chosen/unknown.wasm")["resolved"]["audit"].is_null());
-    assert_eq!(fs::read(t.path(".uwgit/index")).unwrap(), index);
+    assert_eq!(fs::read(t.path(".wasm-git/index")).unwrap(), index);
     assert_eq!(worktree(&t), working);
     assert_eq!(ok(&["rev-parse", t.root(), "topic"]).trim(), target);
     value(&["fsck", t.root()]);
@@ -271,7 +271,7 @@ fn root_targets_allow_reviewed_empty_trees_without_a_prior_conflict_or_pending_s
         t.stage("a.wasm", &module(1, 0));
         let head = t.commit("current head");
         ok(&["rm", t.root(), "--cached", "a.wasm"]);
-        let index = fs::read(t.path(".uwgit/index")).unwrap();
+        let index = fs::read(t.path(".wasm-git/index")).unwrap();
         let working = worktree(&t);
         unchanged(
             &t,
@@ -301,7 +301,7 @@ fn root_targets_allow_reviewed_empty_trees_without_a_prior_conflict_or_pending_s
         );
         assert_eq!(file(&report, "a.wasm")["from_head"]["status"], "deleted");
         assert_eq!(t.entries("HEAD"), serde_json::json!({}));
-        assert_eq!(fs::read(t.path(".uwgit/index")).unwrap(), index);
+        assert_eq!(fs::read(t.path(".wasm-git/index")).unwrap(), index);
         assert_eq!(worktree(&t), working);
         value(&["fsck", t.root()]);
     }
@@ -365,7 +365,7 @@ fn reviewed_merge_mainline_two_keeps_single_parent_and_reverses_the_intended_del
             ],
         );
         let working = worktree(&t);
-        let index = fs::read(t.path(".uwgit/index")).unwrap();
+        let index = fs::read(t.path(".wasm-git/index")).unwrap();
         let report = resolve(
             &t,
             operation,
@@ -387,7 +387,7 @@ fn reviewed_merge_mainline_two_keeps_single_parent_and_reverses_the_intended_del
         assert_eq!(row["intended_change"]["status"], "modified");
         assert_eq!(value(&["show", t.root(), "HEAD"])["message"], "--ff-only");
         assert_eq!(t.stored("a.wasm"), UNKNOWN);
-        assert_eq!(fs::read(t.path(".uwgit/index")).unwrap(), index);
+        assert_eq!(fs::read(t.path(".wasm-git/index")).unwrap(), index);
         assert_eq!(worktree(&t), working);
     }
 }
@@ -497,7 +497,7 @@ fn missing_invalid_or_locked_index_and_unborn_head_never_publish_a_resolution() 
         ],
     );
     for name in ["index.lock", "write.lock"] {
-        let lock = t.path(&format!(".uwgit/{name}"));
+        let lock = t.path(&format!(".wasm-git/{name}"));
         fs::write(&lock, b"held fixed lock").unwrap();
         unchanged(
             &t,
@@ -512,7 +512,7 @@ fn missing_invalid_or_locked_index_and_unborn_head_never_publish_a_resolution() 
         );
         fs::remove_file(lock).unwrap();
     }
-    let index = t.path(".uwgit/index");
+    let index = t.path(".wasm-git/index");
     let original = fs::read(&index).unwrap();
     let files = BTreeMap::from([
         ("bad".to_owned(), HEADER),
@@ -522,7 +522,7 @@ fn missing_invalid_or_locked_index_and_unborn_head_never_publish_a_resolution() 
         "{{\"format\":2,\"files\":{},\"legacy_path\":null}}\n",
         serde_json::to_string(&files).unwrap()
     );
-    let mut corrupt = b"UWGITIDX\x02".to_vec();
+    let mut corrupt = b"WASMGIDX\x02".to_vec();
     corrupt.extend_from_slice(payload.as_bytes());
     fs::write(&index, corrupt).unwrap();
     unchanged(
@@ -564,7 +564,7 @@ fn dangling_store_corruption_is_rejected_before_any_resolution_objects_are_insta
     ok(&["reset", t.root(), "--hard", &root]);
     t.stage("a.wasm", UNKNOWN);
     fs::write(
-        t.path(&format!(".uwgit/objects/{blob}")),
+        t.path(&format!(".wasm-git/objects/{blob}")),
         b"tampered dangling blob",
     )
     .unwrap();
@@ -591,7 +591,7 @@ fn reviewed_legacy_replay_requires_the_explicit_index_anchor_and_rejects_other_b
     t.stage("chosen.wasm", &module(2, 1));
     t.stage("other.wasm", UNKNOWN);
     t.write("chosen.wasm", b"preserved unfinished legacy work");
-    let index = fs::read(t.path(".uwgit/index")).unwrap();
+    let index = fs::read(t.path(".wasm-git/index")).unwrap();
     let working = worktree(&t);
     let report = resolve(&t, "cherry-pick", &legacy, &legacy, &[]);
     assert_eq!(report["legacy_path"], "chosen.wasm");
@@ -600,7 +600,7 @@ fn reviewed_legacy_replay_requires_the_explicit_index_anchor_and_rejects_other_b
         value(&["show", t.root(), "HEAD"])["legacy_path"],
         "chosen.wasm"
     );
-    assert_eq!(fs::read(t.path(".uwgit/index")).unwrap(), index);
+    assert_eq!(fs::read(t.path(".wasm-git/index")).unwrap(), index);
     assert_eq!(worktree(&t), working);
     let other = Temp::new();
     ok(&["commit", other.root(), s(&input), "-m", "legacy root"]);
@@ -636,11 +636,11 @@ fn metadata_only_resolution_never_reads_or_replaces_a_tracked_worktree_symlink()
     fs::write(&private, b"preserve symlink target").unwrap();
     std::os::unix::fs::symlink(&private, t.path("a.wasm")).unwrap();
     let working = worktree(&t);
-    let index = fs::read(t.path(".uwgit/index")).unwrap();
+    let index = fs::read(t.path(".wasm-git/index")).unwrap();
     let report = resolve(&t, "revert", &root, &root, &[]);
     assert_eq!(report["status"], "committed_resolved");
     assert_eq!(t.stored("a.wasm"), UNKNOWN);
     assert_eq!(worktree(&t), working);
-    assert_eq!(fs::read(t.path(".uwgit/index")).unwrap(), index);
+    assert_eq!(fs::read(t.path(".wasm-git/index")).unwrap(), index);
     assert_eq!(fs::read(private).unwrap(), b"preserve symlink target");
 }

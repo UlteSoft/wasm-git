@@ -1,5 +1,5 @@
 //! Compare public invariants with a real Git executable in separate fixtures.
-//! The uwgit process never invokes Git; only this independent reference test does.
+//! The wasm-git process never invokes Git; only this independent reference test does.
 use serde_json::Value;
 use std::fs;
 use std::io::Write;
@@ -11,7 +11,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let root = std::env::temp_dir().join(format!(
-            "uwgit-git-reference-{}-{}",
+            "wasm-git-git-reference-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -143,7 +143,11 @@ fn merge_restore_matches_git_binary_side_stage_and_undo_rules_for_all_side_masks
                             &["add", "a.wasm"],
                         ));
                     }
-                    let index_path = root.join(if native { ".uwgit/index" } else { ".git/index" });
+                    let index_path = root.join(if native {
+                        ".wasm-git/index"
+                    } else {
+                        ".git/index"
+                    });
                     let before = fs::read(&index_path).unwrap();
                     let result =
                         conflict_reference_command(&root, native, &[command, "-m", "--", "a.wasm"]);
@@ -231,7 +235,11 @@ fn conflict_restore_mixed_paths_and_ignore_unmerged_match_git_without_changing_i
             );
             fs::write(root.join("regular.wasm"), b"unfinished regular edit").unwrap();
             fs::write(root.join("a.wasm"), b"unfinished conflict edit").unwrap();
-            let index_path = root.join(if native { ".uwgit/index" } else { ".git/index" });
+            let index_path = root.join(if native {
+                ".wasm-git/index"
+            } else {
+                ".git/index"
+            });
             let before = fs::read(&index_path).unwrap();
             let stage_before = success(conflict_reference_command(
                 &root,
@@ -244,7 +252,7 @@ fn conflict_restore_mixed_paths_and_ignore_unmerged_match_git_without_changing_i
                 &["restore", mode, "--", "."],
             ));
             // Git refreshes stat data for materialized regular files. Compare
-            // its actual indexed images/stages; uwgit has no such stat cache.
+            // its actual indexed images/stages; wasm-git has no such stat cache.
             assert_eq!(
                 success(conflict_reference_command(
                     &root,
@@ -440,7 +448,7 @@ fn native_with_tree_names_and_admission_match_git_without_publishing_index_chang
         vec!["--with-tree=HEAD", "--error-unmatch", "--", "gone.wasm"],
         vec!["--with-tree=HEAD", "--format=%(path)", "--", "gone.wasm"],
     ] {
-        let before = fs::read(native.join(".uwgit/index")).unwrap();
+        let before = fs::read(native.join(".wasm-git/index")).unwrap();
         let git_before = fs::read(reference.join(".git/index")).unwrap();
         let mut native_args = vec!["ls-files", p(&native)];
         native_args.extend_from_slice(&query);
@@ -451,7 +459,7 @@ fn native_with_tree_names_and_admission_match_git_without_publishing_index_chang
             success(git(&reference, &git_args)),
             "{query:?}"
         );
-        assert_eq!(fs::read(native.join(".uwgit/index")).unwrap(), before);
+        assert_eq!(fs::read(native.join(".wasm-git/index")).unwrap(), before);
         assert_eq!(fs::read(reference.join(".git/index")).unwrap(), git_before);
     }
 }
@@ -1056,7 +1064,7 @@ fn native_head_transactions_match_git_symbolic_oid_leases_and_pointer_only_outco
                 }
             }
             let native_index = if is_native {
-                Some(fs::read(root.join(".uwgit/index")).unwrap())
+                Some(fs::read(root.join(".wasm-git/index")).unwrap())
             } else {
                 None
             };
@@ -1112,7 +1120,7 @@ fn native_head_transactions_match_git_symbolic_oid_leases_and_pointer_only_outco
             ));
             assert_eq!(fs::read(root.join("a.wasm")).unwrap(), wasm(2));
             if let Some(index) = native_index {
-                assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), index);
+                assert_eq!(fs::read(root.join(".wasm-git/index")).unwrap(), index);
             }
         }
         if !git_guards_dangling_symrefs && matches!(case, "unborn-verify" | "unborn-attach") {

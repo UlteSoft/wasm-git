@@ -205,7 +205,7 @@ fn parse_url(value: &str) -> RepositoryResult<Endpoint> {
             let (host, port, loopback) = authority(authority_text, false)?;
             let authority = port.map_or(host.clone(), |p| format!("{host}:{p}"));
             Ok(Endpoint::Http {
-                endpoint: format!("{scheme}://{authority}/v1/uwgit"),
+                endpoint: format!("{scheme}://{authority}/v1/wasm-git"),
                 repository: path.to_owned(),
                 cleartext_remote: scheme == "http" && !loopback,
             })
@@ -303,7 +303,7 @@ fn config_lock(repo: &Repository) -> RepositoryResult<ConfigLock> {
         .open(&path)
         .map_err(|e| {
             format!(
-                "cannot lock remote configuration; inspect .uwgit/remote.lock before retrying: {e}"
+                "cannot lock remote configuration; inspect .wasm-git/remote.lock before retrying: {e}"
             )
         })?;
     Ok(ConfigLock(path, file))
@@ -673,7 +673,7 @@ impl Drop for SecretHeader {
 }
 
 fn secret_header() -> RepositoryResult<Option<SecretHeader>> {
-    let Some(token) = std::env::var_os("UWGIT_REMOTE_TOKEN") else {
+    let Some(token) = std::env::var_os("WASM_GIT_REMOTE_TOKEN") else {
         return Ok(None);
     };
     let token = token
@@ -682,7 +682,7 @@ fn secret_header() -> RepositoryResult<Option<SecretHeader>> {
     if token.is_empty() || token.len() > 4096 || token.bytes().any(|b| !(33..=126).contains(&b)) {
         return Err("remote token must be 1..4096 printable ASCII bytes without whitespace".into());
     }
-    let path = std::env::temp_dir().join(unique("uwgit-http-header"));
+    let path = std::env::temp_dir().join(unique("wasm-git-http-header"));
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -711,7 +711,7 @@ fn rpc_timeout(value: Option<&str>) -> RepositoryResult<Duration> {
             .ok()
             .filter(|n| (1..=3600).contains(n))
             .map(Duration::from_secs)
-            .ok_or_else(|| "UWGIT_RPC_TIMEOUT_SECONDS must be an integer in 1..=3600".into()),
+            .ok_or_else(|| "WASM_GIT_RPC_TIMEOUT_SECONDS must be an integer in 1..=3600".into()),
     }
 }
 
@@ -839,7 +839,7 @@ fn exchange(
     payload: &[u8],
     allow_http: bool,
 ) -> RepositoryResult<(Response, Vec<u8>)> {
-    let configured_timeout = std::env::var("UWGIT_RPC_TIMEOUT_SECONDS")
+    let configured_timeout = std::env::var("WASM_GIT_RPC_TIMEOUT_SECONDS")
         .map(Some)
         .or_else(|e| {
             if matches!(e, std::env::VarError::NotPresent) {
@@ -960,15 +960,16 @@ fn exchange(
             command
                 .arg("--url")
                 .arg(endpoint)
-                .env_remove("UWGIT_REMOTE_TOKEN");
+                .env_remove("WASM_GIT_REMOTE_TOKEN");
             subprocess(command, encoded, "HTTP", timeout).map_err(uncertain)?
         }
         Endpoint::Ssh {
             host, port, root, ..
         } => {
-            let executable = std::env::var_os("UWGIT_SSH_PROGRAM").unwrap_or_else(|| "ssh".into());
-            let program =
-                std::env::var("UWGIT_REMOTE_PROGRAM").unwrap_or_else(|_| "wasm-git-server".into());
+            let executable =
+                std::env::var_os("WASM_GIT_SSH_PROGRAM").unwrap_or_else(|| "ssh".into());
+            let program = std::env::var("WASM_GIT_REMOTE_PROGRAM")
+                .unwrap_or_else(|_| "wasm-git-server".into());
             if program.is_empty() || program.contains(['\0', '\r', '\n']) {
                 return Err("invalid remote executable path".into());
             }
@@ -985,7 +986,7 @@ fn exchange(
                     shell_quote(&program),
                     shell_quote(&root)
                 ))
-                .env_remove("UWGIT_REMOTE_TOKEN");
+                .env_remove("WASM_GIT_REMOTE_TOKEN");
             subprocess(command, encoded, "SSH", timeout).map_err(uncertain)?
         }
     };
@@ -1120,7 +1121,7 @@ fn complete_fetch(
     (mut response, payload): (Response, Vec<u8>),
     repo: Option<&Repository>,
 ) -> RepositoryResult<(Response, Vec<u8>)> {
-    if !payload.starts_with(b"UWGNET01") {
+    if !payload.starts_with(b"WGTNET01") {
         return Ok((response, payload));
     }
     let bytes = match repo {
@@ -1223,7 +1224,7 @@ fn fetch(
     if payload.is_empty() {
         return Err("fetch response lacks its verified bundle".into());
     }
-    if !payload.starts_with(b"UWGNET01") && response.state.is_none() {
+    if !payload.starts_with(b"WGTNET01") && response.state.is_none() {
         return Err("fetch response lacks repository state".into());
     }
     let installed = if repo.clone_selection()?.is_some() {

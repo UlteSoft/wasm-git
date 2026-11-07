@@ -1,6 +1,6 @@
 # 三方合并与冲突处理
 
-uwgit 使用提交 DAG 中的共同祖先作为 base，比较当前 HEAD（ours）与目标提交（theirs）。
+wasm-git 使用提交 DAG 中的共同祖先作为 base，比较当前 HEAD（ours）与目标提交（theirs）。
 共同祖先的“最佳”关系按[Git merge-base 的定义](https://git-scm.com/docs/git-merge-base)计算：
 若一个共同祖先是另一个共同祖先的祖先，前者不是最佳候选。
 当前只自动处理唯一最佳共同祖先；无共同祖先或多个最佳共同祖先时拒绝猜测。

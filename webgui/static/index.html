@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>wasm-git · Local workspace</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/locales.js" defer></script><script src="/i18n.js" defer></script><script src="/catalog.js" defer></script><script src="/server.js" defer></script><script src="/app.js" defer></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="wasm-git home"><span class="brand-icon">w</span> wasm-git <small>WEB GUI</small></a>
+    <div class="sidebar-label">WORKSPACE</div>
+    <nav aria-label="Workspace views">
+      <button id="server-nav" class="nav" data-tab="supervision" hidden><span>▥</span> Server supervision</button>
+      <button class="nav active" data-tab="overview"><span>◈</span> Overview</button>
+      <button class="nav" data-tab="history"><span>◷</span> History</button>
+      <button class="nav" data-tab="compare"><span>⇄</span> Compare</button>
+      <button class="nav" data-tab="module"><span>▧</span> Wasm explorer</button>
+      <button class="nav" data-tab="tools"><span>⑂</span> Repository tools</button>
+      <button class="nav" data-tab="commands"><span>›_</span> Command desk</button>
+    </nav>
+    <div class="sidebar-label ref-heading">BRANCHES & TAGS</div>
+    <div id="refs" class="refs"><p class="muted">Open a repository to see refs.</p></div>
+    <div class="sidebar-bottom"><span class="dot"></span> Local workspace<p>Powered by your wasm-git client</p><button id="shutdown" class="quiet">Stop Web GUI</button></div>
+  </aside>
+  <main>
+    <header class="topbar">
+      <form id="repository-form" class="repository-form">
+        <label for="repository">Repository</label>
+        <input id="repository" name="repository" spellcheck="false" placeholder="/path/to/your/wasm-repository" required>
+        <button type="submit" class="secondary">Open</button>
+      </form>
+      <span id="connection" role="status" class="connection">Connecting…</span><select id="language" class="language" aria-label="Interface language"><option value="eu_US" lang="en">English</option><option value="zh_CN" lang="zh-CN">简体中文</option></select><button id="stop-header" class="quiet" title="Stop the Web GUI">Stop</button>
+    </header>
+    <div class="content">
+      <div id="notice" role="alert" class="notice" hidden></div>
+      <section id="overview" class="panel">
+        <div class="page-heading"><div><p class="eyebrow">YOUR LOCAL REPOSITORY</p><h1 id="repo-title">Workspace overview</h1><p class="muted">Explore history. Review the exact Wasm changes.</p></div><button id="refresh" class="secondary">Refresh</button></div>
+        <div id="overview-stats" class="stats"></div>
+        <div class="card"><div class="card-heading"><div><h2>Working tree</h2><p class="muted">Staged and unstaged changes reported by the client.</p></div><button id="worktree-diff" class="secondary">Review changes →</button></div><div id="working-files" class="empty">Open a wasm-git repository to begin.</div></div>
+        <div id="pending"></div>
+        <form id="commit-form" class="card controls"><h2>Commit staged changes</h2><div class="form-row"><label>Commit message<textarea id="commit-message" rows="2" placeholder="Describe what changed and why" required></textarea></label><label class="checkbox"><input id="commit-amend" type="checkbox"> Amend previous commit</label><button type="button" id="stage-all" class="secondary">Stage all</button><button type="submit">Commit changes</button></div></form>
+        <div id="action-result"></div>
+        <div class="footer-note" id="client-info"></div>
+      </section>
+      <section id="tools" class="panel" hidden>
+        <div class="page-heading"><div><p class="eyebrow">WORK WITH YOUR REPOSITORY</p><h1>Repository tools</h1><p class="muted">Branches, remotes, history and maintenance use the same local client.</p></div></div>
+        <form id="tool-form" class="card controls"><div class="form-row"><label>Action<select id="tool-action"></select></label></div><div id="tool-fields" class="form-row"></div><div id="tool-description" class="muted tool-description"></div><button type="submit">Run action</button></form>
+        <div class="toolbar"><button id="list-remotes" class="secondary">Remotes</button><button id="list-stashes" class="secondary">Stashes</button><button id="list-reflog" class="secondary">Reflog</button></div><div id="tool-result"></div>
+      </section>
+      <section id="commands" class="panel" hidden>
+        <div class="page-heading"><div><p class="eyebrow">THE COMPLETE CLIENT, IN YOUR BROWSER</p><h1>Command desk</h1><p class="muted">Every client command and option is available, including new commands in your installed build.</p></div><button id="client-help" class="secondary">Client help</button></div>
+        <div class="card controls"><div class="form-row"><label>Capability group<select id="capability-group"></select></label><label>Find a capability<input id="capability-search" placeholder="Signatures, PRs, storage, branches…"></label></div><div id="capabilities" class="capabilities"></div><form id="capability-form" hidden><h2 id="capability-title"></h2><p id="capability-description" class="muted"></p><div id="capability-fields" class="form-row"></div><div class="mini-actions"><button type="submit">Prepare command</button><button type="button" id="capability-help" class="secondary">Help for this command</button></div></form></div>
+        <form id="command-form" class="card controls">
+          <label id="command-target-label" hidden>Executable<select id="command-target"><option value="client">Client</option><option value="server">Server administrative command</option><option value="service">Managed server process</option></select></label>
+          <div class="form-row"><label>Command template<input id="command-template" list="command-catalog" placeholder="Search commands, e.g. sign-commit, pr, gc"></label><button type="button" id="use-template" class="secondary">Use template</button><label>Working directory<input id="command-cwd" placeholder="Absolute directory"></label></div>
+          <div class="form-row"><label>Arguments <span class="optional">each line is one exact argument; omit the executable</span><textarea id="command-args" rows="5" spellcheck="false">version
+--build-options</textarea></label></div>
+          <div class="form-row"><label class="checkbox"><input id="args-json" type="checkbox"> Use a JSON array for arguments (supports embedded newlines and empty values)</label></div>
+          <details><summary>Standard input & environment</summary><div class="form-row"><label>Read stdin from local file<input id="stdin-file" placeholder="Optional path on this computer"></label><label class="checkbox"><input id="keep-stdin" type="checkbox"> Keep stdin open for interactive/batch input</label></div><label class="env-label">Environment overrides <span class="optional">JSON object, only for this process; never saved</span><textarea id="command-env" rows="2" spellcheck="false" placeholder='{"WASM_GIT_REMOTE_TOKEN":"…"}'></textarea></label></details>
+          <div class="form-row"><button type="submit" id="run-command">Run client command →</button><button type="button" id="cancel-command" class="secondary" disabled>Cancel running command</button><span class="muted">Arguments are passed directly to the client, without a shell.</span></div>
+        </form>
+        <div class="toolbar"><label>Recent commands<select id="recent-jobs"><option value="">Select a command to inspect its output.</option></select></label><button id="jobs-refresh" class="secondary">Refresh</button></div>
+        <div id="command-status" role="status" class="muted"></div>
+        <div class="toolbar command-downloads"><button id="download-stdout" class="quiet" disabled>Download exact stdout</button><button id="download-stderr" class="quiet" disabled>Download exact stderr</button><button id="remove-job" class="quiet" disabled>Remove completed output</button></div>
+        <div class="command-streams"><div class="card"><div class="card-heading"><h2>Standard output</h2><span id="stdout-size" class="hash"></span></div><pre id="command-stdout" class="terminal" tabindex="0"></pre></div><div class="card"><div class="card-heading"><h2>Standard error</h2><span id="stderr-size" class="hash"></span></div><pre id="command-stderr" class="terminal" tabindex="0"></pre></div></div>
+        <form id="stdin-form" class="card controls" hidden><h2>Send standard input</h2><textarea id="stdin-text" rows="3" spellcheck="false" placeholder="Exact text, including any required newline"></textarea><div class="form-row"><button type="submit">Send text</button><label class="file-upload">Or send file bytes<input id="stdin-upload" type="file"></label><button type="button" id="stdin-eof" class="secondary">Close stdin (EOF)</button></div></form>
+        <div id="command-help"></div>
+      </section>
+      <section id="supervision" class="panel" hidden>
+        <div class="page-heading"><div><p class="eyebrow">LOCAL SERVER OPERATIONS</p><h1>Server supervision</h1><p class="muted">Inspect hosted repositories, receive audit records and managed service processes.</p></div><button id="server-refresh" class="secondary">Refresh</button></div>
+        <form id="server-root-form" class="toolbar"><label>Server root<input id="server-root" placeholder="/srv/wasm-git" required></label><button type="submit">Inspect root</button></form>
+        <div id="server-stats" class="stats"></div><div id="server-services"></div><div id="server-repositories" class="card"></div>
+        <form id="server-launch-form" class="card controls"><h2>Manage a server process</h2><p class="muted">Uses the installed server executable. Stop controls apply only to processes launched here.</p><div id="server-launch-fields" class="form-row"></div><details><summary>Authentication, protection, signatures & receive hooks</summary><div id="server-advanced-fields" class="form-row"></div></details><div class="form-row"><button type="submit">Review & start server</button><button type="button" id="probe-server" class="secondary">Probe loopback listener</button></div><div id="probe-result"></div></form>
+        <div class="card controls"><h2>Server policy & audit</h2><div class="mini-actions"><button id="compile-policy" class="secondary">Compile access policy</button><button id="compile-protection" class="secondary">Compile branch protection</button></div><form id="server-audit-form" class="toolbar"><label>Binary receive-audit file<input id="audit-path" list="audit-files" placeholder="/srv/wasm-git/receive-audit.bin"></label><button type="submit">Read audit log</button></form><div id="audit-result"></div></div>
+        <datalist id="audit-files"></datalist><div id="supervision-result"></div>
+      </section>
+      <section id="history" class="panel" hidden>
+        <div class="page-heading"><div><p class="eyebrow">FOLLOW THE CHANGES</p><h1>Commit history</h1><p class="muted">Select a commit to browse its files and compare its parents.</p></div></div>
+        <form id="history-form" class="toolbar"><label>Revision<input id="history-revision" value="HEAD" list="revisions" required></label><button type="submit">Load history</button></form>
+        <div class="history-layout"><div class="card history-list"><div id="commits" class="empty">Load a revision to see its history.</div><button id="more-history" class="quiet" hidden>Load 100 more commits</button></div><div id="commit-detail" class="card empty">Select a commit.</div></div>
+      </section>
+      <section id="compare" class="panel" hidden>
+        <div class="page-heading"><div><p class="eyebrow">BYTE EVIDENCE, WITH CONTEXT</p><h1>Compare changes</h1><p class="muted">Review sections, functions and instructions from the original Wasm.</p></div></div>
+        <form id="compare-form" class="card controls">
+          <div class="form-row"><label>Compare<select id="compare-mode"><option value="worktree">Working tree ↔ index</option><option value="staged">Index ↔ HEAD (staged)</option><option value="revisions">Two revisions</option></select></label><label id="old-label" hidden>Before<input id="compare-old" value="HEAD^" list="revisions"></label><label id="new-label" hidden>After<input id="compare-new" value="HEAD" list="revisions"></label></div>
+          <div class="form-row"><label>File <span class="optional">optional</span><input id="compare-file" list="files" placeholder="All changed files"></label><label>Section <span class="optional">optional</span><input id="compare-section" list="sections" placeholder="All sections, or custom:name"></label><label>View<select id="compare-view"><option value="json">Structured audit</option><option value="text">Client text</option></select></label><button type="submit">Compare →</button></div>
+        </form>
+        <div id="diff-result" class="result empty">Choose what to compare, then run the audit.</div>
+      </section>
+      <section id="module" class="panel" hidden>
+        <div class="page-heading"><div><p class="eyebrow">INSIDE THE MODULE</p><h1>Wasm explorer</h1><p class="muted">Inspect sections and query the compiler's symbol and source mappings.</p></div></div>
+        <form id="module-form" class="card controls"><div class="form-row"><label>Source<select id="module-source"><option value="revision">Committed revision</option><option value="worktree">Working-tree file</option></select></label><label id="module-revision-label">Revision<input id="module-revision" list="revisions" value="HEAD"></label><label>Wasm file<input id="module-file" list="files" placeholder="path/to/module.wasm"></label><button type="submit">Inspect module</button></div></form>
+        <div id="module-result" class="result empty">Choose a module to inspect its contents.</div>
+        <form id="debug-form" class="card controls"><h2>Symbol & source lookup</h2><p class="muted">Uses the module selected above. Go virtual PCs are separate from file offsets.</p><div class="form-row"><label>Query<select id="debug-kind"><option value="all">All debug information</option><option value="symbol">Symbol name</option><option value="function">Function index</option><option value="offset">File byte offset</option><option value="code-offset">Code payload offset</option><option value="go-pc">Go virtual PC</option><option value="source">Recorded source path</option></select></label><label>Value<input id="debug-query" placeholder="Exact name or decimal position" disabled></label><label>Debug sidecar <span class="optional">optional</span><input id="debug-sidecar" placeholder="Relative path to .map or debug Wasm"></label><button type="submit">Find mappings</button></div><div id="debug-result"></div></form>
+      </section>
+    </div>
+    <footer>wasm-git · Local WebAssembly review <span>Source metadata is advisory. Original bytes remain the audit evidence.</span></footer>
+  </main>
+  <datalist id="revisions"></datalist><datalist id="files"></datalist><datalist id="sections"><option value="code"><option value="type"><option value="import"><option value="export"><option value="data"><option value="custom:name"><option value="custom:producers"><option value="custom:.debug_info"><option value="custom:sourceMappingURL"></datalist>
+  <datalist id="command-catalog"></datalist>
+  <dialog id="stop-dialog"><h2>Stop the local Web GUI?</h2><p>Running commands and servers launched by this GUI will be stopped. Repository files remain on disk; inspect interrupted operations before retrying.</p><div class="dialog-actions"><button id="cancel-stop" class="secondary">Keep open</button><button id="confirm-stop" class="danger">Stop GUI</button></div></dialog>
+  <dialog id="action-dialog"><h2 id="action-dialog-title">Review action</h2><p id="action-dialog-description"></p><pre id="action-dialog-detail" class="json"></pre><div class="dialog-actions"><button id="cancel-action" class="secondary">Cancel</button><button id="confirm-action" class="danger">Apply action</button></div></dialog>
+</body>
+</html>

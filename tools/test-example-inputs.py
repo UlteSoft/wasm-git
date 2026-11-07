@@ -15,14 +15,14 @@ import unittest
 
 sys.dont_write_bytecode = True
 SPEC = importlib.util.spec_from_file_location(
-    "uwgit_example_inputs", Path(__file__).with_name("uwvm-examples-inputs.py"))
+    "wasm-git_example_inputs", Path(__file__).with_name("uwvm-examples-inputs.py"))
 INPUTS = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(INPUTS)
 
 
 class SDKInputs(unittest.TestCase):
     def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory(prefix="uwgit-sdk-inputs-")
+        self.temporary = tempfile.TemporaryDirectory(prefix="wasm-git-sdk-inputs-")
         self.root = Path(self.temporary.name)
         (self.root / "examples").mkdir()
         (self.root / "examples/module.wasm").write_bytes(b"\0asm\x01\0\0\0")

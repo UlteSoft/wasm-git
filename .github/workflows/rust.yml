@@ -34,6 +34,17 @@ jobs:
       - run: python3 tools/test-wasm-features.py
       - run: cargo clippy --locked --all-features --all-targets -- -D warnings
       - run: cargo test --locked --all-features
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Independent Web GUI and bilingual capability coverage
+        env:
+          WASM_GIT_CLIENT: ${{ github.workspace }}/.tmp/target/debug/wasm-git
+          WASM_GIT_SERVER: ${{ github.workspace }}/.tmp/target/debug/wasm-git-server
+        run: |
+          python3 webgui/test_webgui.py
+          node webgui/test_catalog.cjs
+          for source in webgui/static/*.js; do node --check "$source"; done
       - run: cargo test --locked --no-default-features --features client --test build_modes
       - run: cargo check --locked --no-default-features --features server --lib --bins
   release-builds:

@@ -16,7 +16,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
-            "uwgit-path-transitions-{}-{}",
+            "wasm-git-path-transitions-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -228,14 +228,14 @@ fn index_lock_and_ref_lock_leave_whole_prefix_exchange_unchanged() {
     let t = Temp::new();
     t.history();
     ok(&["switch", t.root(), "before"]);
-    t.write(".uwgit/index.lock", b"held index lock");
+    t.write(".wasm-git/index.lock", b"held index lock");
     no_change(&t, &["switch", t.root(), "after"]);
     no_change(&t, &["reset", t.root(), "--hard", "after"]);
-    fs::remove_file(t.0.join(".uwgit/index.lock")).unwrap();
-    t.write(".uwgit/write.lock", b"held repository lock");
+    fs::remove_file(t.0.join(".wasm-git/index.lock")).unwrap();
+    t.write(".wasm-git/write.lock", b"held repository lock");
     no_change(&t, &["switch", t.root(), "after"]);
     no_change(&t, &["reset", t.root(), "--hard", "after"]);
-    fs::remove_file(t.0.join(".uwgit/write.lock")).unwrap();
+    fs::remove_file(t.0.join(".wasm-git/write.lock")).unwrap();
     ok(&["switch", t.root(), "after"]);
     t.assert_after();
 }
@@ -292,7 +292,7 @@ fn stash_late_untracked_obstruction_is_detected_before_stash_or_worktree_publica
     ok(&["mv", t.root(), "module", "module/深/module.wasm"]);
     t.write("module/zz-private.txt", b"private untracked bytes");
     assert!(no_change(&t, &["stash", t.root(), "push"]).contains("untracked"));
-    assert!(!t.0.join(".uwgit/stash").exists());
+    assert!(!t.0.join(".wasm-git/stash").exists());
     fs::remove_file(t.0.join("module/zz-private.txt")).unwrap();
     ok(&["stash", t.root(), "push"]);
     ok(&["stash", t.root(), "pop", "0"]);

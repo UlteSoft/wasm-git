@@ -1,8 +1,8 @@
-# uwgit
+# wasm-git
 
 [English](README.eu_US.md) · [文档目录](documents/README.zh_CN.md)
 
-uwgit 是原生 WebAssembly 审计与版本历史系统。它直接保留原始二进制，解释更新时不经过
+wasm-git 是原生 WebAssembly 审计与版本历史系统。它直接保留原始二进制，解释更新时不经过
 WAT 往返转换，也不使用规范化表示替换原文件。命令行客户端名为 `wasm-git`，可独立选择
 构建的服务端名为 `wasm-git-server`。
 
@@ -20,6 +20,21 @@ WAT 往返转换，也不使用规范化表示替换原文件。命令行客户�
 [白皮书](documents/WHITEPAPER.zh_CN.md)说明证据模型和实现边界；
 [使用手册](documents/USER_MANUAL.zh_CN.md)介绍日常操作；
 [服务端手册](documents/SERVER_ADMINISTRATION.zh_CN.md)介绍部署、运维与恢复。
+
+## 本地网页版
+
+独立 Python 界面支持 English / 简体中文切换、仓库审阅与操作、完整原生命令入口，
+并提供单独的服务器监管入口。未找到原生程序时，会从当前仓库源码构建。
+
+```sh
+python3 webgui/client.py start --open
+python3 webgui/server.py start --root /path/to/hosting-root --open
+python3 webgui/client.py stop
+python3 webgui/server.py stop
+```
+
+详见 [Web 界面手册](documents/WEBGUI.zh_CN.md)：程序选择、审计预览、签名/PR
+表单、服务管理、限制和启动关闭。
 
 ## 构建客户端、服务端或两者
 
@@ -62,9 +77,9 @@ section 选择器可重复，选择顶层物理 section 的并集。筛选报告
 计算跨 section 的调用、导出或签名输入依赖；这些问题应使用完整 diff。
 
 ```sh
-wasm-git patch old.wasm new.wasm --output change.uwgp
-wasm-git apply old.wasm change.uwgp --check
-wasm-git apply old.wasm change.uwgp --output restored.wasm
+wasm-git patch old.wasm new.wasm --output change.wgp
+wasm-git apply old.wasm change.wgp --check
+wasm-git apply old.wasm change.wgp --output restored.wasm
 ```
 
 补丁和导出的目标必须是新文件。应用补丁时先核对源字节、编辑范围、旧字节证据和最终摘要，
@@ -91,7 +106,7 @@ wasm-git fsck ./history
 ## 部署仓库服务
 
 ```sh
-wasm-git-server --root /srv/uwgit --listen 127.0.0.1:9419
+wasm-git-server --root /srv/wasm-git --listen 127.0.0.1:9419
 ```
 
 先在服务根目录下建立仓库。HTTP 默认只读；写服务需要显式 token 或编译后的授权策略，并
@@ -110,7 +125,7 @@ Component Model 支持原字节与已知外层 section framing，不提供完整
 符号与相似度是审阅证据，不是源代码意图、作者身份或行为等价的证明。
 
 仓库内部使用原生二进制格式；JSON 用于用户报告或明确的外部配置导入。
-uwgit 不读取 Git 对象库、不使用 Git 网络协议，也不迁移已废弃的发行前格式。
+wasm-git 不读取 Git 对象库、不使用 Git 网络协议，也不迁移已废弃的发行前格式。
 未支持的 Git 选项与资源边界详见手册。
 
 ## 开发

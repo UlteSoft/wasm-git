@@ -18,7 +18,7 @@ struct Temp {
 impl Temp {
     fn new() -> Self {
         let base = std::env::temp_dir().join(format!(
-            "uwgit-ff-only-{}-{}",
+            "wasm-git-ff-only-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -156,7 +156,7 @@ fn ff_only_without_message_fast_forwards_the_exact_existing_tree_and_syncs_files
     let target = t.commit("target tree with addition and deletion");
     ok(&["branch", t.root(), "incoming"]);
     ok(&["reset", t.root(), "--hard", &base]);
-    let objects = snapshot(&t.path(".uwgit/objects"));
+    let objects = snapshot(&t.path(".wasm-git/objects"));
     let outcome = value(&["merge", t.root(), "incoming", "--ff-only"]);
     assert_eq!(outcome["status"], "fast_forward");
     assert_eq!(outcome["old_head"], base);
@@ -166,7 +166,7 @@ fn ff_only_without_message_fast_forwards_the_exact_existing_tree_and_syncs_files
     assert_eq!(fs::read(t.path("a.wasm")).unwrap(), changed);
     assert_eq!(fs::read(t.path("nested/future.wasm")).unwrap(), UNKNOWN);
     assert!(!t.path("deleted.wasm").exists());
-    assert_eq!(snapshot(&t.path(".uwgit/objects")), objects);
+    assert_eq!(snapshot(&t.path(".wasm-git/objects")), objects);
     assert_eq!(
         value(&["show", t.root(), "HEAD"])["parents"],
         serde_json::json!([base])
@@ -372,15 +372,15 @@ fn unborn_ff_only_advances_to_an_imported_tree_without_inventing_a_worktree() {
     ok(&["bundle", source.root(), s(&bundle)]);
     let dest = Temp::new();
     ok(&["unbundle", dest.root(), s(&bundle), "incoming"]);
-    assert!(!dest.path(".uwgit/index").exists());
-    let objects = snapshot(&dest.path(".uwgit/objects"));
+    assert!(!dest.path(".wasm-git/index").exists());
+    let objects = snapshot(&dest.path(".wasm-git/objects"));
     let outcome = value(&["merge", dest.root(), "--ff-only", "incoming"]);
     assert_eq!(outcome["status"], "fast_forward");
     assert!(outcome["old_head"].is_null());
     assert_eq!(dest.head(), target);
     assert!(!dest.path("nested").exists());
-    assert!(!dest.path(".uwgit/index").exists());
-    assert_eq!(snapshot(&dest.path(".uwgit/objects")), objects);
+    assert!(!dest.path(".wasm-git/index").exists());
+    assert_eq!(snapshot(&dest.path(".wasm-git/objects")), objects);
     ok(&["fsck", dest.root()]);
 }
 
@@ -399,7 +399,7 @@ fn ff_only_validates_unreachable_objects_and_rejects_unrelated_histories_without
         rejected_without_changes(&t, &["merge", t.root(), "incoming", "--ff-only"])
             .contains("fast-forward-only merge refused")
     );
-    let corrupt = t.path(&format!(".uwgit/objects/{}", "f".repeat(64)));
+    let corrupt = t.path(&format!(".wasm-git/objects/{}", "f".repeat(64)));
     assert!(!corrupt.exists());
     fs::write(corrupt, b"malformed unreferenced object").unwrap();
     rejected_without_changes(&t, &["merge", t.root(), "HEAD", "--ff-only"]);

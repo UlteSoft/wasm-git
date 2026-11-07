@@ -8,7 +8,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let root = std::env::temp_dir().join(format!(
-            "uwgit-revisions-{}-{}",
+            "wasm-git-revisions-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -100,8 +100,8 @@ fn ordinals_and_commit_peeling_compose_with_real_parent_edges_and_object_paths()
         format!("{merge}\n{second}")
     );
     assert_eq!(ok(&["rev-list", t.root(), &format!("{first}^@")]), "");
-    let index = fs::read(t.0.join(".uwgit/index")).unwrap();
-    let log = fs::read(t.0.join(".uwgit/reflog")).unwrap();
+    let index = fs::read(t.0.join(".wasm-git/index")).unwrap();
+    let log = fs::read(t.0.join(".wasm-git/reflog")).unwrap();
     for revision in [
         "HEAD@{3}",
         "HEAD@{18446744073709551616}",
@@ -117,8 +117,8 @@ fn ordinals_and_commit_peeling_compose_with_real_parent_edges_and_object_paths()
             "{revision}"
         );
     }
-    assert_eq!(fs::read(t.0.join(".uwgit/index")).unwrap(), index);
-    assert_eq!(fs::read(t.0.join(".uwgit/reflog")).unwrap(), log);
+    assert_eq!(fs::read(t.0.join(".wasm-git/index")).unwrap(), index);
+    assert_eq!(fs::read(t.0.join(".wasm-git/reflog")).unwrap(), log);
 }
 #[test]
 fn ordinal_history_resets_when_a_deleted_branch_name_is_recreated() {

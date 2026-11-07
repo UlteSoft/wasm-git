@@ -31,9 +31,9 @@ fn command(args: &[&str]) -> Command {
     let mut child = Command::new(env!("CARGO_BIN_EXE_wasm-git"));
     child
         .args(args)
-        .env_remove("UWGIT_REMOTE_TOKEN")
-        .env_remove("UWGIT_SSH_PROGRAM")
-        .env_remove("UWGIT_REMOTE_PROGRAM");
+        .env_remove("WASM_GIT_REMOTE_TOKEN")
+        .env_remove("WASM_GIT_SSH_PROGRAM")
+        .env_remove("WASM_GIT_REMOTE_PROGRAM");
     child
 }
 fn successful(output: Output) -> String {
@@ -51,7 +51,7 @@ fn run(args: &[&str]) -> String {
 impl Fixture {
     fn new() -> Self {
         let root = std::env::temp_dir().join(format!(
-            "uwgit-upstream-{}-{}",
+            "wasm-git-upstream-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -68,7 +68,7 @@ impl Fixture {
         run(&["clone", path(&source), path(&local)]);
         run(&["clone", path(&source), path(&service)]);
         let shim = root.join("ssh-shim");
-        fs::write(&shim, b"#!/bin/sh\nset -eu\nexec \"$UWGIT_UPSTREAM_TEST_BINARY\" server --stdio --root \"$UWGIT_UPSTREAM_TEST_ROOT\"\n").unwrap();
+        fs::write(&shim, b"#!/bin/sh\nset -eu\nexec \"$WASM_GIT_UPSTREAM_TEST_BINARY\" server --stdio --root \"$WASM_GIT_UPSTREAM_TEST_ROOT\"\n").unwrap();
         fs::set_permissions(&shim, fs::Permissions::from_mode(0o700)).unwrap();
         let url = format!("ssh://test@localhost{}/upstream.git", root.display());
         let fixture = Self {
@@ -88,9 +88,12 @@ impl Fixture {
     fn command(&self, args: &[&str]) -> Command {
         let mut child = command(args);
         child
-            .env("UWGIT_SSH_PROGRAM", &self.shim)
-            .env("UWGIT_UPSTREAM_TEST_BINARY", env!("CARGO_BIN_EXE_wasm-git"))
-            .env("UWGIT_UPSTREAM_TEST_ROOT", &self.root);
+            .env("WASM_GIT_SSH_PROGRAM", &self.shim)
+            .env(
+                "WASM_GIT_UPSTREAM_TEST_BINARY",
+                env!("CARGO_BIN_EXE_wasm-git"),
+            )
+            .env("WASM_GIT_UPSTREAM_TEST_ROOT", &self.root);
         child
     }
     fn ok(&self, args: &[&str]) -> String {
@@ -191,7 +194,7 @@ fn explicit_upstream_forms_resolve_fetched_tips_and_preserve_dirty_index_and_wor
     fs::write(fixture.local.join("private.txt"), b"untracked data").unwrap();
     let plain = fixture.ok(&["branch", fixture.repo()]);
     let head = fixture.head("HEAD");
-    let index = fs::read(fixture.local.join(".uwgit/index")).unwrap();
+    let index = fs::read(fixture.local.join(".wasm-git/index")).unwrap();
     let working = fs::read(fixture.local.join("a.wasm")).unwrap();
     fixture.ok(&["branch", fixture.repo(), "-u", "origin/feature"]);
     assert_eq!(fixture.head("@{upstream}"), fixture.head("origin/feature"));
@@ -223,7 +226,10 @@ fn explicit_upstream_forms_resolve_fetched_tips_and_preserve_dirty_index_and_wor
     assert_eq!(fixture.head("@{u}"), fixture.head("origin/main"));
     assert_eq!(fixture.ok(&["branch", fixture.repo()]), plain);
     assert_eq!(fixture.head("HEAD"), head);
-    assert_eq!(fs::read(fixture.local.join(".uwgit/index")).unwrap(), index);
+    assert_eq!(
+        fs::read(fixture.local.join(".wasm-git/index")).unwrap(),
+        index
+    );
     assert_eq!(fs::read(fixture.local.join("a.wasm")).unwrap(), working);
     assert_eq!(
         fs::read(fixture.local.join("private.txt")).unwrap(),
@@ -436,7 +442,7 @@ fn network_detached_head_advertisements_fetch_and_clone_preserve_the_native_poin
     let destination = fixture.root.join("detached-network-clone");
     fixture.ok(&["clone", &fixture.url, path(&destination)]);
     assert_eq!(
-        fs::read(destination.join(".uwgit/HEAD")).unwrap(),
+        fs::read(destination.join(".wasm-git/HEAD")).unwrap(),
         native::reference(&tip)
     );
     let status: Value = serde_json::from_str(&run(&["status", path(&destination)])).unwrap();
@@ -477,7 +483,7 @@ fn upstream_revision_ancestry_is_shared_by_history_object_and_graph_commands() {
             .trim(),
         "1"
     );
-    let config = fixture.local.join(".uwgit/remotes/origin.bin");
+    let config = fixture.local.join(".wasm-git/remotes/origin.bin");
     let original = fs::read(&config).unwrap();
     let mut value: Value = native::remote_value(&original);
     value["url"] = serde_json::json!("ssh://test@different-host.invalid/unused");
@@ -503,7 +509,7 @@ fn upstream_resolution_reads_the_new_tracking_tip_after_fetch_without_moving_loc
     assert_eq!(fixture.head("@{u}"), remote_head);
     assert_eq!(fixture.head("main@{upstream}"), remote_head);
     assert_eq!(fixture.head("HEAD"), local_head);
-    assert!(!fixture.local.join(".uwgit/index").exists());
+    assert!(!fixture.local.join(".wasm-git/index").exists());
     fixture.ok(&["fsck", fixture.repo()]);
 }
 
@@ -512,14 +518,14 @@ fn upstream_metadata_commands_obey_index_remote_and_writer_locks_without_partial
     let fixture = Fixture::new();
     fixture.fetch();
     for lock in ["index.lock", "remote.lock", "write.lock"] {
-        let file = fixture.local.join(format!(".uwgit/{lock}"));
+        let file = fixture.local.join(format!(".wasm-git/{lock}"));
         fs::write(&file, b"fixed held lock").unwrap();
         fixture.reject(&["branch", fixture.repo(), "-u", "origin/main"]);
         fs::remove_file(file).unwrap();
     }
     fixture.ok(&["branch", fixture.repo(), "-u", "origin/main"]);
     for lock in ["index.lock", "remote.lock", "write.lock"] {
-        let file = fixture.local.join(format!(".uwgit/{lock}"));
+        let file = fixture.local.join(format!(".wasm-git/{lock}"));
         fs::write(&file, b"fixed held lock").unwrap();
         fixture.reject(&["branch", fixture.repo(), "--unset-upstream"]);
         fixture.reject(&["branch", fixture.repo(), "-vv"]);

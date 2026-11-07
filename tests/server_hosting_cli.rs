@@ -25,7 +25,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let p = std::env::temp_dir().join(format!(
-            "uwgit-hosting-{}-{}",
+            "wasm-git-hosting-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
@@ -73,7 +73,7 @@ impl Server {
     fn cli(&self, args: &[&str]) -> std::process::Output {
         Command::new(env!("CARGO_BIN_EXE_wasm-git"))
             .args(args)
-            .env("UWGIT_REMOTE_TOKEN", "hosting-test")
+            .env("WASM_GIT_REMOTE_TOKEN", "hosting-test")
             .output()
             .unwrap()
     }
@@ -109,7 +109,7 @@ fn rpc(
     stream
         .set_read_timeout(Some(Duration::from_secs(30)))
         .unwrap();
-    write!(stream,"POST /v1/uwgit HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nContent-Length: {}\r\n\r\n",body.len()).unwrap();
+    write!(stream,"POST /v1/wasm-git HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nContent-Length: {}\r\n\r\n",body.len()).unwrap();
     stream.write_all(&body).unwrap();
     stream.shutdown(Shutdown::Write).unwrap();
     let mut reply = Vec::new();
@@ -199,7 +199,7 @@ fn concurrent_readers_succeed_and_a_slow_peer_does_not_block_later_arrivals() {
     assert!(start.elapsed() < Duration::from_secs(5));
     drop(slow);
     assert_eq!(
-        fs::read_dir(t.0.join("project/.uwgit/tmp"))
+        fs::read_dir(t.0.join("project/.wasm-git/tmp"))
             .unwrap()
             .count(),
         0,
@@ -347,7 +347,10 @@ fn terminal_upload_corruption_is_removed_reservations_are_bounded_and_cancel_is_
         .0;
     assert!(!result.ok);
     assert!(result.error.unwrap().contains("checksum"));
-    assert!(!t.0.join(format!("project/.uwgit/tmp/upload-{id}")).exists());
+    assert!(!t
+        .0
+        .join(format!("project/.wasm-git/tmp/upload-{id}"))
+        .exists());
     let a = "2".repeat(64);
     let b = "3".repeat(64);
     let c = "4".repeat(64);
@@ -484,7 +487,7 @@ fn policy_enforces_principals_repo_ref_force_and_fork_scopes_over_http_and_stdio
             .unwrap(),
     );
     fs::remove_file(input).unwrap();
-    assert!(fs::read(&output).unwrap().starts_with(b"UWGM"));
+    assert!(fs::read(&output).unwrap().starts_with(b"WGTM"));
     let server = Server::start(
         &t.0,
         &[
@@ -591,7 +594,7 @@ fn pre_receive_rejection_has_no_public_objects_and_post_receive_failure_preserve
     let client = Repository::clone_local(&repo.root, t.0.join("client")).unwrap();
     let next = client.commit(&custom(64, 3), "next").unwrap();
     let script = t.0.join("reject.sh");
-    fs::write(&script,b"#!/bin/sh\ntest -f \"$UWGIT_QUARANTINE_BUNDLE\" || exit 2\ntest -f \"$UWGIT_UPDATES_FILE\" || exit 3\nexit 1\n").unwrap();
+    fs::write(&script,b"#!/bin/sh\ntest -f \"$WASM_GIT_QUARANTINE_BUNDLE\" || exit 2\ntest -f \"$WASM_GIT_UPDATES_FILE\" || exit 3\nexit 1\n").unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
     let bytes = batch(
         vec![update("main", Some(&base), Some(&next))],
@@ -610,7 +613,7 @@ fn pre_receive_rejection_has_no_public_objects_and_post_receive_failure_preserve
     assert!(repo.resolve(&next).is_err());
     assert_eq!(repo.resolve("HEAD").unwrap(), base);
     drop(server);
-    assert!(fs::read_dir(t.0.join("project/.uwgit/tmp"))
+    assert!(fs::read_dir(t.0.join("project/.wasm-git/tmp"))
         .unwrap()
         .all(|e| !e
             .unwrap()
@@ -640,18 +643,18 @@ fn ordered_receive_hooks_share_quarantine_and_keep_atomicity_and_publication_rec
     let script = t.0.join("hooks.sh");
     fs::write(&script, r#"#!/bin/sh
 set -eu
-test -s "$UWGIT_UPDATES_FILE"
-test "$UWGIT_PUSH_OPTION_COUNT" = 3
-test "$UWGIT_PUSH_OPTION_0" = skip-ci
-test "$UWGIT_PUSH_OPTION_1" = --help
-test "$UWGIT_PUSH_OPTION_2" = ''
-printf '%s|%s|%s|%s\n' "$UWGIT_HOOK" "$*" "$UWGIT_RECEIVE_TRANSACTION" "$UWGIT_QUARANTINE_BUNDLE" >> ../hook-events
-case "$UWGIT_HOOK" in
-pre-receive|update) test -s "$UWGIT_QUARANTINE_BUNDLE" ;;
-*) test ! -s "$UWGIT_QUARANTINE_BUNDLE" ;;
+test -s "$WASM_GIT_UPDATES_FILE"
+test "$WASM_GIT_PUSH_OPTION_COUNT" = 3
+test "$WASM_GIT_PUSH_OPTION_0" = skip-ci
+test "$WASM_GIT_PUSH_OPTION_1" = --help
+test "$WASM_GIT_PUSH_OPTION_2" = ''
+printf '%s|%s|%s|%s\n' "$WASM_GIT_HOOK" "$*" "$WASM_GIT_RECEIVE_TRANSACTION" "$WASM_GIT_QUARANTINE_BUNDLE" >> ../hook-events
+case "$WASM_GIT_HOOK" in
+pre-receive|update) test -s "$WASM_GIT_QUARANTINE_BUNDLE" ;;
+*) test ! -s "$WASM_GIT_QUARANTINE_BUNDLE" ;;
 esac
-if test "$UWGIT_HOOK" = update && test "$1" = refs/heads/topic && test -f ../deny-topic; then exit 1; fi
-if test "$UWGIT_HOOK" = post-receive && test -f ../fail-notification; then exit 1; fi
+if test "$WASM_GIT_HOOK" = update && test "$1" = refs/heads/topic && test -f ../deny-topic; then exit 1; fi
+if test "$WASM_GIT_HOOK" = post-receive && test -f ../fail-notification; then exit 1; fi
 "#).unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
     let server = Server::start(
@@ -786,11 +789,11 @@ fn cli_push_options_are_literal_bounded_and_bound_to_the_publication() {
         &hook,
         r#"#!/bin/sh
 set -eu
-test "$UWGIT_PUSH_OPTION_COUNT" = 4
-test "$UWGIT_PUSH_OPTION_0" = --help
-test "$UWGIT_PUSH_OPTION_1" = --allow-insecure-http
-test "$UWGIT_PUSH_OPTION_2" = ''
-test "$UWGIT_PUSH_OPTION_3" = 审计
+test "$WASM_GIT_PUSH_OPTION_COUNT" = 4
+test "$WASM_GIT_PUSH_OPTION_0" = --help
+test "$WASM_GIT_PUSH_OPTION_1" = --allow-insecure-http
+test "$WASM_GIT_PUSH_OPTION_2" = ''
+test "$WASM_GIT_PUSH_OPTION_3" = 审计
 "#,
     )
     .unwrap();
@@ -1252,7 +1255,7 @@ fn hierarchical_repositories_clone_and_fork_under_exact_policy_boundaries() {
         "../escape",
         "team//empty",
         "team/../escape",
-        "team/.uwgit/x",
+        "team/.wasm-git/x",
     ] {
         let rejected = server
             .rpc(
@@ -1385,7 +1388,7 @@ fn partial_receive_uses_one_quarantine_and_reports_only_accepted_refs_to_post_ho
     let client = Repository::clone_local(&repo.root, t.0.join("client")).unwrap();
     let next = client.commit(&custom(1024, 8), "next").unwrap();
     let script = t.0.join("hooks");
-    fs::write(&script, b"#!/bin/sh\nprintf '%s %s\\n' \"$UWGIT_HOOK\" \"$*\" >> hooks.log\ncp \"$UWGIT_UPDATES_FILE\" \"$UWGIT_HOOK.bin\"\nif [ \"$UWGIT_HOOK\" = update ] && [ \"$1\" = refs/heads/blocked ]; then exit 1; fi\nif [ \"$UWGIT_HOOK\" = pre-receive ] && [ -f reject-all ]; then exit 1; fi\n").unwrap();
+    fs::write(&script, b"#!/bin/sh\nprintf '%s %s\\n' \"$WASM_GIT_HOOK\" \"$*\" >> hooks.log\ncp \"$WASM_GIT_UPDATES_FILE\" \"$WASM_GIT_HOOK.bin\"\nif [ \"$WASM_GIT_HOOK\" = update ] && [ \"$1\" = refs/heads/blocked ]; then exit 1; fi\nif [ \"$WASM_GIT_HOOK\" = pre-receive ] && [ -f reject-all ]; then exit 1; fi\n").unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
     let hook = script.to_str().unwrap();
     let server = Server::start(

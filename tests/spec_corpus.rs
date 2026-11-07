@@ -29,7 +29,7 @@ impl CorpusMode {
             None | Some("fixed-mutations") => Ok(Self::FixedMutations),
             Some("originals-only") => Ok(Self::OriginalsOnly),
             Some(value) => Err(format!(
-                "unknown UWGIT_CORPUS_MODE {value:?}; expected originals-only or fixed-mutations"
+                "unknown WASM_GIT_CORPUS_MODE {value:?}; expected originals-only or fixed-mutations"
             )),
         }
     }
@@ -1112,7 +1112,7 @@ fn save_report(path: &Path, report: &CorpusReport) -> Result<(), String> {
     let parent = path
         .parent()
         .filter(|_| path.is_absolute())
-        .ok_or("UWGIT_SPEC_REPORT must be an absolute path under TMPDIR")?;
+        .ok_or("WASM_GIT_SPEC_REPORT must be an absolute path under TMPDIR")?;
     let parent = parent
         .canonicalize()
         .map_err(|error| format!("report parent must already exist: {error}"))?;
@@ -1120,7 +1120,7 @@ fn save_report(path: &Path, report: &CorpusReport) -> Result<(), String> {
         || std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink())
     {
         return Err(
-            "UWGIT_SPEC_REPORT must name a regular file under TMPDIR, without a final symlink"
+            "WASM_GIT_SPEC_REPORT must name a regular file under TMPDIR, without a final symlink"
                 .into(),
         );
     }
@@ -1367,28 +1367,28 @@ fn originals_only_mode_retains_original_audits_and_records_skipped_variants() {
 }
 
 #[test]
-#[ignore = "requires pinned official corpus; set UWGIT_SPEC_ROOT and UWGIT_SPEC_VERSION=1|2|3; audits binary decoding, not runtime conformance"]
+#[ignore = "requires pinned official corpus; set WASM_GIT_SPEC_ROOT and WASM_GIT_SPEC_VERSION=1|2|3; audits binary decoding, not runtime conformance"]
 fn official_core_wast_corpus_audit() {
-    let mode = match std::env::var("UWGIT_CORPUS_MODE") {
+    let mode = match std::env::var("WASM_GIT_CORPUS_MODE") {
         Ok(value) => CorpusMode::parse(Some(&value)),
         Err(std::env::VarError::NotPresent) => CorpusMode::parse(None),
-        Err(error) => Err(format!("invalid UWGIT_CORPUS_MODE: {error}")),
+        Err(error) => Err(format!("invalid WASM_GIT_CORPUS_MODE: {error}")),
     }
     .expect("select an explicit supported corpus mode");
     let root = PathBuf::from(
-        std::env::var_os("UWGIT_SPEC_ROOT")
-            .expect("set UWGIT_SPEC_ROOT to a pinned spec/test/core directory"),
+        std::env::var_os("WASM_GIT_SPEC_ROOT")
+            .expect("set WASM_GIT_SPEC_ROOT to a pinned spec/test/core directory"),
     );
     let root = root
         .canonicalize()
-        .expect("UWGIT_SPEC_ROOT must be an existing directory");
-    let version = std::env::var("UWGIT_SPEC_VERSION")
-        .expect("set UWGIT_SPEC_VERSION=1, 2, or 3 for the corresponding official corpus");
+        .expect("WASM_GIT_SPEC_ROOT must be an existing directory");
+    let version = std::env::var("WASM_GIT_SPEC_VERSION")
+        .expect("set WASM_GIT_SPEC_VERSION=1, 2, or 3 for the corresponding official corpus");
     let baseline = match version.as_str() {
         "1" => WasmFeatures::WASM1,
         "2" => WasmFeatures::WASM2,
         "3" => strict_core3(),
-        _ => panic!("UWGIT_SPEC_VERSION must be 1, 2, or 3"),
+        _ => panic!("WASM_GIT_SPEC_VERSION must be 1, 2, or 3"),
     };
     let mut files = Vec::new();
     let mut excluded_symlinks = Vec::new();
@@ -1507,7 +1507,7 @@ fn official_core_wast_corpus_audit() {
     report.generated_mutations = runner.generated_mutations;
     report.failures = runner.failures;
     report.known_profile_limitations = runner.known_profile_limitations;
-    if let Some(path) = std::env::var_os("UWGIT_SPEC_REPORT") {
+    if let Some(path) = std::env::var_os("WASM_GIT_SPEC_REPORT") {
         save_report(Path::new(&path), &report)
             .expect("write corpus audit evidence only under TMPDIR");
     }
@@ -1525,5 +1525,5 @@ fn official_core_wast_corpus_audit() {
             failure.message
         );
     }
-    assert!(report.failures.is_empty(), "{} corpus audit failures; inspect UWGIT_SPEC_REPORT JSON for complete per-file/directive evidence", report.failures.len());
+    assert!(report.failures.is_empty(), "{} corpus audit failures; inspect WASM_GIT_SPEC_REPORT JSON for complete per-file/directive evidence", report.failures.len());
 }

@@ -8,7 +8,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let root = std::env::temp_dir().join(format!(
-            "uwgit-notes-{}-{}",
+            "wasm-git-notes-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -56,7 +56,9 @@ fn seed(root: &Path) -> String {
     ok(&["rev-parse", p(root), "HEAD"])
 }
 fn objects(root: &Path) -> usize {
-    fs::read_dir(root.join(".uwgit/objects")).unwrap().count()
+    fs::read_dir(root.join(".wasm-git/objects"))
+        .unwrap()
+        .count()
 }
 
 #[test]
@@ -64,7 +66,7 @@ fn notes_add_append_force_copy_and_atomic_removal_preserve_head_index_and_work_b
     let temp = Temp::new();
     let root = temp.path("repo");
     let head = seed(&root);
-    let index = fs::read(root.join(".uwgit/index")).unwrap();
+    let index = fs::read(root.join(".wasm-git/index")).unwrap();
     let bytes = fs::read(root.join("a.wasm")).unwrap();
     let first = json(&["notes", p(&root), "add", "-m", "模块注释", &head]);
     assert_eq!(ok(&["notes", p(&root), "show"]), "模块注释");
@@ -92,14 +94,14 @@ fn notes_add_append_force_copy_and_atomic_removal_preserve_head_index_and_work_b
         .as_array()
         .unwrap()
         .is_empty());
-    let latest = json(&["log", p(&root), "uwgit-notes-commits"]);
+    let latest = json(&["log", p(&root), "wasm-git-notes-commits"]);
     assert!(latest
         .as_array()
         .unwrap()
         .iter()
         .any(|entry| entry["id"] == first["commit"]));
     assert_eq!(ok(&["rev-parse", p(&root), "HEAD"]), head);
-    assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), index);
+    assert_eq!(fs::read(root.join(".wasm-git/index")).unwrap(), index);
     assert_eq!(fs::read(root.join("a.wasm")).unwrap(), bytes);
 }
 
@@ -127,10 +129,10 @@ fn notes_are_valid_original_wasm_modules_and_transfer_in_native_clones_and_bundl
     ok(&["clone", p(&root), p(&peer)]);
     assert_eq!(ok(&["notes", p(&peer), "show"]), "retained text");
     assert_eq!(
-        ok(&["rev-parse", p(&peer), "uwgit-notes-commits"]),
+        ok(&["rev-parse", p(&peer), "wasm-git-notes-commits"]),
         added["commit"].as_str().unwrap()
     );
-    let bundle = temp.path("history.uwgb");
+    let bundle = temp.path("history.wgb");
     ok(&["bundle", p(&root), p(&bundle)]);
     let imported = temp.path("imported");
     ok(&["init", p(&imported)]);
@@ -138,7 +140,7 @@ fn notes_are_valid_original_wasm_modules_and_transfer_in_native_clones_and_bundl
     ok(&[
         "update-ref",
         p(&imported),
-        "refs/heads/uwgit-notes-commits",
+        "refs/heads/wasm-git-notes-commits",
         added["commit"].as_str().unwrap(),
         &"0".repeat(64),
     ]);
@@ -158,7 +160,13 @@ fn namespaces_and_checked_out_notes_branches_are_independent_and_protected() {
         .as_array()
         .unwrap()
         .is_empty());
-    json(&["worktree", p(&root), "add", p(&linked), "uwgit-notes-sdk"]);
+    json(&[
+        "worktree",
+        p(&root),
+        "add",
+        p(&linked),
+        "wasm-git-notes-sdk",
+    ]);
     let before = objects(&root);
     fail(&["notes", p(&root), "--ref", "sdk", "append", "-m", "blocked"]);
     assert_eq!(objects(&root), before);
@@ -172,7 +180,7 @@ fn malformed_namespace_or_foreign_notes_layout_cannot_publish_partial_changes() 
     let temp = Temp::new();
     let root = temp.path("repo");
     seed(&root);
-    ok(&["branch", p(&root), "uwgit-notes-bad"]);
+    ok(&["branch", p(&root), "wasm-git-notes-bad"]);
     let before = objects(&root);
     fail(&["notes", p(&root), "--ref", "bad", "add", "-m", "blocked"]);
     fail(&[
@@ -186,6 +194,6 @@ fn malformed_namespace_or_foreign_notes_layout_cannot_publish_partial_changes() 
     ]);
     fail(&["notes", p(&root), "add", "-m", "missing", &"f".repeat(64)]);
     assert_eq!(objects(&root), before);
-    assert!(!root.join(".uwgit/notes.bin").exists());
+    assert!(!root.join(".wasm-git/notes.bin").exists());
     ok(&["fsck", p(&root)]);
 }

@@ -8,7 +8,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         let root = std::env::temp_dir().join(format!(
-            "uwgit-diff-plumbing-{}-{}",
+            "wasm-git-diff-plumbing-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -54,7 +54,7 @@ fn commit_index_and_worktree_are_three_independently_compared_byte_snapshots() {
     fs::write(root.join("a.wasm"), wasm(2)).unwrap();
     ok(&["add", p(root), "a.wasm"]);
     fs::write(root.join("a.wasm"), wasm(3)).unwrap();
-    let index = fs::read(root.join(".uwgit/index")).unwrap();
+    let index = fs::read(root.join(".wasm-git/index")).unwrap();
     for command in [
         vec!["diff-files", p(root)],
         vec!["diff-index", p(root), "HEAD", "--cached"],
@@ -72,7 +72,7 @@ fn commit_index_and_worktree_are_three_independently_compared_byte_snapshots() {
         ok(&["diff-index", p(root), "HEAD", "--cached", "--name-status"]),
         "M\ta.wasm"
     );
-    assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), index);
+    assert_eq!(fs::read(root.join(".wasm-git/index")).unwrap(), index);
     ok(&["commit", p(root), "-m", "staged two"]);
     let new = ok(&["rev-parse", p(root), "HEAD"]);
     assert_eq!(
@@ -122,7 +122,7 @@ fn exact_path_filters_additions_deletions_and_invalid_modes_never_write() {
     ok(&["add", p(root), "b.wasm"]);
     ok(&["commit", p(root), "-m", "change"]);
     let new = ok(&["rev-parse", p(root), "HEAD"]);
-    let before = fs::read(root.join(".uwgit/index")).unwrap();
+    let before = fs::read(root.join(".wasm-git/index")).unwrap();
     assert_eq!(
         ok(&[
             "diff-tree",
@@ -146,5 +146,5 @@ fn exact_path_filters_additions_deletions_and_invalid_modes_never_write() {
             .code(),
         Some(1)
     );
-    assert_eq!(fs::read(root.join(".uwgit/index")).unwrap(), before);
+    assert_eq!(fs::read(root.join(".wasm-git/index")).unwrap(), before);
 }

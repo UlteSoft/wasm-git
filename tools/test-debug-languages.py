@@ -21,7 +21,7 @@ run = helpers.run
 
 
 def mapping(args, wasm, sidecar=None):
-    return json.loads(run([args.uwgit, 'debug-map', wasm, '--json', *(['--debug-file', sidecar] if sidecar else [])]))
+    return json.loads(run([args.wasm_git, 'debug-map', wasm, '--json', *(['--debug-file', sidecar] if sidecar else [])]))
 
 
 def compare(args, old, new, old_map=None, new_map=None):
@@ -29,8 +29,8 @@ def compare(args, old, new, old_map=None, new_map=None):
     if old_map:
         command += ['--old-debug-file', old_map, '--new-debug-file', new_map]
     start = time.monotonic()
-    raw = run([args.uwgit, '--threads', '1', *command])
-    assert raw == run([args.uwgit, '--threads', '0', *command]), 'parallel output differs'
+    raw = run([args.wasm_git, '--threads', '1', *command])
+    assert raw == run([args.wasm_git, '--threads', '0', *command]), 'parallel output differs'
     result = json.loads(raw)
     helpers.replay(old.read_bytes(), new.read_bytes(), result['audit']['edits'])
     assert result['function_analysis']['available'], result['function_analysis']
@@ -248,13 +248,13 @@ def main(args):
     if args.zig:
         versions['zig'] = run([args.zig, 'version']).decode().strip()
     (root / 'results.json').write_text(json.dumps({'cgroup': group, 'cases': results, 'compiler_versions': versions,
-                                                  'uwgit_sha256': hashlib.sha256(Path(args.uwgit).read_bytes()).hexdigest()}, indent=2))
+                                                  'wasm_git_sha256': hashlib.sha256(Path(args.wasm_git).read_bytes()).hexdigest()}, indent=2))
     print(json.dumps({'cases': len(results), 'output': str(root)}))
 
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__)
-    for option in ['output', 'uwgit', 'clang', 'moon', 'moon-home', 'asc', 'node']:
+    for option in ['output', 'wasm-git', 'clang', 'moon', 'moon-home', 'asc', 'node']:
         p.add_argument('--' + option, required=True)
     p.add_argument('--go', default='go')
     p.add_argument('--zig', help='Optional installed Zig compiler for a further DWARF producer')
