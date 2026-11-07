@@ -47,9 +47,9 @@ function initializeServer() {
   onForm("server-root-form", loadSupervision); $("server-refresh").onclick = () => task(loadSupervision);
   onForm("server-launch-form", async () => {
     const args = serverArguments();
-    if (!await confirmAction("Start this server?", "The native service will bind the address and load the access, protection, trust and hook configuration below. Settings are read at startup; restart to apply changes.", [state.session.server, ...args])) return;
-    const job = await api("/api/jobs/start", {target: "service", args, cwd: state.session.cwd, keep_stdin: val("server-option-transport") !== "HTTP"});
-    sessionStorage.setItem("wasm-git-service", job.id); await loadSupervision();
+    if (!await confirmAction("Start this server?", "The native service will bind the address and load the access, protection, trust and hook configuration below. Settings are read at startup; restart to apply changes.", {root: val("server-root"), listen: val("server-option-listen"), access: val("server-option-access"), transport: val("server-option-transport")})) return;
+    const job = await api("/api/jobs/start", {target: "service", args, cwd: val("server-root"), keep_stdin: val("server-option-transport") !== "HTTP"});
+    sessionSet("wasm-git-service", job.id); await loadSupervision();
   });
   $("probe-server").onclick = () => task(async () => report($("probe-result"), (await api("/api/supervision", {operation: "probe", address: val("server-option-listen")})).result, "Listener probe"));
   for (const command of ["compile-policy", "compile-protection"]) $(command).onclick = () => { tab("commands"); showCapability(capabilityCatalog.find(c => c.command === command)); };
@@ -61,7 +61,7 @@ function initializeServer() {
       for (const record of records.slice(-100).reverse()) node.append(details(`${record.operation || record.event || "receive"} · ${record.repository || record.repo || ""} · ${record.status || record.outcome || "recorded"}`, record));
       if (records.length > 100) node.append(el("p", tr("Showing the latest 100 records. Download all records below."), "muted"));
     }
-    node.append(button(tr("Download full audit"), () => download(result, "receive-audit.json")), details(tr("Complete native audit response"), result));
+
   });
   tab("supervision"); task(loadSupervision);
 }
@@ -73,17 +73,17 @@ async function loadSupervision() {
   const services = clear($("server-services"));
   for (const job of value.services) {
     const card = el("div", "", "card controls"); const heading = el("div", "", "card-heading"); heading.append(el("h2", job.running ? tr("Managed server is running") : tr("Server exited · {code}", {code: job.exit_code})), badge(`${job.seconds}s`, job.running ? "good" : "")); card.append(heading);
-    card.append(details(tr("Startup arguments & process result"), job)); const actions = el("div", "", "mini-actions");
+    card.append(el("p", tr("Service output remains hidden until you choose to inspect it."), "muted")); const actions = el("div", "", "mini-actions");
     actions.append(button(tr("View live output"), () => { $("command-target").value = "service"; followJob(job.id); }, "secondary"));
     if (job.running) actions.append(button(tr("Stop this server"), async () => {
-      if (await confirmAction("Stop the managed server?", "Active requests may be interrupted. Check receive-audit and repository state before retrying an interrupted write.", job.args)) { await api("/api/jobs/cancel", {id: job.id}); await new Promise(resolve => setTimeout(resolve, 250)); await loadSupervision(); }
+      if (await confirmAction("Stop the managed server?", "Active requests may be interrupted. Check receive-audit and repository state before retrying an interrupted write.", {service: job.id})) { await api("/api/jobs/cancel", {id: job.id}); await new Promise(resolve => setTimeout(resolve, 250)); await loadSupervision(); }
     }, "secondary")); card.append(actions); services.append(card);
   }
   if (!value.services.length) services.append(el("p", tr("No service has been launched by this GUI. Existing services are not adopted or stopped."), "muted"));
   const repos = clear($("server-repositories"), "card"); const heading = el("div", "", "card-heading"); heading.append(el("h2", tr("Hosted repositories")), el("span", value.root, "hash")); repos.append(heading);
   for (const repo of value.repositories) {
     const row = el("div", "", "tree-file"); row.append(el("strong", repo.name));
-    const actions = el("div", "", "mini-actions"); actions.append(button(tr("Browse"), async () => { state.repo = repo.path; $("repository").value = state.repo; await refresh(); tab("overview"); }), button(tr("Integrity"), async () => { state.repo = repo.path; await act("fsck", {}, false, $("supervision-result")); }), button(tr("Storage"), async () => { showArgs(["count-objects", repo.path, "-v"]); $("command-target").value = "client"; tab("commands"); })); row.append(actions); repos.append(row);
+    const actions = el("div", "", "mini-actions"); actions.append(button(tr("Browse"), async () => { await openPath(repo.path); }), button(tr("Integrity"), async () => { await openPath(repo.path); await act("fsck", {}, false, $("supervision-result")); tab("supervision"); }), button(tr("Storage"), async () => { await openPath(repo.path); showArgs(["count-objects", repo.path, "-v"]); $("command-target").value = "client"; tab("commands"); })); row.append(actions); repos.append(row);
   }
   if (!value.repositories.length) repos.append(el("div", tr("No .wasm-git repositories found under this root."), "empty"));
   if (value.omitted_repositories) repos.append(el("p", tr("{count} additional repositories omitted from this view.", {count: value.omitted_repositories}), "muted"));

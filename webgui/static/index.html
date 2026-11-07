@@ -5,20 +5,20 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>wasm-git · Local workspace</title>
   <link rel="stylesheet" href="/style.css">
-  <script src="/locales.js" defer></script><script src="/i18n.js" defer></script><script src="/catalog.js" defer></script><script src="/server.js" defer></script><script src="/app.js" defer></script>
+  <script src="/locales.js" defer></script><script src="/i18n.js" defer></script><script src="/catalog.js" defer></script><script src="/server.js" defer></script><script src="/views.js" defer></script><script src="/workspace.js" defer></script><script src="/app.js" defer></script>
 </head>
 <body>
   <aside class="sidebar">
-    <a class="brand" href="/" aria-label="wasm-git home"><span class="brand-icon">w</span> wasm-git <small>WEB GUI</small></a>
-    <div class="sidebar-label">WORKSPACE</div>
+    <a class="brand" href="#" aria-label="wasm-git home"><span class="brand-icon">w<span>·</span></span> wasm-git <small>WEB GUI</small></a>
+    <button id="project-home" class="project-home">▦ <span>All projects</span><span>↗</span></button><label class="project-label">CURRENT PROJECT<select id="project-switch"><option value="">Choose a project</option></select></label><div class="sidebar-label">WORKSPACE</div>
     <nav aria-label="Workspace views">
       <button id="server-nav" class="nav" data-tab="supervision" hidden><span>▥</span> Server supervision</button>
-      <button class="nav active" data-tab="overview"><span>◈</span> Overview</button>
+      <button class="nav active" data-tab="overview"><span>◈</span> Changes</button>
       <button class="nav" data-tab="history"><span>◷</span> History</button>
       <button class="nav" data-tab="compare"><span>⇄</span> Compare</button>
       <button class="nav" data-tab="module"><span>▧</span> Wasm explorer</button>
       <button class="nav" data-tab="tools"><span>⑂</span> Repository tools</button>
-      <button class="nav" data-tab="commands"><span>›_</span> Command desk</button>
+      <button class="nav" data-tab="commands"><span>⌘</span> All capabilities</button>
     </nav>
     <div class="sidebar-label ref-heading">BRANCHES & TAGS</div>
     <div id="refs" class="refs"><p class="muted">Open a repository to see refs.</p></div>
@@ -26,22 +26,21 @@
   </aside>
   <main>
     <header class="topbar">
-      <form id="repository-form" class="repository-form">
-        <label for="repository">Repository</label>
-        <input id="repository" name="repository" spellcheck="false" placeholder="/path/to/your/wasm-repository" required>
-        <button type="submit" class="secondary">Open</button>
-      </form>
+      <div class="breadcrumb"><span class="breadcrumb-icon">▱</span><strong id="current-project-label">Projects</strong><span id="current-branch" class="branch-chip"></span></div><button id="close-project" class="quiet" hidden>Close project</button>
       <span id="connection" role="status" class="connection">Connecting…</span><select id="language" class="language" aria-label="Interface language"><option value="eu_US" lang="en">English</option><option value="zh_CN" lang="zh-CN">简体中文</option></select><button id="stop-header" class="quiet" title="Stop the Web GUI">Stop</button>
     </header>
     <div class="content">
       <div id="notice" role="alert" class="notice" hidden></div>
-      <section id="overview" class="panel">
-        <div class="page-heading"><div><p class="eyebrow">YOUR LOCAL REPOSITORY</p><h1 id="repo-title">Workspace overview</h1><p class="muted">Explore history. Review the exact Wasm changes.</p></div><button id="refresh" class="secondary">Refresh</button></div>
-        <div id="overview-stats" class="stats"></div>
-        <div class="card"><div class="card-heading"><div><h2>Working tree</h2><p class="muted">Staged and unstaged changes reported by the client.</p></div><button id="worktree-diff" class="secondary">Review changes →</button></div><div id="working-files" class="empty">Open a wasm-git repository to begin.</div></div>
-        <div id="pending"></div>
-        <form id="commit-form" class="card controls"><h2>Commit staged changes</h2><div class="form-row"><label>Commit message<textarea id="commit-message" rows="2" placeholder="Describe what changed and why" required></textarea></label><label class="checkbox"><input id="commit-amend" type="checkbox"> Amend previous commit</label><button type="button" id="stage-all" class="secondary">Stage all</button><button type="submit">Commit changes</button></div></form>
-        <div id="action-result"></div>
+      <section id="projects" class="panel">
+        <div class="launcher-intro"><p class="eyebrow">YOUR LOCAL WORKSPACE</p><h1>Every change.<br><span>Clearly understood.</span></h1><p class="launcher-copy">Open a project to review Wasm changes, shape your next commit and explore its history.</p></div>
+        <div class="launch-actions"><button id="open-project" class="launch-card"><span class="launch-icon">▱</span><strong>Open project</strong><small>Choose an existing wasm-git repository</small><span class="launch-arrow">↗</span></button><button id="create-project" class="launch-card"><span class="launch-icon">＋</span><strong>Create project</strong><small>Start a repository in a local folder</small><span class="launch-arrow">↗</span></button><button id="clone-project" class="launch-card"><span class="launch-icon">⇣</span><strong>Clone project</strong><small>Bring a remote repository to this computer</small><span class="launch-arrow">↗</span></button></div>
+        <div class="section-title"><h2>Opened projects</h2><input id="project-search" type="search" placeholder="Find a project" aria-label="Find a project"></div><div id="opened-projects" class="project-grid"></div><div class="section-title"><h2>Recent projects</h2><span class="muted">Closing a project keeps its files on disk.</span></div><div id="recent-projects" class="recent-projects"></div>
+        <div class="workspace-note"><span>◇</span><div><strong>Your work stays local.</strong><p>The browser uses your native client. Project files and repository history stay on this computer.</p></div></div>
+      </section>
+      <section id="overview" class="panel" hidden>
+        <div class="page-heading"><div><p class="eyebrow">REVIEW · STAGE · COMMIT</p><h1 id="repo-title">Changes</h1><p class="muted">Review the exact changes before your next commit.</p></div><div class="mini-actions"><button id="refresh" class="secondary">Refresh</button><button id="worktree-diff" class="secondary">Review all changes</button></div></div>
+        <div id="overview-stats" class="stats compact-stats"></div><div id="pending"></div>
+        <div class="workspace-layout"><div class="card change-list"><div class="card-heading"><h2>Changed files</h2><button id="stage-all" class="quiet">Stage all</button></div><div id="working-files"></div></div><div id="change-preview" class="card preview-empty"><span class="preview-glyph">⇄</span><h2>Select a change</h2><p>Select a file to review its functions, instructions and exact byte changes.</p></div><div class="commit-column"><form id="commit-form" class="card controls"><p class="eyebrow">NEXT COMMIT</p><h2>Commit staged changes</h2><label>Commit message<textarea id="commit-message" rows="5" placeholder="Describe what changed and why" required></textarea></label><label class="checkbox"><input id="commit-amend" type="checkbox"> Amend previous commit</label><button type="submit">Commit changes</button><p class="muted">Only staged changes enter this commit.</p></form><div id="action-result"></div></div></div>
         <div class="footer-note" id="client-info"></div>
       </section>
       <section id="tools" class="panel" hidden>
@@ -50,21 +49,19 @@
         <div class="toolbar"><button id="list-remotes" class="secondary">Remotes</button><button id="list-stashes" class="secondary">Stashes</button><button id="list-reflog" class="secondary">Reflog</button></div><div id="tool-result"></div>
       </section>
       <section id="commands" class="panel" hidden>
-        <div class="page-heading"><div><p class="eyebrow">THE COMPLETE CLIENT, IN YOUR BROWSER</p><h1>Command desk</h1><p class="muted">Every client command and option is available, including new commands in your installed build.</p></div><button id="client-help" class="secondary">Client help</button></div>
+        <div class="page-heading"><div><p class="eyebrow">THE COMPLETE CLIENT, IN YOUR BROWSER</p><h1>All capabilities</h1><p class="muted">Choose a task. Advanced native commands are available when you need their full options.</p></div><button id="client-help" class="secondary">Client help</button></div>
         <div class="card controls"><div class="form-row"><label>Capability group<select id="capability-group"></select></label><label>Find a capability<input id="capability-search" placeholder="Signatures, PRs, storage, branches…"></label></div><div id="capabilities" class="capabilities"></div><form id="capability-form" hidden><h2 id="capability-title"></h2><p id="capability-description" class="muted"></p><div id="capability-fields" class="form-row"></div><div class="mini-actions"><button type="submit">Prepare command</button><button type="button" id="capability-help" class="secondary">Help for this command</button></div></form></div>
         <form id="command-form" class="card controls">
           <label id="command-target-label" hidden>Executable<select id="command-target"><option value="client">Client</option><option value="server">Server administrative command</option><option value="service">Managed server process</option></select></label>
           <div class="form-row"><label>Command template<input id="command-template" list="command-catalog" placeholder="Search commands, e.g. sign-commit, pr, gc"></label><button type="button" id="use-template" class="secondary">Use template</button><label>Working directory<input id="command-cwd" placeholder="Absolute directory"></label></div>
-          <div class="form-row"><label>Arguments <span class="optional">each line is one exact argument; omit the executable</span><textarea id="command-args" rows="5" spellcheck="false">version
---build-options</textarea></label></div>
-          <div class="form-row"><label class="checkbox"><input id="args-json" type="checkbox"> Use a JSON array for arguments (supports embedded newlines and empty values)</label></div>
-          <details><summary>Standard input & environment</summary><div class="form-row"><label>Read stdin from local file<input id="stdin-file" placeholder="Optional path on this computer"></label><label class="checkbox"><input id="keep-stdin" type="checkbox"> Keep stdin open for interactive/batch input</label></div><label class="env-label">Environment overrides <span class="optional">JSON object, only for this process; never saved</span><textarea id="command-env" rows="2" spellcheck="false" placeholder='{"WASM_GIT_REMOTE_TOKEN":"…"}'></textarea></label></details>
+          <label>Command arguments</label><div id="command-arguments" class="argument-list"></div><button id="add-argument" type="button" class="quiet">Add argument</button>
+          <details><summary>Standard input & environment</summary><div class="form-row"><label>Read stdin from local file<input id="stdin-file" placeholder="Optional path on this computer"></label><label class="checkbox"><input id="keep-stdin" type="checkbox"> Keep stdin open for interactive/batch input</label></div><p class="muted">Environment values are masked and cleared after launch.</p><div id="environment-fields"></div><button id="add-environment" type="button" class="quiet">Add environment variable</button></details>
           <div class="form-row"><button type="submit" id="run-command">Run client command →</button><button type="button" id="cancel-command" class="secondary" disabled>Cancel running command</button><span class="muted">Arguments are passed directly to the client, without a shell.</span></div>
         </form>
         <div class="toolbar"><label>Recent commands<select id="recent-jobs"><option value="">Select a command to inspect its output.</option></select></label><button id="jobs-refresh" class="secondary">Refresh</button></div>
         <div id="command-status" role="status" class="muted"></div>
         <div class="toolbar command-downloads"><button id="download-stdout" class="quiet" disabled>Download exact stdout</button><button id="download-stderr" class="quiet" disabled>Download exact stderr</button><button id="remove-job" class="quiet" disabled>Remove completed output</button></div>
-        <div class="command-streams"><div class="card"><div class="card-heading"><h2>Standard output</h2><span id="stdout-size" class="hash"></span></div><pre id="command-stdout" class="terminal" tabindex="0"></pre></div><div class="card"><div class="card-heading"><h2>Standard error</h2><span id="stderr-size" class="hash"></span></div><pre id="command-stderr" class="terminal" tabindex="0"></pre></div></div>
+        <p id="output-privacy" class="privacy-note">Original command output is hidden. It may contain credentials, local paths or embedded source data.</p><button id="reveal-output" class="secondary">Review original output…</button><div class="command-streams" id="command-streams" hidden><div class="card"><div class="card-heading"><h2>Standard output</h2><span id="stdout-size" class="hash"></span></div><pre id="command-stdout" class="terminal" tabindex="0"></pre></div><div class="card"><div class="card-heading"><h2>Standard error</h2><span id="stderr-size" class="hash"></span></div><pre id="command-stderr" class="terminal" tabindex="0"></pre></div></div>
         <form id="stdin-form" class="card controls" hidden><h2>Send standard input</h2><textarea id="stdin-text" rows="3" spellcheck="false" placeholder="Exact text, including any required newline"></textarea><div class="form-row"><button type="submit">Send text</button><label class="file-upload">Or send file bytes<input id="stdin-upload" type="file"></label><button type="button" id="stdin-eof" class="secondary">Close stdin (EOF)</button></div></form>
         <div id="command-help"></div>
       </section>
@@ -85,7 +82,7 @@
         <div class="page-heading"><div><p class="eyebrow">BYTE EVIDENCE, WITH CONTEXT</p><h1>Compare changes</h1><p class="muted">Review sections, functions and instructions from the original Wasm.</p></div></div>
         <form id="compare-form" class="card controls">
           <div class="form-row"><label>Compare<select id="compare-mode"><option value="worktree">Working tree ↔ index</option><option value="staged">Index ↔ HEAD (staged)</option><option value="revisions">Two revisions</option></select></label><label id="old-label" hidden>Before<input id="compare-old" value="HEAD^" list="revisions"></label><label id="new-label" hidden>After<input id="compare-new" value="HEAD" list="revisions"></label></div>
-          <div class="form-row"><label>File <span class="optional">optional</span><input id="compare-file" list="files" placeholder="All changed files"></label><label>Section <span class="optional">optional</span><input id="compare-section" list="sections" placeholder="All sections, or custom:name"></label><label>View<select id="compare-view"><option value="json">Structured audit</option><option value="text">Client text</option></select></label><button type="submit">Compare →</button></div>
+          <div class="form-row"><label>File <span class="optional">optional</span><input id="compare-file" list="files" placeholder="All changed files"></label><label>Section <span class="optional">optional</span><input id="compare-section" list="sections" placeholder="All sections, or custom:name"></label><button type="submit">Compare →</button></div>
         </form>
         <div id="diff-result" class="result empty">Choose what to compare, then run the audit.</div>
       </section>
@@ -98,9 +95,10 @@
     </div>
     <footer>wasm-git · Local WebAssembly review <span>Source metadata is advisory. Original bytes remain the audit evidence.</span></footer>
   </main>
+  <dialog id="project-dialog" class="project-dialog"><form id="project-form"><div class="dialog-heading"><div><p class="eyebrow">LOCAL PROJECT</p><h2 id="project-dialog-title">Open project</h2></div><button id="cancel-project" type="button" class="quiet" aria-label="Close">×</button></div><p id="project-dialog-description" class="muted"></p><label id="project-url-label" hidden>Source URL or local path<input id="project-url" autocomplete="off" spellcheck="false"></label><label id="project-name-label" hidden>Project name<input id="project-name" placeholder="my-wasm-project" autocomplete="off"></label><label id="folder-path-label">Folder<div class="path-row"><input id="folder-path" spellcheck="false" autocomplete="off" required><button id="browse-folder" type="button" class="secondary">Browse</button></div></label><div id="folder-browser" hidden><div class="folder-heading"><button id="folder-up" type="button" class="quiet">↑ Parent folder</button><span id="folder-current" class="hash"></span></div><div id="folder-entries"></div><p id="folder-note" class="muted"></p></div><div id="project-dialog-error" class="notice" role="alert" hidden></div><div class="dialog-actions"><button id="submit-project" type="submit">Open project</button></div></form></dialog>
   <datalist id="revisions"></datalist><datalist id="files"></datalist><datalist id="sections"><option value="code"><option value="type"><option value="import"><option value="export"><option value="data"><option value="custom:name"><option value="custom:producers"><option value="custom:.debug_info"><option value="custom:sourceMappingURL"></datalist>
   <datalist id="command-catalog"></datalist>
   <dialog id="stop-dialog"><h2>Stop the local Web GUI?</h2><p>Running commands and servers launched by this GUI will be stopped. Repository files remain on disk; inspect interrupted operations before retrying.</p><div class="dialog-actions"><button id="cancel-stop" class="secondary">Keep open</button><button id="confirm-stop" class="danger">Stop GUI</button></div></dialog>
-  <dialog id="action-dialog"><h2 id="action-dialog-title">Review action</h2><p id="action-dialog-description"></p><pre id="action-dialog-detail" class="json"></pre><div class="dialog-actions"><button id="cancel-action" class="secondary">Cancel</button><button id="confirm-action" class="danger">Apply action</button></div></dialog>
+  <dialog id="action-dialog"><h2 id="action-dialog-title">Review action</h2><p id="action-dialog-description"></p><div id="action-dialog-detail" class="confirmation-facts"></div><div class="dialog-actions"><button id="cancel-action" class="secondary">Cancel</button><button id="confirm-action" class="danger">Apply action</button></div></dialog>
 </body>
 </html>

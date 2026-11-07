@@ -9,7 +9,7 @@ required. Missing native executables are built from this checkout using Cargo.
 Run from the project root:
 
 ```sh
-python3 webgui/client.py start --repo /path/to/repository --open
+python3 webgui/client.py start --open
 python3 webgui/client.py stop
 
 python3 webgui/server.py start --root /path/to/hosted-repositories --open
@@ -27,13 +27,19 @@ input and displayed results intact. The preference is remembered per browser
 origin. Commit messages, paths, symbols, instruction text, native diagnostics and
 downloaded audit bytes remain original evidence.
 
+Open, create or clone projects from the launcher, switch among opened projects, and reopen recent ones. Closing a project does not delete its files. The Changes view groups staged and working changes beside an inline audit and commit form.
+
 Common repository workflows have dedicated forms. The capability catalog and
-command desk expose the installed client's full argument grammar, binary standard
+advanced command forms expose the installed client's full argument grammar, binary standard
 input/output, signing, PRs, storage and plumbing. The server entry point adds root
 inventory, managed HTTP/stdio services, policy/protection compilation and receive
 audit inspection. Detailed boundaries and examples are in the bilingual manual.
+
+The GUI consumes [versioned binary command responses](../documents/COMMAND_PROTOCOL.eu_US.md). Normal views render selected fields, not raw JSON. Credentials and process arguments are excluded from default responses; original reports and streams require deliberate review/export.
 
 Open the complete authenticated URL printed at startup. The GUI binds only to
 `127.0.0.1`; it is a local administrative tool, not a public WasmHub frontend.
 Stopping the GUI also stops commands and services it launched. State and temporary
 binary output are stored beneath `.tmp/webgui/` by default and excluded from Git.
+
+Privacy filtering is separate from translation: ordinary metadata/diagnostics mask known credentials; original exports retain unmodified evidence. A client-GUI clone checks out named files. If checkout fails after cloning, the project remains accessible with a recovery warning.

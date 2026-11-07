@@ -25,9 +25,13 @@ import webbrowser
 if __package__:
     from .jobs import JobManager, terminate
     from . import supervision
+    from . import projects, presentation, protocol
 else:
     from jobs import JobManager, terminate
     import supervision
+    import projects
+    import presentation
+    import protocol
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_STATE = HERE.parent / ".tmp" / "webgui"
@@ -41,6 +45,8 @@ ASSETS = {"/": ("index.html", "text/html"),
           "/i18n.js": ("i18n.js", "text/javascript"),
           "/catalog.js": ("catalog.js", "text/javascript"),
           "/server.js": ("server.js", "text/javascript"),
+          "/workspace.js": ("workspace.js", "text/javascript"),
+          "/views.js": ("views.js", "text/javascript"),
           "/style.css": ("style.css", "text/css")}
 
 
@@ -82,7 +88,15 @@ def client_path(value=None, kind="client", build=False, no_build=False):
         resolved = shutil.which(candidate) or candidate
         path = Path(resolved).expanduser().resolve()
         if not build and path.is_file() and os.access(path, os.X_OK):
-            return path
+            probe = Client(path, timeout=5)
+            try:
+                probe.run(["version", "--build-options"] if kind == "client" else ["--help"])
+                return path
+            except Problem:
+                if requested or no_build:
+                    raise Problem("The selected binary does not support command protocol v1. Rebuild with --build or select a current executable.") from None
+            finally:
+                probe.close()
     if (requested and not build) or no_build:
         raise Problem(f"Built {kind} not found. Pass --{kind} /path/to/{name}, or allow automatic compilation.")
     target = HERE.parent / ".tmp/webgui-build"
@@ -107,8 +121,9 @@ def client_path(value=None, kind="client", build=False, no_build=False):
 
 class Client:
     """Only this class starts native processes; no shell or arbitrary command API."""
-    def __init__(self, binary, timeout=120, output_limit=MAX_OUTPUT):
+    def __init__(self, binary, timeout=120, output_limit=MAX_OUTPUT, machine=True):
         self.binary = str(binary)
+        self.machine = machine
         self.timeout = timeout
         self.output_limit = output_limit
         self.slots = threading.BoundedSemaphore(2)
@@ -136,7 +151,7 @@ class Client:
                     raise Problem("The GUI is shutting down.", 503)
                 options = {"start_new_session": True} if os.name != "nt" else {
                     "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW}
-                child = subprocess.Popen([self.binary, *args], cwd=cwd, env=env,
+                child = subprocess.Popen([self.binary, *(["--format", "binary-v1"] if self.machine else []), *args], cwd=cwd, env=env,
                                          stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                          stderr=subprocess.PIPE, **options)
                 self.children.add(child)
@@ -175,20 +190,25 @@ class Client:
                 raise Problem(f"Client exceeded {self.timeout:g} seconds. {message}", 504)
             if overflow.is_set():
                 raise Problem("Client output exceeds the GUI limit (32 MiB). Select a file or section; no truncated audit is displayed.", 413)
+            if not self.machine:
+                if child.returncode:
+                    raise Problem(buffers[1].decode("utf-8", "replace") or "Client failed.", 422)
+                return buffers[0].decode("utf-8")
+            if not buffers[0].startswith(protocol.MAGIC):
+                raise Problem("The installed client does not support command protocol v1. Rebuild this checkout with --build.", 502)
+            record = protocol.response(protocol.decode(bytes(buffers[0])), child.returncode)
+            result = record.get("result", {})
+            kind = result.get("kind")
+            if kind not in ("data", "text", "empty"):
+                raise Problem("Unknown client response kind.", 502)
+            output = result.get("value") if kind == "data" else result.get("text", "")
+            diagnostic = (record.get("error") or {}).get("message", "")
             if receipt:
-                output = buffers[0].decode("utf-8", "replace")
-                try:
-                    output = json.loads(output)
-                except ValueError:
-                    pass
-                return {"exit_code": child.returncode, "output": output,
-                        "stderr": buffers[1].decode("utf-8", "replace")}
+                return {"exit_code": child.returncode, "output": output, "stderr": diagnostic}
             if child.returncode:
-                message = buffers[1].decode("utf-8", "replace").strip()
-                raise Problem(message or f"Client exited with status {child.returncode}.", 422)
-            text = buffers[0].decode("utf-8")
-            return json.loads(text) if parse else text
-        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+                raise Problem(diagnostic or f"Client exited with status {child.returncode}.", 422)
+            return output
+        except (OSError, ValueError, UnicodeError) as error:
             raise Problem(f"Unable to read client response: {error}", 502) from error
         finally:
             if child is not None:
@@ -384,6 +404,18 @@ class Client:
             result["command"] = [Path(self.binary).name, *args]
             if destination and result["exit_code"] == 0:
                 result["repository"] = destination
+                if action == 'clone':
+                    # Native clone also serves bare hosting. A project created
+                    # by the local client GUI needs its named files checked out.
+                    # Keep a successful clone accessible if checkout needs care.
+                    try:
+                        status = self.run(['status', destination])
+                        if status.get('head') and not status.get('legacy_head_unmapped'):
+                            checked = self.run(['restore', destination, '--source', 'HEAD', '--staged', '--worktree', '--', '.'], receipt=True)
+                            if checked['exit_code']:
+                                result['warning'] = 'Repository cloned; worktree checkout needs review. ' + checked['stderr']
+                    except Problem as error:
+                        result['warning'] = 'Repository cloned; worktree checkout needs review. ' + str(error)
             return result
         finally:
             self.writer.release()
@@ -394,10 +426,12 @@ class Server(ThreadingHTTPServer):
     allow_reuse_address = os.name != "nt"
 
     def __init__(self, port, client, repo, token, runtime=None, job_limit=256 * 1024 * 1024,
-                 server_client=None, mode="client", root=None):
+                 server_client=None, mode="client", root=None, project_store=None):
         self.client, self.repo, self.token = client, repo, token
         runtime = Path(runtime or DEFAULT_STATE / "jobs")
         self.mode, self.root, self.server_client = mode, root, server_client
+        self.projects = projects.Projects(project_store or runtime / "projects.sqlite3")
+        self.initial_project = self.projects.open(repo)['id'] if repo else None
         self.jobs = JobManager(client, runtime / "client", job_limit)
         self.managers = {"client": self.jobs}
         if server_client:
@@ -421,6 +455,13 @@ class Server(ThreadingHTTPServer):
                 pass
         raise ValueError("Unknown command job.")
 
+    def project_request(self, data):
+        if not isinstance(data, dict):
+            raise Problem("Expected a JSON object.")
+        path = self.projects.get(data.get('project'))
+        repository(str(path))
+        return {**data, 'repository': str(path)}
+
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "wasm-git-webgui"
@@ -433,6 +474,8 @@ class Handler(BaseHTTPRequestHandler):
         pass  # Do not persist repository paths, symbol names or credentials.
 
     def reply(self, status, content, kind="application/json"):
+        if status >= 400 and isinstance(content, dict) and 'error' in content:
+            content = {**content, 'error': presentation.text(content['error'])}
         payload = json.dumps(content, ensure_ascii=True).encode() if kind == "application/json" else content
         self.send_response(status)
         self.send_header("Content-Type", kind + "; charset=utf-8")
@@ -462,11 +505,12 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self.guard(self.path.startswith("/api/"))
             if self.path == "/api/session":
-                return self.reply(200, {"repository": str(self.server.repo or ""), "client": self.server.client.binary,
-                                        "pid": os.getpid(), "name": "wasm-git webgui", "cwd": str(HERE.parent),
-                                        "mode": self.server.mode, "root": str(self.server.root or HERE.parent),
-                                        "server": self.server.server_client.binary if self.server.server_client else None,
+                return self.reply(200, {"repository": str(self.server.repo or ""), "initial_project": self.server.initial_project,
+                                        "pid": os.getpid(), "name": "wasm-git webgui",
+                                        "mode": self.server.mode, "root": str(self.server.root or HERE.parent) if self.server.mode == "server" else "",
                                         "job_limit": self.server.jobs.limit})
+            if self.path == '/api/projects':
+                return self.reply(200, {'projects': self.server.projects.list()})
             if self.path == "/api/help":
                 return self.reply(200, self.server.client.run(["--help"], receipt=True))
             if self.path == "/api/server-help" and self.server.server_client:
@@ -481,6 +525,8 @@ class Handler(BaseHTTPRequestHandler):
                 parts = self.path.split("/")
                 if len(parts) != 5 or parts[4] not in ("stdout", "stderr"):
                     raise Problem("Unknown output stream.", 404)
+                if self.headers.get('X-Wasm-Git-Export') != 'confirmed':
+                    raise Problem("Review the original-data export before downloading.", 409)
                 job = self.server.find_job(parts[3])
                 target = job.paths[0 if parts[4] == "stdout" else 1]
                 with target.open("rb") as stream:
@@ -524,19 +570,56 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads(self.rfile.read(size))
             except (ValueError, UnicodeError):
                 raise Problem("Invalid JSON request.") from None
+            if not isinstance(data, dict):
+                raise Problem("Expected a JSON object.")
             if self.path == "/api/shutdown":
                 self.reply(200, {"stopped": True})
                 threading.Thread(target=self.server.shutdown, daemon=True).start()
-            elif self.path == "/api/query":
-                result = self.server.client.query(data, self.server.repo)
-                self.reply(200, {"result": result})
+            elif self.path == '/api/folders':
+                self.reply(200, projects.directories(field(data, 'path')))
+            elif self.path == '/api/projects':
+                operation = field(data, 'operation')
+                warning = None
+                if operation in ('close', 'forget'):
+                    self.server.projects.close(field(data, 'id'), forget=operation == 'forget')
+                    result = None
+                elif operation in ('open', 'reopen'):
+                    path = self.server.projects.get(field(data, 'id'), opened=False) if operation == 'reopen' else repository(field(data, 'path'))
+                    self.server.client.run(['status', str(repository(str(path)))])
+                    result = self.server.projects.open(path)
+                elif operation in ('create', 'clone'):
+                    result = self.server.client.action({**data, 'action': 'init' if operation == 'create' else 'clone'}, None)
+                    if result['exit_code']:
+                        raise Problem(presentation.text(result.get('stderr') or 'Project creation failed.'), 422)
+                    warning = presentation.text(result['warning']) if result.get('warning') else None
+                    result = self.server.projects.open(result['repository'])
+                else:
+                    raise Problem('Unknown project operation.')
+                self.reply(200, {'project': result, 'projects': self.server.projects.list(), 'warning': warning})
+            elif self.path in ('/api/query', '/api/export'):
+                request = self.server.project_request(data)
+                if self.path == '/api/export' and data.get('confirmed') is not True:
+                    raise Problem('Review the original-data export before downloading.', 409)
+                if self.path == '/api/query' and request.get('operation') == 'diff':
+                    request['representation'] = 'json'
+                result = self.server.client.query(request, None)
+                self.reply(200, {'result': result if self.path == '/api/export' else presentation.query(request['operation'], result)})
             elif self.path == "/api/action":
-                result = self.server.client.action(data, self.server.repo)
-                self.reply(200, {"result": result})
+                request = self.server.project_request(data)
+                if request.get('action') in ('init', 'clone'):
+                    raise Problem('Use the project launcher to create or clone a project.')
+                result = self.server.client.action(request, None)
+                self.reply(200, {"result": presentation.receipt(result)})
             elif self.path == "/api/jobs/start":
                 if not isinstance(data, dict):
                     raise Problem("Expected a JSON object.")
-                self.reply(200, self.server.manager(data).start(data, self.server.repo or HERE.parent))
+                manager = self.server.manager(data)
+                if data.get('project'):
+                    data = {**data, 'project': field(data, 'project')}
+                    project_root = self.server.projects.get(data['project'])
+                else:
+                    project_root = self.server.repo or HERE.parent
+                self.reply(200, manager.start(data, project_root))
             elif self.path in ("/api/jobs/poll", "/api/jobs/input", "/api/jobs/cancel", "/api/jobs/remove"):
                 if not isinstance(data, dict):
                     raise Problem("Expected a JSON object.")
@@ -558,7 +641,7 @@ class Handler(BaseHTTPRequestHandler):
                         shutil.rmtree(job.directory)
                     self.reply(200, {"removed": True})
                 else:
-                    self.reply(200, job.view((data.get("stdout", 0), data.get("stderr", 0))))
+                    self.reply(200, job.view((data.get("stdout", 0), data.get("stderr", 0)), include_output=data.get('reveal') is True))
             elif self.path == "/api/supervision" and self.server.server_client:
                 if not isinstance(data, dict):
                     raise Problem("Expected a JSON object.")
@@ -574,7 +657,7 @@ class Handler(BaseHTTPRequestHandler):
                     result = self.server.server_client.run(["audit-log", field(data, "file")])
                 else:
                     raise Problem("Unknown server inspection.")
-                self.reply(200, {"result": result})
+                self.reply(200, {"result": presentation.clean(result)})
             else:
                 raise Problem("Not found.", 404)
         except Problem as error:
@@ -624,7 +707,7 @@ def serve(args, binary, repo):
     runtime = tempfile.TemporaryDirectory(prefix="session-", dir=state_path(args).parent)
     server_client = Client(args.server, args.timeout) if args.mode == "server" else None
     server = Server(args.port, client, repo, token.hex(), runtime.name, args.job_output_mib * 1024 * 1024,
-                    server_client, args.mode, args.root)
+                    server_client, args.mode, args.root, state_path(args).parent / f'projects-{args.mode}.sqlite3')
     path = state_path(args)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     record = STATE.pack(MAGIC, server.server_port, os.getpid(), token)

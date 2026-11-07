@@ -5,7 +5,8 @@
 ## Architecture and requirements
 
 `webgui/client.py` and `webgui/server.py` are separate Python 3.10+ entry points
-sharing a standard-library HTTP bridge and static browser assets. They launch the
+sharing a standard-library HTTP bridge and static browser assets. The bridge consumes
+[versioned binary command responses](COMMAND_PROTOCOL.eu_US.md), not terminal text. They launch the
 existing native `wasm-git` and `wasm-git-server` programs with argument arrays.
 No shell interprets command arguments. The GUI is source distributed; it is not
 linked into either native executable and has no pip/npm runtime dependency.
@@ -67,10 +68,29 @@ Native help and diagnostics retain their original language; the GUI localizes it
 own explanation around them. Translation changes do not change command arguments,
 repository records, matching evidence or byte restoration.
 
+## Projects and workspace selection
+
+The launcher has **Open project**, **Create project** and **Clone project** actions.
+A folder browser lists local directories; a path can also be entered directly.
+Creating/cloning takes a parent folder and project name. Opened projects appear as
+cards and in the sidebar selector; closing moves a project to recents without
+removing repository files. Removing a recent entry forgets only that entry.
+The private SQLite registry persists up to 100 projects across GUI sessions and
+is separate from repository storage. Missing folders are marked unavailable.
+
+Every structured query/write carries the selected project ID. The backend resolves
+it through the registry and rejects closed/missing projects. Switching clears old
+results, command arguments, environment inputs and stream previews. Async responses
+from the previously selected project cannot update the new view. Commit drafts
+are kept separately per project in page memory and disappear on reload. Closing a
+project does not cancel an already submitted native operation. Use job cancellation
+explicitly when needed and inspect repository state before retrying.
+
 ## Repository and audit workflow
 
-The overview shows branch/HEAD state, tracked files, staged changes, worktree
-changes and pending operations. File controls stage, unstage, inspect, compare,
+The Changes view shows branch/HEAD state, tracked files, separate staged/worktree
+file groups and pending operations. Selecting a change opens an inline audit
+beside the commit form. File controls stage, unstage, inspect, compare,
 discard or select a conflict side. Commit messages support multiple paragraphs.
 History displays parents, signatures, shallow boundaries and the selected commit's
 file tree. Repository tools cover branches/tags, remotes, fast-forward pull, push,
@@ -81,8 +101,9 @@ The comparison view supports worktree versus index, index versus HEAD and two
 revisions, with optional file and section selection such as `code` or
 `custom:producers`. It presents function/instruction changes and exact old/new
 byte spans. Ambiguous association and incomplete typed analysis are visible.
-The preview shows at most 250 instruction edits per function and 200 byte edits
-per file; the complete report remains expandable and downloadable. Original bytes
+The initial page shows up to 250 instruction edits per function and 200 byte edits
+per file; Show more loads further edits. Large hex payloads expand in 4 KiB pages.
+The full report also remains available through explicit original-data export. Original bytes
 are the evidence; metadata and inferred source correspondence remain advisory.
 
 The Wasm explorer inspects a committed module or a worktree file. Symbol/source
@@ -99,8 +120,9 @@ Use installed-binary help to inspect current options. Templates are starting
 points, not a whitelist or a substitute for choosing actual IDs and file paths.
 
 The command desk accepts every option recognized by the selected binary, including
-options added after this GUI version. Enter one argument per line, excluding the
-executable. Use the JSON-array mode for empty arguments or embedded newlines.
+options added after this GUI version. Each editable argument has its own field, excluding the executable. Empty
+arguments and embedded newlines are preserved. Environment name/value rows replace
+JSON editing; values are masked and cleared after launch.
 The chosen working directory must exist. Environment overrides affect only the
 child process and are not written to job metadata. Existing SSH agents and other
 native credential mechanisms are inherited. Terminal-only password/PIN prompts
@@ -108,9 +130,9 @@ need prior local preparation; the bridge provides pipes, not a pseudo-terminal.
 
 Standard input can come from a regular local file or remain open for interactive
 batch input. Text/file uploads are sent in bounded chunks, and EOF can be explicit.
-Standard output and error are captured independently as binary files. The browser
-shows a UTF-8 preview, but downloads preserve original bytes, including NUL and
-non-UTF-8 values. Recent jobs can be selected again, downloaded or removed after
+Standard output and error are captured independently as binary files. The browser initially shows only job state and byte counts. Original stdout/stderr
+requires deliberate review; the optional preview is UTF-8, while explicit downloads
+preserve original bytes, including NUL and non-UTF-8 values. Recent jobs can be selected again, downloaded or removed after
 completion. Output is temporary for the GUI session; download it before stopping.
 
 ## Server operations
@@ -124,16 +146,16 @@ the administration GUI itself always stays on loopback.
 
 A launch form covers HTTP or stdio transport, access mode, connection limit,
 token/policy files, SSH principal, forced updates, trusted authors, protection,
-merge identity/key/format and receive/update hooks. Review the exact arguments
-before startup. One managed service can run per GUI instance, alongside client
+merge identity/key/format and receive/update hooks. Review the selected root, transport, listener and access mode
+before startup. Complete argv and credentials are not shown in service cards. One managed service can run per GUI instance, alongside client
 operations and a separate server administrative command. Stop controls affect
 only processes launched by that instance. Existing externally managed services
 are not adopted. Policy/protection changes require restarting the native service.
 
 Compile access/protection JSON inputs through the native server to binary files;
 JSON here is a human-facing configuration input, not repository storage. The
-receive-audit viewer reads native binary records, previews the latest 100 and
-offers the full response for download. PR review/check/merge and signing remain
+receive-audit viewer reads native binary records and presents the latest 100
+records as structured fields with known credentials removed. PR review/check/merge and signing remain
 native operations in the command catalog; their authorization and expected-ID
 checks are enforced by the server. See [WasmHub integration](WASMHUB.eu_US.md).
 
@@ -154,7 +176,14 @@ repository locking. Command jobs have no fixed runtime deadline and default to
 256 MiB per output stream (`--job-output-mib`). Each target retains at most 64
 jobs until completed output is removed.
 
-Native exit codes, stderr and partial/conflict results remain visible. Cancellation,
+Native exit codes and partial/conflict results remain visible. Routine receipts
+show selected summary fields and sanitized diagnostics. Default API responses
+omit full arguments, environment, key/signature bytes, compiler provenance and
+embedded source contents. Known credential fields and recognized token/password
+assignments are masked server-side; this is not merely CSS hiding. Original Wasm
+byte evidence remains verbatim, so raw audit exports can contain arbitrary user
+content. Those exports require an explicit confirmation. Binary encoding is not
+encryption; see the [interface security boundary](COMMAND_PROTOCOL.eu_US.md). Cancellation,
 timeout, output exhaustion or shutdown can interrupt a write after partial work;
 inspect status, pending operations and receive audit before retrying. POSIX children
 run in process groups; Windows cleanup uses the native process-tree termination
@@ -164,7 +193,9 @@ output. It does not roll back completed repository operations.
 ## Verification
 
 `webgui/test_webgui.py` exercises real native binaries through the HTTP bridge:
-origin/token rejection, read-only previews, independent byte reconstruction,
+origin/token rejection, project creation/clone/recents/persistence/isolation,
+versioned JSON/binary equivalence, endian fixtures and malformed-frame rejection,
+credential projection, explicit exports, read-only previews, independent byte reconstruction,
 staging/history, literal paths, binary batch I/O, cancellation/output limits,
 policy/protection compilation, authenticated receive/audit and startup/shutdown.
 `webgui/test_catalog.cjs` checks locale placeholders and command coverage against
@@ -175,3 +206,5 @@ The current pre-release namespace uses `.wasm-git`, `WASM_GIT_*`, the
 `/v1/wasm-git` RPC route, `WGT` format magic prefixes and `WASMGIDX` for the index.
 Previous internal names and signatures are intentionally not accepted or migrated.
 Use matching new client/server builds and newly initialized native repositories.
+
+Privacy filtering is separate from translation: ordinary metadata/diagnostics mask known credentials; original exports retain unmodified evidence. A client-GUI clone checks out named files. If checkout fails after cloning, the project remains accessible with a recovery warning.

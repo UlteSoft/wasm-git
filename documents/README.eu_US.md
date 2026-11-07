@@ -10,6 +10,8 @@ project-specific `.eu_US.md` and `.zh_CN.md` suffix convention.
 
 ## Reading guide
 
+- [Command output protocol](COMMAND_PROTOCOL.eu_US.md) — human/application/storage boundaries, binary-v1 endianness and privacy. [中文](COMMAND_PROTOCOL.zh_CN.md)
+
 - [Local Web GUI](WEBGUI.eu_US.md) — bilingual client operations, full command access,
   audit previews and independent server supervision. [中文](WEBGUI.zh_CN.md)
 

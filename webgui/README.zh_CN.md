@@ -8,7 +8,7 @@
 在项目根目录运行：
 
 ```sh
-python3 webgui/client.py start --repo /path/to/repository --open
+python3 webgui/client.py start --open
 python3 webgui/client.py stop
 
 python3 webgui/server.py start --root /path/to/hosted-repositories --open
@@ -30,3 +30,17 @@ python3 webgui/server.py stop
 请打开启动时打印的完整认证 URL。管理界面仅监听 `127.0.0.1`，用于本地管理。
 关闭界面会停止其启动的命令与服务；默认状态和二进制临时输出位于已被 Git 忽略的
 `.tmp/webgui/` 中。
+
+## 项目工作台与输出边界
+
+直接执行 `python3 webgui/client.py start --open`，在项目入口打开、创建或克隆仓库；
+左侧切换已打开项目，最近列表可重新打开项目。关闭项目不会删除文件。
+改动视图把暂存／未暂存文件、逐条 Wasm 审计和提交表单放在同一工作区。
+项目切换会清理旧结果，提交草稿仅保存在当前页面内存并按项目隔离。
+
+GUI 使用[带版本的二进制命令协议](../documents/COMMAND_PROTOCOL.zh_CN.md)。
+普通页面呈现筛选后的字段，不直接展示 JSON；默认响应不返回凭据、完整参数和环境变量。
+原始报告与命令流需要主动查看或导出。内部项目列表使用 SQLite 二进制数据库。
+
+隐私过滤与翻译相互独立：常规元数据／诊断会掩码已知凭据，原始导出保持证据完整。
+客户端界面克隆后会检出命名文件；如果检出失败，仍保留已克隆项目，并显示恢复提示。

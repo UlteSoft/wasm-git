@@ -42,3 +42,5 @@
 ## 发布工程
 
 请参阅[平台与发布手册](RELEASE.zh_CN.md)，了解原生与 WASIp1 构建、CI/CD 门禁、QEMU 测试及能力边界。
+
+- [命令输出协议](COMMAND_PROTOCOL.zh_CN.md) — 人／应用／存储边界、binary-v1 字节序与隐私。 [English](COMMAND_PROTOCOL.eu_US.md)

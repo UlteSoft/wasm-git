@@ -43,7 +43,7 @@ class Job:
         self.stdin_closed = bool(stdin_path) or not keep_stdin
         self.sizes = [0, 0]
         self.paths = [self.directory / "stdout.bin", self.directory / "stderr.bin"]
-        streams = [p.open("wb", buffering=0) for p in self.paths]
+        streams = [os.fdopen(os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb", buffering=0) for p in self.paths]
         source = None
         try:
             if stdin_path:
@@ -134,16 +134,21 @@ class Job:
 
         threading.Thread(target=write, daemon=True).start()
 
-    def view(self, offsets=(0, 0)):
+    def view(self, offsets=(0, 0), include_output=False):
         streams = []
         for path, offset in zip(self.paths, offsets):
             if type(offset) is not int or offset < 0:
                 raise ValueError("Invalid output offset.")
-            with path.open("rb") as stream:
-                stream.seek(offset)
-                content = stream.read(65536)
+            content = b''
+            if include_output:
+                with path.open("rb") as stream:
+                    stream.seek(offset)
+                    content = stream.read(65536)
             streams.append({"offset": offset + len(content), "base64": base64.b64encode(content).decode("ascii")})
-        return {"id": self.id, "args": self.args, "cwd": self.cwd,
+        command = self.args[0] if self.args[0] in 'version inspect diff debug-map trace blame init add rm mv restore reset commit log show clone fork fetch pull push remote status branch switch tag stash reflog rev-parse cat-file ls-files ls-tree show-ref for-each-ref count-objects ls-remote describe archive hash-object mktree write-tree read-tree commit-tree update-ref symbolic-ref pack-objects unpack-objects index-pack verify-pack rev-list merge-base diff-files diff-index diff-tree merge rebase cherry-pick revert checkout worktree notes bisect gc fsck repack prune prune-packed verify-objects bundle unbundle patch apply features config pool pr hydrate promisor clone-status keygen trust-author untrust-author commit-signed sign-commit verify-commit compile-policy compile-protection audit-log server serve'.split() else 'command'
+        if self.args[0] == '--root':
+            command = 'server'
+        return {"id": self.id, "project": getattr(self, "project", None), "command": command,
                 "running": not self.done.is_set(), "exit_code": self.exit_code,
                 "reason": self.reason, "stdin_closed": self.stdin_closed,
                 "stdin_busy": self.input_lock.locked(), "sizes": self.sizes.copy(),
@@ -186,6 +191,7 @@ class JobManager:
                 raise ValueError("Another repository action or command is running. Wait or cancel it first.")
             try:
                 job = Job(self, args, cwd, env, stdin, data.get("keep_stdin") is True)
+                job.project = data.get("project")
                 self.jobs[job.id] = job
                 return job.view()
             except BaseException:

@@ -19,6 +19,10 @@ from unittest.mock import patch
 
 from app import Client, Problem, Server, client_path, read_state
 from jobs import JobManager
+from projects import Projects
+import presentation
+import protocol
+import struct
 import supervision
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -78,9 +82,15 @@ class WebGUI(unittest.TestCase):
         native("commit", self.repo, "-m", "Update return value")
 
     def request(self, path, data=None, headers=None, expected=200, raw=False):
+        if isinstance(data, dict) and 'repository' in data:
+            root = data['repository']
+            opened = self.request('/api/projects', {'operation': 'open', 'path': root})['project']
+            data = {**data, 'project': opened['id']}
         connection = http.client.HTTPConnection("127.0.0.1", self.http.server_port, timeout=20)
         body = None if data is None else json.dumps(data).encode()
         values = {"X-Wasm-Git-Token": self.token, "Content-Type": "application/json"}
+        if path.startswith('/api/jobs/') and path.endswith(('/stdout', '/stderr')):
+            values['X-Wasm-Git-Export'] = 'confirmed'
         values.update(headers or {})
         connection.request("GET" if data is None else "POST", path, body, values)
         response = connection.getresponse()
@@ -114,7 +124,7 @@ class WebGUI(unittest.TestCase):
                                ({"Origin": "https://evil.example"}, 403), ({"Sec-Fetch-Site": "cross-site"}, 403),
                                ({"X-Wasm-Git-Token": "é"}, 401)]:
             self.request("/api/session", headers=headers, expected=code)
-        for path in ("/", "/style.css", "/app.js", "/catalog.js", "/server.js", "/locales.js", "/i18n.js"):
+        for path in ("/", "/style.css", "/app.js", "/catalog.js", "/server.js", "/locales.js", "/i18n.js", "/workspace.js", "/views.js"):
             self.assertGreater(len(self.request(path, raw=True)), 100)
         self.request("/../Cargo.toml", expected=404)
         self.request("/api/query", [], expected=400)
@@ -136,11 +146,37 @@ class WebGUI(unittest.TestCase):
             restored.extend(wasm(11)[cursor:start]); restored.extend(bytes.fromhex(edit["new_hex"])); cursor = end
         restored.extend(wasm(11)[cursor:])
         self.assertEqual(bytes(restored), wasm(12))
-        self.assertIn("I32Const", self.query("diff", old="HEAD^", new="HEAD", mode="revisions", representation="text"))
+        self.assertIn("I32Const", self.request("/api/export", {"repository": str(self.repo), "operation": "diff", "old": "HEAD^", "new": "HEAD", "mode": "revisions", "representation": "text", "confirmed": True})["result"])
         self.assertTrue(self.query("diff", old="HEAD^", new="HEAD", section="code")["binary_changed"])
+        selected = self.query('diff', old='HEAD^', new='HEAD', section='code')['files'][0]['diff']
+        self.assertEqual(selected['kind'], 'section_diff')
+        self.assertFalse(selected['whole_module_patch'])
+        self.assertIn('not_evaluated', selected['cross_section_dependencies'])
+        self.assertTrue(selected['changes'][0]['edits'])
         self.assertTrue(self.query("inspect", file="module.wasm")["function_analysis"]["available"])
         self.assertIn("debug_info", self.query("debug", file="module.wasm"))
         self.assertEqual(fingerprint(self.repo), before)
+
+    def test_added_deleted_file_witnesses_and_symbol_identity(self):
+        payload = wasm(25)
+        (self.repo / 'added.wasm').write_bytes(payload)
+        self.action('stage', file='added.wasm')
+        result = self.query('diff', mode='staged')['files']
+        added = next(item for item in result if item['path'] == 'added.wasm')
+        self.assertEqual(added['status'], 'added')
+        self.assertEqual(bytes.fromhex(added['diff']['content']['hex']), payload)
+        self.action('commit', message='Add module')
+        (self.repo / 'added.wasm').unlink()
+        self.action('stage', file='added.wasm')
+        deleted = next(item for item in self.query('diff', mode='staged')['files'] if item['path'] == 'added.wasm')
+        self.assertEqual(deleted['status'], 'deleted')
+        self.assertEqual(bytes.fromhex(deleted['diff']['content']['hex']), payload)
+        info = presentation.query('debug', {'input': {'path': '/private/build/source.wasm'},
+            'debug_info': {'names': [{'name': 'namespace/member', 'index': 0}],
+                           'lines': [{'location': {'file': '/private/build/file.cc', 'line': 20}}]}})
+        self.assertNotIn('input', info)
+        self.assertEqual(info['debug_info']['names'][0]['name'], 'namespace/member')
+        self.assertEqual(info['debug_info']['lines'][0]['location']['file'], 'file.cc')
 
     def test_staging_commit_branches_stash_gc_and_failure_receipts(self):
         (self.repo / "module.wasm").write_bytes(wasm(13))
@@ -286,7 +322,7 @@ class WebGUI(unittest.TestCase):
     def test_query_timeout_kills_inherited_output_pipe_children(self):
         program = self.root / "inherited-pipe.py"
         program.write_text("import subprocess, sys\nsubprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n")
-        client = Client(sys.executable, timeout=.25)
+        client = Client(sys.executable, timeout=.25, machine=False)
         started = time.monotonic()
         try:
             with self.assertRaisesRegex(Problem, "exceeded"):
@@ -295,6 +331,113 @@ class WebGUI(unittest.TestCase):
             self.assertFalse(client.children)
         finally:
             client.close()
+
+    def test_projects_lifecycle_persistence_and_isolation(self):
+        first = self.request('/api/projects', {'operation': 'open', 'path': str(self.repo)})['project']
+        duplicate = self.request('/api/projects', {'operation': 'open', 'path': str(self.repo / '.')})['project']
+        self.assertEqual(first['id'], duplicate['id'])
+        destination = self.root / ('new-' + secrets.token_hex(5))
+        second = self.request('/api/projects', {'operation': 'create', 'destination': str(destination)})['project']
+        self.assertNotEqual(first['id'], second['id'])
+        (destination / 'other.wasm').write_bytes(wasm(1))
+        self.request('/api/action', {'project': second['id'], 'action': 'stage-all', 'repository': str(destination)})
+        self.assertFalse(self.request('/api/query', {'project': first['id'], 'operation': 'overview'})['result']['status']['staged'])
+        self.assertTrue(self.request('/api/query', {'project': second['id'], 'operation': 'overview'})['result']['status']['staged'])
+        persistent = Projects(self.http.projects.path)
+        self.assertEqual(persistent.get(first['id']), self.repo)
+        self.request('/api/projects', {'operation': 'close', 'id': first['id']})
+        self.request('/api/action', {'project': first['id'], 'action': 'gc'}, expected=400)
+        self.assertTrue((self.repo / '.wasm-git').is_dir())
+        self.assertFalse(next(p for p in persistent.list() if p['id'] == first['id'])['opened'])
+        self.request('/api/projects', {'operation': 'reopen', 'id': first['id']})
+        clone = self.root / ('clone-' + secrets.token_hex(5))
+        copied = self.request('/api/projects', {'operation': 'clone', 'url': str(self.repo), 'destination': str(clone)})['project']
+        self.assertEqual(native('rev-parse', self.repo, 'HEAD'), native('rev-parse', clone, 'HEAD'))
+        self.assertEqual((clone / 'module.wasm').read_bytes(), (self.repo / 'module.wasm').read_bytes())
+        self.assertEqual(json.loads(native('status', clone))['worktree'], 'clean')
+        self.request('/api/projects', {'operation': 'forget', 'id': copied['id']})
+        self.assertTrue((clone / '.wasm-git').is_dir())
+        self.assertNotIn(copied['id'], [p['id'] for p in persistent.list()])
+        folder = self.request('/api/folders', {'path': str(self.root)})
+        self.assertIn(str(self.repo), [p['path'] for p in folder['entries']])
+        self.request('/api/projects', {'operation': 'open', 'path': str(self.root)}, expected=400)
+        self.request('/api/query', {'operation': 'overview'}, expected=400)
+
+    def test_sensitive_presentation_and_explicit_exports(self):
+        secret = 'TEST-PRIVATE-CREDENTIAL-9c71'
+        value = {'environment': {'PASSWORD': secret}, 'argv': [secret], 'api_key': secret,
+                 'nested': {'access_token': secret, 'private_key': secret, 'token_sha256': secret}, 'url': f'https://alice:{secret}@example.test/repo',
+                 'diagnostic': f'Authorization: Bearer {secret} token={secret}'}
+        self.assertNotIn(secret, json.dumps(presentation.clean(value)))
+        with patch.dict(os.environ, {'WASM_GIT_REMOTE_TOKEN': secret}):
+            self.assertNotIn(secret, presentation.text('Remote replied: ' + secret))
+        session = self.request('/api/session')
+        for key in ('client', 'server', 'cwd', 'environment'):
+            self.assertNotIn(key, session)
+        self.request('/api/export', {'repository': str(self.repo), 'operation': 'history'}, expected=409)
+        job = self.job(['commit', str(self.repo), '--allow-empty', '-m', secret])
+        self.wait_job(job)
+        default = self.request('/api/jobs/poll', {'id': job['id']})
+        self.assertNotIn('args', default)
+        self.assertNotIn('cwd', default)
+        self.assertEqual(default['stdout']['base64'], '')
+        self.assertNotIn(secret, json.dumps(self.request('/api/jobs')))
+        self.request(f"/api/jobs/{job['id']}/stdout", headers={'X-Wasm-Git-Export': ''}, expected=409)
+        revealed = self.request('/api/jobs/poll', {'id': job['id'], 'reveal': True})
+        exact = self.request(f"/api/jobs/{job['id']}/stdout", raw=True)
+        self.assertEqual(base64.b64decode(revealed['stdout']['base64']), exact)
+        query = self.query('inspect', file='module.wasm')
+        self.assertNotIn('input', query)
+        self.assertNotIn('regions', query['audit']['sections'][0])
+        self.assertNotIn('operators', query['module']['functions'][0])
+
+    def test_versioned_json_binary_and_endianness(self):
+        for args in [('version', '--build-options'), ('status', str(self.repo)), ('log', str(self.repo)),
+                     ('inspect', str(self.repo / 'module.wasm'), '--json'), ('missing-command',),
+                     ('show-ref', str(self.repo), '--verify', 'refs/heads/missing'), ('--help',)]:
+            outputs = []
+            for format in ('json', 'binary-v1'):
+                process = subprocess.run([str(CLIENT), '--format', format, *args], capture_output=True)
+                value = json.loads(process.stdout) if format == 'json' else protocol.decode(process.stdout)
+                self.assertEqual(value['exit_code'], process.returncode)
+                self.assertEqual(value['protocol'], 'wasm-git.command')
+                self.assertEqual(value['version'], 1)
+                self.assertEqual(process.stderr, b'')
+                outputs.append(value)
+            self.assertEqual(*outputs)
+        # Independent wire fixtures: non-palindromic values expose byte swapping.
+        fixtures = [(b'\x03' + struct.pack('>q', -0x0102030405060708), -0x0102030405060708),
+                    (b'\x04' + struct.pack('>Q', 0x8192a3b4c5d6e7f8), 0x8192a3b4c5d6e7f8),
+                    (b'\x05' + struct.pack('>d', -1.125), -1.125),
+                    (b'\x06' + struct.pack('>Q', 6) + '中文'.encode(), '中文'),
+                    (b'\x07' + struct.pack('>Q', 3) + b'\x00\x01\x02', [None, False, True])]
+        for payload, expected in fixtures:
+            frame = protocol.MAGIC + struct.pack('>Q', len(payload)) + payload
+            self.assertEqual(protocol.decode(frame), expected)
+            for broken in (frame[:-1], frame + b'x', frame[:8] + frame[8:16][::-1] + frame[16:]):
+                with self.assertRaises(ValueError): protocol.decode(broken)
+        for payload in (b'\xff', b'\x06' + b'\xff' * 8, b'\x05' + struct.pack('>d', float('nan')),
+                        b'\x06' + struct.pack('>Q', 1) + b'\xff', b'\x03' + struct.pack('>q', 1)):
+            with self.assertRaises(ValueError): protocol.decode(protocol.MAGIC + struct.pack('>Q', len(payload)) + payload)
+        raw = subprocess.run([str(CLIENT), '--format', 'binary-v1', 'cat-file', str(self.repo), '--batch'], input=b'HEAD\n', capture_output=True)
+        self.assertNotEqual(raw.returncode, 0)
+        self.assertIn('streaming', protocol.decode(raw.stdout)['error']['message'])
+        valid = {'protocol': 'wasm-git.command', 'version': 1, 'command': 'status',
+                 'exit_code': 0, 'ok': True, 'result': {'kind': 'empty'}, 'error': None}
+        self.assertEqual(protocol.response(valid, 0), valid)
+        for fields in ({'version': True}, {'version': 1.0}, {'exit_code': False}, {'ok': 1},
+                       {'result': None}, {'result': {'kind': 'text', 'text': []}},
+                       {'result': {'kind': 'data', 'value': 'not an object'}}, {'error': 'unsafe'}):
+            with self.assertRaises(ValueError): protocol.response({**valid, **fields}, 0)
+        with self.assertRaises(ValueError): protocol.response(valid, 1)
+        output = subprocess.check_output([str(CLIENT), '--format', 'text', 'status', str(self.repo)], text=True)
+        self.assertIn('branch:', output)
+        self.assertNotIn('"branch"', output)
+        for executable, args in [(CLIENT, ['diff', str(self.repo / 'module.wasm'), str(self.repo / 'module.wasm')]),
+                                 (SERVER, ['--help'])]:
+            text = subprocess.check_output([str(executable), '--format', 'json', *args])
+            frame = subprocess.check_output([str(executable), '--format', 'binary-v1', *args])
+            self.assertEqual(json.loads(text), protocol.decode(frame))
 
     def test_no_build_and_auto_build_command(self):
         with self.assertRaises(Problem):

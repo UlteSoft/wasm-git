@@ -8,6 +8,7 @@ mod bisect_commands;
 pub mod blame;
 mod checkout;
 mod command_args;
+mod command_output;
 mod core_view;
 mod debug_cli;
 pub mod debug_info;
@@ -278,10 +279,14 @@ fn cli_stdout(output: &str, newline: bool) {
 
 pub fn client_main() {
     let mut args = cli_args();
-    if args
-        .get(1)
-        .is_some_and(|arg| arg == "--threads" || arg.starts_with("--threads="))
-    {
+    let mut format = command_output::Format::default_output();
+    let mut format_seen = false;
+    while args.get(1).is_some_and(|arg| {
+        arg == "--threads"
+            || arg.starts_with("--threads=")
+            || arg == "--format"
+            || arg.starts_with("--format=")
+    }) {
         let option = args.remove(1);
         let value = if let Some((_, value)) = option.split_once('=') {
             value.to_owned()
@@ -290,17 +295,66 @@ pub fn client_main() {
         } else {
             String::new()
         };
-        let result = value
-            .parse::<usize>()
-            .map_err(|_| "--threads requires an integer".to_owned())
-            .and_then(parallel::configure);
+        let result = if option.starts_with("--format") {
+            if format_seen {
+                Err("duplicate global --format".to_owned())
+            } else {
+                format_seen = true;
+                command_output::Format::parse(&value).map(|selected| format = selected)
+            }
+        } else {
+            value
+                .parse::<usize>()
+                .map_err(|_| "--threads requires an integer".to_owned())
+                .and_then(parallel::configure)
+        };
         if let Err(error) = result {
-            cli_error(&error);
+            format.emit("", "", 1, Some(&error), false);
             std::process::exit(1);
         }
     }
     if args.len() < 2 {
-        print_usage();
+        format.emit("", "", 1, Some(&usage_text()), false);
+        std::process::exit(1);
+    }
+    // A global machine format requests structured command data where the
+    // command has a JSON view. Explicit command-local projections still win.
+    if format.machine() && !command_args::help_requested(&args[1..]) {
+        let command = args[1].as_str();
+        let has_projection = args[2..].iter().any(|a| {
+            matches!(
+                a.as_str(),
+                "--json"
+                    | "--format"
+                    | "-z"
+                    | "--name-only"
+                    | "--object-only"
+                    | "--quiet"
+                    | "-q"
+                    | "--hash"
+            ) || a.starts_with("--format=")
+        });
+        if !has_projection && command == "diff" {
+            // Append before pathspecs so no filename becomes an option.
+            let at = args.iter().position(|a| a == "--").unwrap_or(args.len());
+            args.splice(at..at, ["--format".to_owned(), "json".to_owned()]);
+        } else if !has_projection
+            && matches!(
+                command,
+                "features" | "ls-tree" | "show-ref" | "for-each-ref"
+            )
+        {
+            let at = args.iter().position(|a| a == "--").unwrap_or(args.len());
+            args.insert(at, "--json".to_owned());
+        }
+    }
+    // Batch objects and running servers own stdout as a stream protocol. Reject
+    // envelopes before reading stdin, opening a listener or changing state.
+    if format.machine()
+        && ((args[1] == "cat-file" && object_batch::requested(&args[1..]))
+            || matches!(args[1].as_str(), "server" | "serve"))
+    {
+        format.emit(&args[1], "", 1, Some("streaming commands require --format native; their stdout has its own binary/readiness protocol"), false);
         std::process::exit(1);
     }
     if args[1] == "cat-file" && object_batch::requested(&args[1..]) {
@@ -348,14 +402,15 @@ pub fn client_main() {
         };
         match output {
             Ok(output) => {
-                cli_stdout(&output.stdout, false);
+                format.emit(&args[1], &output.stdout, output.exit_code, None, false);
                 if output.exit_code != 0 {
                     std::process::exit(output.exit_code);
                 }
             }
             Err(error) => {
-                cli_error(&error);
-                std::process::exit(if args[1] == "merge-base" { 2 } else { 1 });
+                let code = if args[1] == "merge-base" { 2 } else { 1 };
+                format.emit(&args[1], "", code, Some(&error), false);
+                std::process::exit(code);
             }
         }
         return;
@@ -423,15 +478,8 @@ pub fn client_main() {
             porcelain::with_clean_history(&args[2], |_| repository::run(&args[1..]))
         }
         "init" | "commit" | "log" | "show" | "clone" | "fork" | "bundle" | "unbundle" | "fsck" | "merge" => repository::run(&args[1..]),
-        "help" | "--help" | "-h" => {
-            print_usage();
-            Ok(String::new())
-        }
-        other => {
-            cli_error(&format!("unknown command: {other}"));
-            print_usage();
-            std::process::exit(1);
-        }
+        "help" | "--help" | "-h" => Ok(usage_text()),
+        other => Err(if format.machine() { format!("unknown command: {other}") } else { format!("unknown command: {other}\n{}", usage_text()) }),
     };
     match result {
         Ok(output) if !output.is_empty() => {
@@ -440,24 +488,22 @@ pub fn client_main() {
                 "merge" | "pull" | "cherry-pick" | "revert" | "rebase"
             ) && serde_json::from_str::<Value>(&output)
                 .is_ok_and(|report| report["status"] == "conflict" || report["status"] == "empty");
-            cli_stdout(&output, true);
-            if conflict {
-                std::process::exit(2);
-            }
-            if args[1] == "push"
+            let rejected = args[1] == "push"
                 && serde_json::from_str::<Value>(&output).is_ok_and(|report| {
                     matches!(
                         report["status"].as_str(),
                         Some("partial" | "rejected" | "unknown")
                     )
-                })
-            {
-                std::process::exit(1);
+                });
+            let code = if conflict { 2 } else { i32::from(rejected) };
+            format.emit(&args[1], &output, code, None, true);
+            if code != 0 {
+                std::process::exit(code);
             }
         }
-        Ok(_) => {}
+        Ok(_) => format.emit(&args[1], "", 0, None, false),
         Err(error) => {
-            cli_error(&error);
+            format.emit(&args[1], "", 1, Some(&error), false);
             std::process::exit(1);
         }
     }
@@ -1132,12 +1178,11 @@ fn cmd_trace(args: &[String]) -> Result<String, String> {
     .map_err(|error| error.to_string())
 }
 
-fn print_usage() {
-    use std::io::Write;
-    let mut stderr = std::io::stderr().lock();
-    let mut line = |text: &str| {
-        let _ = writeln!(stderr, "{text}");
-    };
+fn usage_text() -> String {
+    let mut lines = Vec::new();
+    let mut line = |text: &str| lines.push(text.to_owned());
+    line("Global output: wasm-git [--format text|json|binary-v1|native] [--threads N] COMMAND ...");
+    line("JSON/binary-v1 are versioned application responses; command-local --format retains its own meaning.");
     line("Additional storage commands: clone --depth/--filter; fetch --deepen/--unshallow; clone-status; hydrate; promisor; keygen; trust-author; untrust-author; commit-signed; sign-commit; verify-commit; pool attach/status/sync/release; pr URL create/list/show/update/comment/review/check/diff/merge/recover. Signing supports --format native|ssh|openpgp. Use COMMAND --help.");
     line("usage: wasm-git <command> [<args>]\n");
     line("  version [--build-options]");
@@ -1231,23 +1276,52 @@ fn print_usage() {
     line("  bisect <DIR> good|skip [REV...] | bad [REV] | status | next | log | reset");
     line("  server --root <DIR> [--listen ADDRESS] [--token-file FILE --allow-write]");
     line("  server --stdio --root <DIR> [--allow-force]");
+    lines.join("\n")
 }
 
 /// Standalone server entry point. No client command dispatch is linked here.
 #[cfg(feature = "server")]
 pub fn server_main() {
     let mut args: Vec<String> = cli_args().into_iter().skip(1).collect();
+    let mut format = command_output::Format::Native;
+    if args
+        .first()
+        .is_some_and(|a| a == "--format" || a.starts_with("--format="))
+    {
+        let option = args.remove(0);
+        let value = option
+            .split_once('=')
+            .map(|(_, v)| v.to_owned())
+            .unwrap_or_else(|| {
+                if args.is_empty() {
+                    String::new()
+                } else {
+                    args.remove(0)
+                }
+            });
+        format = command_output::Format::parse(&value).unwrap_or_else(|error| {
+            cli_error(&error);
+            std::process::exit(1);
+        });
+    }
     if args.first().is_some_and(|a| a == "server" || a == "serve") {
         args.remove(0);
     }
+    let command = args.first().cloned().unwrap_or_default();
+    if format.machine()
+        && !matches!(
+            command.as_str(),
+            "compile-policy" | "compile-protection" | "audit-log" | "--help" | "-h"
+        )
+    {
+        format.emit("server", "", 1, Some("running servers require --format native; stdout carries readiness or the binary network protocol"), false);
+        std::process::exit(1);
+    }
     args.insert(0, "server".to_owned());
     match server::run(&args) {
-        Ok(output) if !output.is_empty() => {
-            cli_stdout(&output, true);
-        }
-        Ok(_) => (),
+        Ok(output) => format.emit(&command, &output, 0, None, true),
         Err(error) => {
-            cli_error(&error);
+            format.emit(&command, "", 1, Some(&error), false);
             std::process::exit(1);
         }
     }

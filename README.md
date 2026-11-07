@@ -16,7 +16,14 @@ project's documentation naming convention.
 
 The independent Python interface supports English / 简体中文, repository review
 and operations, complete native command access, and separate server supervision.
-Missing native executables are built from this checkout using Cargo.
+Open, create and clone projects, switch among opened workspaces, and review
+staged/working changes beside an inline Wasm audit. Missing native executables
+are built from this checkout using Cargo.
+
+Applications can select `--format json` or `--format binary-v1` before a command.
+The GUI uses the versioned binary protocol and renders selected fields; original
+reports and command streams require deliberate review/export. See the
+[interface and byte-order contract](documents/COMMAND_PROTOCOL.eu_US.md).
 
 ```sh
 python3 webgui/client.py start --open
