@@ -1867,6 +1867,7 @@ fn custom(
                 | "linking"
                 | "uwvm.wsea.v2"
                 | "wasm-cosign"
+                | "uwvm.memtag.linear.globals"
         ) =>
         {
             custom_extensions::decode(name, &mut reader, &path).unwrap()

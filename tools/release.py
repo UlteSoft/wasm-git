@@ -60,6 +60,29 @@ def module(edited):
             + section(0, string("vendor.audit") + custom))
 
 
+def memtag_module(edited, wide):
+    """Independent producer: full uwvm2-ros u32 IDs, opcode-specific memidx."""
+    shapes = [(0x20, 0, 1), (0x21, 1, 1), (0x22, 2, 1), (0x23, 0, 1),
+              (0x24, 0, 1), (0x25, 2, 1), (0x26, 2, 1), (0x27, 1, 1),
+              (0x28, 1, 1), (0x29, 2, 1), (0x2a, 2, 1), (0x2b, 2, 0),
+              (0x2c, 2, 0), (0x2d, 1, 1), (0x2e, 2, 1), (0x2f, 2, 1),
+              (0x36, 3, 1), (0x37, 4, 1), (0x38, 4, 1)]
+    body = bytearray(b"\0\x02\x40")
+    for opcode, inputs, outputs in shapes:
+        body.extend(bytes([0x42 if wide else 0x41, 0]) * inputs)
+        opcode = 0x2c if edited and opcode == 0x2b else opcode
+        body.extend(b"\xff" + leb(0x01010000 + opcode) + b"\x01")
+        body.extend(b"\x1a" * outputs)
+    body.extend(b"\x0b\x0b")
+    return (b"\0asm\x01\0\0\0" + section(1, b"\x01\x60\0\0")
+            + section(3, b"\x01\0") + section(5, bytes([2, 4 if wide else 0, 1,
+                                                       4 if wide else 0, 1]))
+            + section(7, b"\x01\x01f\0\0")
+            + section(10, b"\x01" + leb(len(body)) + body)
+            + section(0, string("uwvm.memtag.linear.globals")
+                      + bytes([2, 1, 1, 32 if edited else 16, 16])))
+
+
 def smoke(args):
     parent = ROOT / ".tmp" / "release-smoke"
     parent.mkdir(parents=True, exist_ok=True)
@@ -83,6 +106,44 @@ def smoke(args):
             return result.stdout
 
         options = json.loads(command("version", "--build-options"))
+        for wide in (False, True):
+            before, after = memtag_module(False, wide), memtag_module(True, wide)
+            (root / "memtag-old.wasm").write_bytes(before)
+            (root / "memtag-new.wasm").write_bytes(after)
+            inspected = json.loads(command("inspect", "memtag-new.wasm", "--json"))
+            standard = inspected["audit"]["standard"]
+            assert standard["validation"] == "valid", standard
+            assert sum(e["feature"] == "memtag_extension" for e in standard["evidence"]) == 19
+            changed = json.loads(command("diff", "memtag-old.wasm", "memtag-new.wasm",
+                                         "--compact", "--format", "json"))
+            assert changed["summary"]["functions_changed"] == 1, changed["summary"]
+            selected = json.loads(command("diff", "memtag-old.wasm", "memtag-new.wasm",
+                                          "--section", "custom:uwvm.memtag.linear.globals",
+                                          "--format", "json"))
+            assert "global[0]/address" in json.dumps(selected), selected
+            name = "memtag64" if wide else "memtag32"
+            command("patch", "memtag-old.wasm", "memtag-new.wasm", "--output", name + ".wgp")
+            command("apply", "memtag-old.wasm", name + ".wgp", "--output", name + ".wasm")
+            assert (root / (name + ".wasm")).read_bytes() == after
+            command("init", name)
+            command("commit", name, "memtag-old.wasm", "-m", "before")
+            first_memtag = command("rev-parse", name, "HEAD").decode().strip()
+            command("commit", name, "memtag-new.wasm", "-m", "storez and globals update")
+            last_memtag = command("rev-parse", name, "HEAD").decode().strip()
+            command("gc", name)
+            command("fsck", name)
+            for revision, expected in ((first_memtag, before), (last_memtag, after)):
+                destination = name + "-" + revision + ".wasm"
+                command("checkout", name, revision, destination)
+                assert (root / destination).read_bytes() == expected
+            command("clone", name, name + "-clone")
+            command("checkout", name + "-clone", "HEAD", name + "-clone.wasm")
+            assert (root / (name + "-clone.wasm")).read_bytes() == after
+            command("bundle", name, name + ".wgb")
+            command("init", name + "-bundle")
+            command("unbundle", name + "-bundle", name + ".wgb", "main")
+            command("checkout", name + "-bundle", "HEAD", name + "-bundle.wasm")
+            assert (root / (name + "-bundle.wasm")).read_bytes() == after
         report = json.loads(command("diff", "old.wasm", "new.wasm", "--compact", "--format", "json"))
         assert report["summary"]["functions_changed"] == 1, report["summary"]
         serial = json.loads(command("--threads", "1", "diff", "old.wasm", "new.wasm",
@@ -145,6 +206,11 @@ def smoke(args):
                     assert command("rev-parse", "remote-clone", "HEAD").decode().strip() == last
                     command("checkout", "remote-clone", "HEAD", "remote.wasm")
                     assert (root / "remote.wasm").read_bytes() == new
+                    for wide in (False, True):
+                        name = "memtag64" if wide else "memtag32"
+                        command("clone", f"http://{address}/{name}", "remote-" + name)
+                        command("checkout", "remote-" + name, "HEAD", "remote-" + name + ".wasm")
+                        assert (root / ("remote-" + name + ".wasm")).read_bytes() == memtag_module(True, wide)
                 finally:
                     process.terminate()
                     try:
@@ -214,7 +280,9 @@ def package(args):
     destination.mkdir(parents=True, exist_ok=True)
     # Explicit allowlist: no test data, build trees, credentials or profiles.
     files = [Path(args.client).resolve(), ROOT / "LICENSE", ROOT / "README.md",
-             ROOT / "documents" / "RELEASE.eu_US.md", ROOT / "documents" / "RELEASE.zh_CN.md"]
+             ROOT / "documents" / "RELEASE.eu_US.md", ROOT / "documents" / "RELEASE.zh_CN.md",
+             ROOT / "documents" / "UWVM2_ROS_EXTENSIONS.eu_US.md",
+             ROOT / "documents" / "UWVM2_ROS_EXTENSIONS.zh_CN.md"]
     if args.server:
         files.append(Path(args.server).resolve())
     if args.label.endswith("windows-msvc"):

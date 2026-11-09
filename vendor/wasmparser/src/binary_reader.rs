@@ -1201,6 +1201,7 @@ impl<'a> BinaryReader<'a> {
                 bail!(pos, "unexpected SIMD opcode: 0x{code:x}")
             }
             0xfe => self.visit_0xfe_operator(pos, visitor)?,
+            0xff => self.visit_uwvm2_ros_operator(pos, visitor)?,
 
             _ => bail!(pos, "illegal opcode: 0x{code:x}"),
         })
@@ -1500,6 +1501,56 @@ impl<'a> BinaryReader<'a> {
             0x16 => visitor.visit_i64_mul_wide_u(),
 
             _ => bail!(pos, "unknown 0xfc subopcode: 0x{code:x}"),
+        })
+    }
+
+    // uwvm2-ros VM instruction extension: FF ULEB32(opcode), followed by
+    // opcode-specific operands. The u32 namespace has no global bit layout,
+    // version field, memory-index operand, or payload length.
+    fn visit_uwvm2_ros_operator<T>(
+        &mut self,
+        pos: usize,
+        visitor: &mut T,
+    ) -> Result<<T as VisitOperator<'a>>::Output>
+    where
+        T: VisitOperator<'a>,
+    {
+        let mut probe = self.clone();
+        let opcode = probe.read_var_u32()?;
+        // Only these registered WasmMTE instructions have a memory-index
+        // operand. Future extension families can have entirely different
+        // grammars. Unknown opcodes never license an operand read.
+        macro_rules! memory_instruction {
+            ($visit:ident) => {{
+                let mem = probe.read_var_u32()?;
+                *self = probe;
+                visitor.$visit(mem)
+            }};
+        }
+        Ok(match opcode {
+            0x0101_0020 => memory_instruction!(visit_memtag_status),
+            0x0101_0021 => memory_instruction!(visit_memtag_extract),
+            0x0101_0022 => memory_instruction!(visit_memtag_insert),
+            0x0101_0023 => memory_instruction!(visit_memtag_tagbits),
+            0x0101_0024 => memory_instruction!(visit_memtag_startbit),
+            0x0101_0025 => memory_instruction!(visit_memtag_copy),
+            0x0101_0026 => memory_instruction!(visit_memtag_sub),
+            0x0101_0027 => memory_instruction!(visit_memtag_load),
+            0x0101_0028 => memory_instruction!(visit_memtag_untag),
+            0x0101_0029 => memory_instruction!(visit_memtag_untagstore),
+            0x0101_002a => memory_instruction!(visit_memtag_untagstorez),
+            0x0101_002b => memory_instruction!(visit_memtag_store),
+            0x0101_002c => memory_instruction!(visit_memtag_storez),
+            0x0101_002d => memory_instruction!(visit_memtag_random),
+            0x0101_002e => memory_instruction!(visit_memtag_randomstore),
+            0x0101_002f => memory_instruction!(visit_memtag_randomstorez),
+            0x0101_0036 => memory_instruction!(visit_memtag_hint),
+            0x0101_0037 => memory_instruction!(visit_memtag_hintstore),
+            0x0101_0038 => memory_instruction!(visit_memtag_hintstorez),
+            _ => bail!(
+                pos,
+                "unknown uwvm2-ros VM instruction extension opcode: 0x{opcode:x}"
+            ),
         })
     }
 

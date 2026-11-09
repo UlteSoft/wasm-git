@@ -1284,7 +1284,9 @@ mod tests {
     #[test]
     fn unknown_instructions_and_malformed_custom_data_keep_raw_evidence() {
         let mut old = wat::parse_str("(module (func))").unwrap();
-        *old.last_mut().unwrap() = 0xff;
+        // FF is now a known extension prefix; a lone FF is truncated rather
+        // than an unknown opcode. Keep this fixture an unknown primary opcode.
+        *old.last_mut().unwrap() = 0xf9;
         let mut new = old.clone();
         old.extend_from_slice(&[0, 7, 4, b'n', b'a', b'm', b'e', 1, 0x80]);
         new.extend_from_slice(&[0, 7, 4, b'n', b'a', b'm', b'e', 1, 0x81]);

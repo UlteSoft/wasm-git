@@ -2043,6 +2043,7 @@ macro_rules! validate_proposal {
     (desc tail_call) => ("tail calls");
     (desc function_references) => ("function references");
     (desc memory_control) => ("memory control");
+    (desc memtag_extension) => ("experimental WasmMTE memory tagging");
     (desc gc) => ("gc");
     (desc legacy_exceptions) => ("legacy exceptions");
     (desc stack_switching) => ("stack switching");
@@ -3449,6 +3450,132 @@ where
         self.pop_operand(Some(ty))?;
         self.pop_operand(Some(ValType::I32))?;
         self.pop_operand(Some(ty))?;
+        Ok(())
+    }
+    fn visit_memtag_status(&mut self, mem: u32) -> Self::Output {
+        let ty = self.check_memory_index(mem)?;
+        self.push_operand(ty)?;
+        Ok(())
+    }
+    fn visit_memtag_extract(&mut self, mem: u32) -> Self::Output {
+        let ty = self.check_memory_index(mem)?;
+        self.pop_operand(Some(ty))?;
+        self.push_operand(ty)?;
+        Ok(())
+    }
+    fn visit_memtag_insert(&mut self, mem: u32) -> Self::Output {
+        let ty = self.check_memory_index(mem)?;
+        self.pop_operand(Some(ty))?;
+        self.pop_operand(Some(ty))?;
+        self.push_operand(ty)?;
+        Ok(())
+    }
+    fn visit_memtag_tagbits(&mut self, mem: u32) -> Self::Output {
+        let ty = self.check_memory_index(mem)?;
+        self.push_operand(ty)?;
+        Ok(())
+    }
+    fn visit_memtag_startbit(&mut self, mem: u32) -> Self::Output {
+        let ty = self.check_memory_index(mem)?;
+        self.push_operand(ty)?;
+        Ok(())
+    }
+    fn visit_memtag_copy(&mut self, mem: u32) -> Self::Output {
+        let ty = self.check_memory_index(mem)?;
+        self.pop_operand(Some(ty))?;
+        self.pop_operand(Some(ty))?;
+        self.push_operand(ty)?;
+        Ok(())
+    }
+    fn visit_memtag_sub(&mut self, mem: u32) -> Self::Output {
+        let ty = self.check_memory_index(mem)?;
+        self.pop_operand(Some(ty))?;
+        self.pop_operand(Some(ty))?;
+        self.push_operand(ty)?;
+        Ok(())
+    }
+    fn visit_memtag_load(&mut self, mem: u32) -> Self::Output {
+        let ty = self.check_memory_index(mem)?;
+        self.pop_operand(Some(ty))?;
+        self.push_operand(ty)?;
+        Ok(())
+    }
+    fn visit_memtag_untag(&mut self, mem: u32) -> Self::Output {
+        let ty = self.check_memory_index(mem)?;
+        self.pop_operand(Some(ty))?;
+        self.push_operand(ty)?;
+        Ok(())
+    }
+    fn visit_memtag_untagstore(&mut self, mem: u32) -> Self::Output {
+        let ty = self.check_memory_index(mem)?;
+        self.pop_operand(Some(ty))?;
+        self.pop_operand(Some(ty))?;
+        self.push_operand(ty)?;
+        Ok(())
+    }
+    fn visit_memtag_untagstorez(&mut self, mem: u32) -> Self::Output {
+        let ty = self.check_memory_index(mem)?;
+        self.pop_operand(Some(ty))?;
+        self.pop_operand(Some(ty))?;
+        self.push_operand(ty)?;
+        Ok(())
+    }
+    fn visit_memtag_store(&mut self, mem: u32) -> Self::Output {
+        let ty = self.check_memory_index(mem)?;
+        self.pop_operand(Some(ty))?;
+        self.pop_operand(Some(ty))?;
+        Ok(())
+    }
+    fn visit_memtag_storez(&mut self, mem: u32) -> Self::Output {
+        let ty = self.check_memory_index(mem)?;
+        self.pop_operand(Some(ty))?;
+        self.pop_operand(Some(ty))?;
+        Ok(())
+    }
+    fn visit_memtag_random(&mut self, mem: u32) -> Self::Output {
+        let ty = self.check_memory_index(mem)?;
+        self.pop_operand(Some(ty))?;
+        self.push_operand(ty)?;
+        Ok(())
+    }
+    fn visit_memtag_randomstore(&mut self, mem: u32) -> Self::Output {
+        let ty = self.check_memory_index(mem)?;
+        self.pop_operand(Some(ty))?;
+        self.pop_operand(Some(ty))?;
+        self.push_operand(ty)?;
+        Ok(())
+    }
+    fn visit_memtag_randomstorez(&mut self, mem: u32) -> Self::Output {
+        let ty = self.check_memory_index(mem)?;
+        self.pop_operand(Some(ty))?;
+        self.pop_operand(Some(ty))?;
+        self.push_operand(ty)?;
+        Ok(())
+    }
+    fn visit_memtag_hint(&mut self, mem: u32) -> Self::Output {
+        let ty = self.check_memory_index(mem)?;
+        self.pop_operand(Some(ty))?;
+        self.pop_operand(Some(ty))?;
+        self.pop_operand(Some(ty))?;
+        self.push_operand(ty)?;
+        Ok(())
+    }
+    fn visit_memtag_hintstore(&mut self, mem: u32) -> Self::Output {
+        let ty = self.check_memory_index(mem)?;
+        self.pop_operand(Some(ty))?;
+        self.pop_operand(Some(ty))?;
+        self.pop_operand(Some(ty))?;
+        self.pop_operand(Some(ty))?;
+        self.push_operand(ty)?;
+        Ok(())
+    }
+    fn visit_memtag_hintstorez(&mut self, mem: u32) -> Self::Output {
+        let ty = self.check_memory_index(mem)?;
+        self.pop_operand(Some(ty))?;
+        self.pop_operand(Some(ty))?;
+        self.pop_operand(Some(ty))?;
+        self.pop_operand(Some(ty))?;
+        self.push_operand(ty)?;
         Ok(())
     }
     fn visit_memory_discard(&mut self, mem: u32) -> Self::Output {

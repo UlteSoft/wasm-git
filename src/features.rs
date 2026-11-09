@@ -47,6 +47,12 @@ static LEGACY_EXCEPTIONS: UpstreamFeature = proposal!(
     "Superseded in October 2023; discouraged by its explainer and inactive in the community website features inventory. wasm-git retains the historical encoding."
 );
 
+static MEMTAG_EXTENSION: UpstreamFeature = proposal!(
+    "memtag_extension", "uwvm2-ros VM instruction extension: WasmMTE", "experimental", "", "extension",
+    "https://github.com/UlteSoft/wasm-git/blob/main/documents/UWVM2_ROS_EXTENSIONS.eu_US.md",
+    "Nonstandard FF + ULEB32 extension-opcode namespace, with opcode-specific operands. Recognizes 19 WasmMTE instructions; reserved add and unregistered opcodes remain unknown. Recognition and address-width type validation do not claim execution or memory-safety enforcement."
+);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Coverage {
@@ -113,6 +119,7 @@ static RETAINED: &[Retained] = &[
     retained!("custom_page_sizes", "custom-page-sizes", TypedCore, CUSTOM_PAGE_SIZES),
     retained!("memory_control", "memory-control", TypedCore, MEMORY_CONTROL),
     retained!("legacy_exceptions", "legacy_exceptions", TypedCore, LEGACY_EXCEPTIONS),
+    retained!("memtag_extension", "memtag_extension", TypedCore, MEMTAG_EXTENSION),
 ];
 
 #[derive(Debug, Serialize)]
@@ -181,6 +188,7 @@ pub fn catalog(standard: Standard) -> Vec<Feature> {
     UPSTREAM
         .iter()
         .chain(std::iter::once(&LEGACY_EXCEPTIONS))
+        .chain(std::iter::once(&MEMTAG_EXTENSION))
         .map(|entry| describe(entry, standard))
         .collect()
 }
@@ -287,6 +295,8 @@ mod tests {
         for retained in RETAINED {
             let original = if retained.proposal == "legacy_exceptions" {
                 &LEGACY_EXCEPTIONS
+            } else if retained.proposal == "memtag_extension" {
+                &MEMTAG_EXTENSION
             } else {
                 UPSTREAM
                     .iter()
@@ -318,7 +328,11 @@ mod tests {
             }
             if matches!(
                 feature.id,
-                "threads" | "compact_imports" | "wide_arithmetic" | "legacy_exceptions"
+                "threads"
+                    | "compact_imports"
+                    | "wide_arithmetic"
+                    | "legacy_exceptions"
+                    | "memtag_extension"
             ) {
                 assert_eq!(
                     feature.selected_standard_allows,
@@ -330,7 +344,7 @@ mod tests {
         }
         assert_eq!(
             RETAINED.len(),
-            25,
+            26,
             "update the permanent decoder regression inventory when adding features"
         );
     }

@@ -7,6 +7,8 @@ original binary and explains changes without converting it through WAT or
 replacing it with a normalized representation. The command-line client is
 `wasm-git`; the independently selectable server is `wasm-git-server`.
 
+Supports the [uwvm2-ros VM instruction extension](documents/UWVM2_ROS_EXTENSIONS.eu_US.md): an extensible `0xFF + ULEB32(opcode)` namespace, 19 WasmMTE instructions and globals-v2 field audits.
+
 ## What the system provides
 
 - Exact byte evidence, with original offsets, contexts, and reversible binary

@@ -6,6 +6,8 @@ wasm-git 是原生 WebAssembly 审计与版本历史系统。它直接保留原�
 WAT 往返转换，也不使用规范化表示替换原文件。命令行客户端名为 `wasm-git`，可独立选择
 构建的服务端名为 `wasm-git-server`。
 
+支持 [uwvm2-ros VM 指令扩展](documents/UWVM2_ROS_EXTENSIONS.zh_CN.md)：可扩展的 `0xFF + ULEB32(编号)` 空间、19 条 WasmMTE 指令与 globals v2 字段审计。
+
 ## 提供的能力
 
 - 带原始偏移与上下文的精确字节证据，以及校验源文件和目标文件 SHA-256 的可逆二进制补丁。

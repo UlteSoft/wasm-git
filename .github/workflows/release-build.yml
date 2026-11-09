@@ -59,7 +59,7 @@ jobs:
           cache-key: ${{ matrix.target }}
           target: ${{ matrix.target }}
       - name: Native regression tests
-        run: cargo test --locked --all-features --lib --test build_modes --test cli --test server_cli
+        run: cargo test --locked --all-features --lib --test build_modes --test cli --test server_cli --test memtag_extension --test memtag_fuzz
       - name: Build both executables
         run: cargo build --locked --release --features server --target ${{ matrix.target }}
       - name: Audit, restore, GC and HTTP server smoke

@@ -10,6 +10,8 @@ project-specific `.eu_US.md` and `.zh_CN.md` suffix convention.
 
 ## Reading guide
 
+- [uwvm2-ros VM instruction extension](UWVM2_ROS_EXTENSIONS.eu_US.md) — extensible opcode namespace, WasmMTE and globals v2. [中文](UWVM2_ROS_EXTENSIONS.zh_CN.md)
+
 - [Command output protocol](COMMAND_PROTOCOL.eu_US.md) — human/application/storage boundaries, binary-v1 endianness and privacy. [中文](COMMAND_PROTOCOL.zh_CN.md)
 
 - [Local Web GUI](WEBGUI.eu_US.md) — bilingual client operations, full command access,

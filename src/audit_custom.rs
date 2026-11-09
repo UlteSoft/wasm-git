@@ -26,8 +26,75 @@ pub(super) fn decode(
         "linking" => subsections(r, path, true),
         "uwvm.wsea.v2" => wsea(r, path),
         "wasm-cosign" => cosign(r, path),
+        "uwvm.memtag.linear.globals" => memtag_globals(r, path),
         _ => return None,
     })
+}
+
+fn memtag_globals(r: &mut ConventionReader<'_>, path: &str) -> Result<Vec<Region>, String> {
+    // This convention uses bounded, padding-permitting ULEBs, independently of
+    // the canonical-LEB rules of unrelated custom-section conventions. Never
+    // cast native integers or reinterpret these fields using host byte order.
+    let mut reader = BinaryReader::new(&r.bytes[r.pos..], r.position());
+    let mut out = Vec::new();
+    for field in ["version", "count"] {
+        let start = reader.original_position();
+        let value = reader.read_var_u64().map_err(|e| e.to_string())?;
+        if field == "version" && value != 2 {
+            return Err("not the uwvm linear-globals version-2 convention".into());
+        }
+        out.push(Region::new(
+            format!("{path}/{field}"),
+            Span::new(start, reader.original_position()),
+            value.to_string(),
+        ));
+        if field != "count" {
+            continue;
+        }
+        // At least one byte per field. Cap interpretation, never object storage
+        // or lossless comparison, before allocating attacker-controlled counts.
+        if value > 100_000 || value > (reader.bytes_remaining() / 3) as u64 {
+            return Err(
+                "globals count exceeds the bounded payload or interpretation budget".into(),
+            );
+        }
+        for index in 0..value {
+            let start = reader.original_position();
+            let mut children = Vec::new();
+            let mut values = [0u64; 3];
+            for (slot, field) in ["memory_index", "address", "byte_length"]
+                .iter()
+                .enumerate()
+            {
+                let start = reader.original_position();
+                let value = if slot == 0 {
+                    reader.read_var_u32().map(u64::from)
+                } else {
+                    reader.read_var_u64()
+                }
+                .map_err(|e| e.to_string())?;
+                values[slot] = value;
+                children.push(Region::new(
+                    format!("{path}/global[{index}]/{field}"),
+                    Span::new(start, reader.original_position()),
+                    value.to_string(),
+                ));
+            }
+            let [memory, address, length] = values;
+            let end = address
+                .checked_add(length)
+                .ok_or("globals address + byte length overflows u64")?;
+            let mut entry = Region::new(
+                format!("{path}/global[{index}]"),
+                Span::new(start, reader.original_position()),
+                format!("memory={memory} address={address} byte_length={length} end={end}; allocation-owner and runtime overlap checks not performed"),
+            );
+            entry.children = children;
+            out.push(entry);
+        }
+    }
+    r.pos += reader.original_position() - r.position();
+    Ok(out)
 }
 
 fn branches(r: &mut ConventionReader<'_>, path: &str) -> Result<Vec<Region>, String> {

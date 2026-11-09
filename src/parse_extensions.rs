@@ -70,6 +70,7 @@ macro_rules! group {
     (shared_everything_threads,$op:ident $(,$arg:ident)*) => {Some((Opcode::$op,group!(args $($arg),*)))};
     (wide_arithmetic,$op:ident) => {Some((Opcode::$op,Immediate::None))};
     (memory_control,$op:ident,$mem:ident) => {Some((Opcode::$op,Immediate::MemoryIndex($mem)))};
+    (memtag_extension,$op:ident,$mem:ident) => {Some((Opcode::$op,Immediate::MemoryIndex($mem)))};
     (args) => {operands!()};
     (args $($arg:ident),+) => {operands!($($arg),+; $($arg),+)};
     ($proposal:ident,$op:ident $(,$arg:ident)*) => {{$(let _ = $arg;)* None}};

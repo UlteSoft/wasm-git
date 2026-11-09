@@ -8,6 +8,8 @@
 
 ## 阅读顺序
 
+- [uwvm2-ros VM 指令扩展](UWVM2_ROS_EXTENSIONS.zh_CN.md) — 通用编号空间、WasmMTE 与 globals v2。[English](UWVM2_ROS_EXTENSIONS.eu_US.md)
+
 - [本地 Web 界面](WEBGUI.zh_CN.md) — 双语客户端操作、完整命令入口、审计预览与独立服务器监管。[English](WEBGUI.eu_US.md)
 
 - [WasmHub 集成](WASMHUB.zh_CN.md)：SSH/OpenPGP 签名、持久化 PR、审批/CI、分支保护

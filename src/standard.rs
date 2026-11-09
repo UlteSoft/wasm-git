@@ -64,6 +64,7 @@ impl Standard {
             "extended_const" => WasmFeatures::EXTENDED_CONST,
             "function_references" => WasmFeatures::FUNCTION_REFERENCES,
             "memory_control" => WasmFeatures::MEMORY_CONTROL,
+            "memtag_extension" => WasmFeatures::MEMTAG_EXTENSION,
             "gc" => WasmFeatures::GC,
             "custom_page_sizes" => WasmFeatures::CUSTOM_PAGE_SIZES,
             "legacy_exceptions" => WasmFeatures::LEGACY_EXCEPTIONS,

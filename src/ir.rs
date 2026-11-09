@@ -682,6 +682,26 @@ pub enum Opcode {
     // ── Catch-all for opcodes not yet individually enumerated ──
     #[serde(serialize_with = "serialize_unrecognized")]
     Unrecognized(String),
+    // Append extension variants to preserve the serialized indices above.
+    MemtagStatus,
+    MemtagExtract,
+    MemtagInsert,
+    MemtagTagbits,
+    MemtagStartbit,
+    MemtagCopy,
+    MemtagSub,
+    MemtagLoad,
+    MemtagUntag,
+    MemtagUntagstore,
+    MemtagUntagstorez,
+    MemtagStore,
+    MemtagStorez,
+    MemtagRandom,
+    MemtagRandomstore,
+    MemtagRandomstorez,
+    MemtagHint,
+    MemtagHintstore,
+    MemtagHintstorez,
 }
 
 impl Opcode {
@@ -1385,6 +1405,25 @@ impl Opcode {
             Opcode::I64Sub128 => "I64Sub128",
             Opcode::I64MulWideS => "I64MulWideS",
             Opcode::I64MulWideU => "I64MulWideU",
+            Opcode::MemtagStatus => "MemtagStatus",
+            Opcode::MemtagExtract => "MemtagExtract",
+            Opcode::MemtagInsert => "MemtagInsert",
+            Opcode::MemtagTagbits => "MemtagTagbits",
+            Opcode::MemtagStartbit => "MemtagStartbit",
+            Opcode::MemtagCopy => "MemtagCopy",
+            Opcode::MemtagSub => "MemtagSub",
+            Opcode::MemtagLoad => "MemtagLoad",
+            Opcode::MemtagUntag => "MemtagUntag",
+            Opcode::MemtagUntagstore => "MemtagUntagstore",
+            Opcode::MemtagUntagstorez => "MemtagUntagstorez",
+            Opcode::MemtagStore => "MemtagStore",
+            Opcode::MemtagStorez => "MemtagStorez",
+            Opcode::MemtagRandom => "MemtagRandom",
+            Opcode::MemtagRandomstore => "MemtagRandomstore",
+            Opcode::MemtagRandomstorez => "MemtagRandomstorez",
+            Opcode::MemtagHint => "MemtagHint",
+            Opcode::MemtagHintstore => "MemtagHintstore",
+            Opcode::MemtagHintstorez => "MemtagHintstorez",
             // Unrecognized
             Opcode::Unrecognized(_) => "Unrecognized",
         }

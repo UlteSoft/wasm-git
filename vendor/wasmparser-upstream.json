@@ -370,8 +370,26 @@
     {
       "path": "src/binary_reader.rs",
       "upstream_sha256": "14684674cc11c192d1114c1341a68638a519ae3ba29fbfc49583519e04a70a3a",
-      "patched_sha256": "168254eccc6841a6e424dff349d1a1d31ceffded5666ac54791741730042f957",
-      "change": "Only ensure_has_bytes: compare len with remaining buffer, and compute EOF hint as len-remaining. No parsing or validation grammar change."
+      "patched_sha256": "7dab3a292b6aa0cac09b68b60c5207e4b13558c1b4019259394418868c6c0b20",
+      "change": "Preserves the existing ensure_has_bytes overflow fix. Adds the generic uwvm2-ros VM FF + ULEB32 opcode dispatcher with 19 registered WasmMTE grammars. Unknown IDs never imply operands; no legacy FC decoder."
+    },
+    {
+      "path": "src/features.rs",
+      "upstream_sha256": "64b2bd64e30059282d320fb94b957b3e4cc9087dd77de714504fad44024b686f",
+      "patched_sha256": "ae958d5481f8f64d1018c2dd16028ed63688e2032415b4b141118a72a9e5dc3f",
+      "change": "Adds MEMTAG_EXTENSION bit 41, default false and excluded from standard Core presets."
+    },
+    {
+      "path": "src/lib.rs",
+      "upstream_sha256": "d218bec68bafcfc187af44e655ebf1f0e57506ccc07492c7c4251cc88bbe7378",
+      "patched_sha256": "994940a9469dc282cf484a6886878e48a41689a71ac3889b4e703584c4260d52",
+      "change": "Adds the independent memtag_extension operator family with 19 memory-indexed WasmMTE signatures. Reserved add has no operator implementation."
+    },
+    {
+      "path": "src/validator/operators.rs",
+      "upstream_sha256": "3ea4ad31201772a266905b780b65def468c91b49721b8c819799f6be1d46cce6",
+      "patched_sha256": "28a042b16cbee0f02e3cb3a4a1cae50b073b7a76708cfb4ab1826c179bc2d473",
+      "change": "Gates WasmMTE separately and checks all operand/result types against the selected existing memory; no execution semantics."
     }
   ]
 }

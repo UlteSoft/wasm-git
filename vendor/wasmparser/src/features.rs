@@ -324,6 +324,9 @@ define_wasm_features! {
         /// Corresponds to the 🏷️ character in
         /// <https://github.com/WebAssembly/component-model/blob/main/design/mvp/Explainer.md>.
         pub cm_implements: CM_IMPLEMENTS(1 << 40) = false;
+
+        /// WasmMTE in the uwvm2-ros VM instruction extension; not Core.
+        pub memtag_extension: MEMTAG_EXTENSION(1 << 41) = false;
     }
 }
 

@@ -285,6 +285,39 @@ pub(crate) fn memory_index_failure(
     let field = match reader.read_u8().ok()? {
         0x3f => "memory.size memory index",
         0x40 => "memory.grow memory index",
+        0xff => {
+            let word = match field_checked(
+                &mut reader,
+                "uwvm2-ros extension opcode",
+                BinaryReader::read_var_u32,
+            ) {
+                Ok(word) => word,
+                Err(Stop::Known(failure)) => return Some(failure),
+                Err(_) => return None,
+            };
+            match word {
+                0x0101_0020 => "memtag.status memory index",
+                0x0101_0021 => "memtag.extract memory index",
+                0x0101_0022 => "memtag.insert memory index",
+                0x0101_0023 => "memtag.tagbits memory index",
+                0x0101_0024 => "memtag.startbit memory index",
+                0x0101_0025 => "memtag.copy memory index",
+                0x0101_0026 => "memtag.sub memory index",
+                0x0101_0027 => "memtag.load memory index",
+                0x0101_0028 => "memtag.untag memory index",
+                0x0101_0029 => "memtag.untagstore memory index",
+                0x0101_002a => "memtag.untagstorez memory index",
+                0x0101_002b => "memtag.store memory index",
+                0x0101_002c => "memtag.storez memory index",
+                0x0101_002d => "memtag.random memory index",
+                0x0101_002e => "memtag.randomstore memory index",
+                0x0101_002f => "memtag.randomstorez memory index",
+                0x0101_0036 => "memtag.hint memory index",
+                0x0101_0037 => "memtag.hintstore memory index",
+                0x0101_0038 => "memtag.hintstorez memory index",
+                _ => return None,
+            }
+        }
         _ => return None,
     };
     match field_checked(&mut reader, field, BinaryReader::read_var_u32) {

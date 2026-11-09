@@ -12,6 +12,8 @@ Read the project overview in [English](README.eu_US.md) or
 [简体中文](README.zh_CN.md). The locale suffixes `.eu_US` and `.zh_CN` are the
 project's documentation naming convention.
 
+Supports the [uwvm2-ros VM instruction extension](documents/UWVM2_ROS_EXTENSIONS.eu_US.md): an extensible `0xFF + ULEB32(opcode)` namespace, 19 WasmMTE instructions and globals-v2 field audits.
+
 ## Local Web GUI
 
 The independent Python interface supports English / 简体中文, repository review

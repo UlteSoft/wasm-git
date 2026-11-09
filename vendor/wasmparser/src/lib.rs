@@ -375,6 +375,30 @@ macro_rules! _for_each_operator_group {
                 MemoryDiscard { mem: u32 } => visit_memory_discard (arity 2 -> 0)
             }
 
+            // WasmMTE instructions in the uwvm2-ros VM instruction extension.
+            // Each operand/result has the selected memory's index type.
+            @memtag_extension {
+                MemtagStatus { mem: u32 } => visit_memtag_status (arity 0 -> 1)
+                MemtagExtract { mem: u32 } => visit_memtag_extract (arity 1 -> 1)
+                MemtagInsert { mem: u32 } => visit_memtag_insert (arity 2 -> 1)
+                MemtagTagbits { mem: u32 } => visit_memtag_tagbits (arity 0 -> 1)
+                MemtagStartbit { mem: u32 } => visit_memtag_startbit (arity 0 -> 1)
+                MemtagCopy { mem: u32 } => visit_memtag_copy (arity 2 -> 1)
+                MemtagSub { mem: u32 } => visit_memtag_sub (arity 2 -> 1)
+                MemtagLoad { mem: u32 } => visit_memtag_load (arity 1 -> 1)
+                MemtagUntag { mem: u32 } => visit_memtag_untag (arity 1 -> 1)
+                MemtagUntagstore { mem: u32 } => visit_memtag_untagstore (arity 2 -> 1)
+                MemtagUntagstorez { mem: u32 } => visit_memtag_untagstorez (arity 2 -> 1)
+                MemtagStore { mem: u32 } => visit_memtag_store (arity 2 -> 0)
+                MemtagStorez { mem: u32 } => visit_memtag_storez (arity 2 -> 0)
+                MemtagRandom { mem: u32 } => visit_memtag_random (arity 1 -> 1)
+                MemtagRandomstore { mem: u32 } => visit_memtag_randomstore (arity 2 -> 1)
+                MemtagRandomstorez { mem: u32 } => visit_memtag_randomstorez (arity 2 -> 1)
+                MemtagHint { mem: u32 } => visit_memtag_hint (arity 3 -> 1)
+                MemtagHintstore { mem: u32 } => visit_memtag_hintstore (arity 4 -> 1)
+                MemtagHintstorez { mem: u32 } => visit_memtag_hintstorez (arity 4 -> 1)
+            }
+
             // 0xFE prefixed operators
             // threads
             // https://github.com/WebAssembly/threads

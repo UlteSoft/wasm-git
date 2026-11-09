@@ -1263,13 +1263,23 @@ fn unsafe_sink_kind(opcode: &Opcode) -> Option<UnsafeSinkKindIr> {
         | Opcode::Rethrow
         | Opcode::Delegate
         | Opcode::TryTable => Some(UnsafeSinkKindIr::Exception),
-        Opcode::MemoryCopy | Opcode::MemoryFill | Opcode::MemoryInit | Opcode::DataDrop => {
-            Some(UnsafeSinkKindIr::MemoryBulk)
-        }
+        Opcode::MemoryCopy
+        | Opcode::MemoryFill
+        | Opcode::MemoryInit
+        | Opcode::DataDrop
+        | Opcode::MemtagUntagstore
+        | Opcode::MemtagUntagstorez
+        | Opcode::MemtagStore
+        | Opcode::MemtagStorez
+        | Opcode::MemtagRandomstore
+        | Opcode::MemtagRandomstorez
+        | Opcode::MemtagHintstore
+        | Opcode::MemtagHintstorez => Some(UnsafeSinkKindIr::MemoryBulk),
         Opcode::TableCopy | Opcode::TableFill | Opcode::TableInit | Opcode::ElemDrop => {
             Some(UnsafeSinkKindIr::TableBulk)
         }
-        Opcode::I32Load
+        Opcode::MemtagLoad
+        | Opcode::I32Load
         | Opcode::I64Load
         | Opcode::F32Load
         | Opcode::F64Load

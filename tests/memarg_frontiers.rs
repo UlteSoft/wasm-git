@@ -940,7 +940,7 @@ fn complete_memarg_and_earlier_unknown_opcode_keep_their_own_failure_positions()
     });
     unknown_opcode(
         &[0xff, 0x28, 0xc0, 1, 0x80, 0x80, 0x80, 0x80, 0x10],
-        "illegal opcode",
+        "unknown uwvm2-ros VM instruction extension opcode",
     );
 }
 
