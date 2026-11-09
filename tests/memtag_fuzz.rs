@@ -2,6 +2,7 @@
 //! Never executes Guest instructions. All products belong in the caller's .tmp.
 #[path = "support/memtag_gen.rs"]
 mod generator;
+#[cfg(target_os = "linux")]
 use std::{
     fs,
     sync::{Arc, Barrier},
