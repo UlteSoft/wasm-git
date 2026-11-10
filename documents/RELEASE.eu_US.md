@@ -88,7 +88,7 @@ on the host filesystem. Native Unix directory sync errors still propagate.
 
 ## 3. Tests and local resource limits
 
-For the 0.1.3 paired release, every runtime test runs in the existing 64 GiB,
+For the paired release qualification, every runtime test runs in the existing 64 GiB,
 zero-swap cgroup through `wasm-fuzzer/tools/run-in-cgroup.sh`. All products,
 including wasm-git test executables, temporary repositories, validator builds,
 logs and downloaded archives, stay under `wasm-fuzzer/.tmp`. No new resource
@@ -123,6 +123,16 @@ requires ten archives, creates SHA256SUMS and publishes a GitHub prerelease.
 Only the publish job has release write permission. Before tagging, run
 `tools/release.py inventory` to reject tracked intermediates and oversized
 historical blobs. Qualification reports remain in ignored local scratch space.
+
+Starting with 0.1.4, use `wasm-fuzzer/tools/qualify.py` for this gate. It runs
+the exact-feature multi-validator corpus, hypothetical syntax updates in every
+Core section and reserved/extension admission-site family, long history replay,
+and every regular and opt-in regression test. The first three campaigns must
+each run for at least 30 minutes. Full selector coverage, byte-exact replay,
+2,048 continuous patch edges, 16 independent forks, nested forks, 128-step replay
+queues and the saved patch baseline are mandatory. Both timed opt-in fuzzers
+must complete their full 600 seconds; smoke settings cannot qualify a release.
+See [Forward syntax evolution](SYNTAX_EVOLUTION.eu_US.md).
 
 ## 5. References
 

@@ -662,9 +662,9 @@ fn sentinel_operators(module: &Value, bytes: &[u8]) {
         if let Payload::CodeSectionEntry(body) = payload.unwrap() {
             let mut reader = body.get_operators_reader().unwrap();
             while !reader.eof() {
-                let start = reader.original_position();
+                let start = reader.original_position() as usize;
                 let operator = reader.read().unwrap();
-                let end = reader.original_position();
+                let end = reader.original_position() as usize;
                 if matches!(operator, Operator::I32Const { value: 79225 }) {
                     count += 1;
                     assert!(regions

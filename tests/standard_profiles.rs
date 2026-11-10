@@ -23,7 +23,7 @@ fn oracle_features(standard: Standard) -> WasmFeatures {
     match standard {
         Standard::Core1 => WasmFeatures::WASM1,
         Standard::Core2 => WasmFeatures::WASM2,
-        // wasmparser 0.249's draft WASM3 constant also enables threads. Threads
+        // wasmparser 0.263's draft WASM3 constant also enables threads. Threads
         // are outside the published Core 3 profile selected by this API.
         Standard::Core3 => WasmFeatures::WASM3.difference(WasmFeatures::THREADS),
         Standard::AllKnown => WasmFeatures::all(),
@@ -178,14 +178,14 @@ fn independently_decoded_operators(bytes: &[u8]) -> Vec<(Span, String, bool)> {
         if let Payload::CodeSectionEntry(body) = payload.unwrap() {
             let mut reader = body.get_operators_reader().unwrap();
             while !reader.eof() {
-                let start = reader.original_position();
+                let start = reader.original_position() as usize;
                 let operator = reader.read().unwrap();
                 let sentinel =
                     matches!(operator, Operator::I32Const { value } if value == SENTINEL);
                 out.push((
                     Span {
                         start,
-                        end: reader.original_position(),
+                        end: (reader.original_position() as usize),
                     },
                     format!("{operator:?}"),
                     sentinel,
@@ -755,9 +755,9 @@ fn malformed_locals_do_not_mark_later_simd_body_supported_in_core1() {
             if index == 0 {
                 let mut locals = body.get_locals_reader().unwrap();
                 assert_eq!(locals.get_count(), 1);
-                let start = locals.original_position();
+                let start = locals.original_position() as usize;
                 assert_eq!(locals.read().unwrap(), (1, wasmparser::ValType::I32));
-                assert_eq!(locals.original_position(), start + 2);
+                assert_eq!((locals.original_position() as usize), start + 2);
                 first_local_type = Some(start + 1);
             } else {
                 second_body = Some(body.range());
@@ -768,7 +768,7 @@ fn malformed_locals_do_not_mark_later_simd_body_supported_in_core1() {
     let second_body = second_body.unwrap();
     let expected: Vec<_> = independently_decoded_operators(&bytes)
         .into_iter()
-        .filter(|(span, _, _)| second_body.contains(&span.start))
+        .filter(|(span, _, _)| second_body.contains(&(span.start as u64)))
         .collect();
     let bad_offset = first_local_type.unwrap();
     // 0xff followed by End (0x0b) can be read as a positive s33 heap-type
@@ -1029,10 +1029,10 @@ fn bare_concrete_reference_is_not_a_core3_value_type_shorthand() {
         &[1, 9, 2, 0x60, 0, 0, 0x60, 1, 0x63, 0, 0],
     ]
     .concat();
-    // Independent reproduction of this pinned dependency's permissive reader:
-    // this is precisely why its successful validation cannot be our wire oracle.
+    // Upstream 0.263 rejects this encoding; retain the exact-byte diagnostic too.
     Validator::new_with_features(oracle_features(Standard::Core3))
         .validate_all(&bare)
+        .err()
         .unwrap();
     for standard in PROFILES {
         let module = audit::inspect_with_standard(&bare, standard).unwrap();
@@ -1081,7 +1081,8 @@ fn illegal_reference_shorthand_is_checked_in_every_value_type_position() {
         }
         Validator::new_with_features(oracle_features(Standard::Core3))
             .validate_all(&bytes)
-            .unwrap_or_else(|error| panic!("permissive dependency oracle {label}: {error}"));
+            .err()
+            .expect("bare value indices must also be rejected by the current validator");
         let module = audit::inspect_with_standard(&bytes, Standard::Core3).unwrap();
         assert_eq!(module.standard.validation, "invalid", "{label}");
         assert_eq!(module.validation, "failed_or_unsupported", "{label}");

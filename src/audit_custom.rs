@@ -35,17 +35,17 @@ fn memtag_globals(r: &mut ConventionReader<'_>, path: &str) -> Result<Vec<Region
     // This convention uses bounded, padding-permitting ULEBs, independently of
     // the canonical-LEB rules of unrelated custom-section conventions. Never
     // cast native integers or reinterpret these fields using host byte order.
-    let mut reader = BinaryReader::new(&r.bytes[r.pos..], r.position());
+    let mut reader = BinaryReader::new(&r.bytes[r.pos..], r.position().try_into().unwrap());
     let mut out = Vec::new();
     for field in ["version", "count"] {
-        let start = reader.original_position();
+        let start = crate::input_offset(reader.original_position());
         let value = reader.read_var_u64().map_err(|e| e.to_string())?;
         if field == "version" && value != 2 {
             return Err("not the uwvm linear-globals version-2 convention".into());
         }
         out.push(Region::new(
             format!("{path}/{field}"),
-            Span::new(start, reader.original_position()),
+            Span::new(start, crate::input_offset(reader.original_position())),
             value.to_string(),
         ));
         if field != "count" {
@@ -59,14 +59,14 @@ fn memtag_globals(r: &mut ConventionReader<'_>, path: &str) -> Result<Vec<Region
             );
         }
         for index in 0..value {
-            let start = reader.original_position();
+            let start = crate::input_offset(reader.original_position());
             let mut children = Vec::new();
             let mut values = [0u64; 3];
             for (slot, field) in ["memory_index", "address", "byte_length"]
                 .iter()
                 .enumerate()
             {
-                let start = reader.original_position();
+                let start = crate::input_offset(reader.original_position());
                 let value = if slot == 0 {
                     reader.read_var_u32().map(u64::from)
                 } else {
@@ -76,7 +76,7 @@ fn memtag_globals(r: &mut ConventionReader<'_>, path: &str) -> Result<Vec<Region
                 values[slot] = value;
                 children.push(Region::new(
                     format!("{path}/global[{index}]/{field}"),
-                    Span::new(start, reader.original_position()),
+                    Span::new(start, crate::input_offset(reader.original_position())),
                     value.to_string(),
                 ));
             }
@@ -86,14 +86,14 @@ fn memtag_globals(r: &mut ConventionReader<'_>, path: &str) -> Result<Vec<Region
                 .ok_or("globals address + byte length overflows u64")?;
             let mut entry = Region::new(
                 format!("{path}/global[{index}]"),
-                Span::new(start, reader.original_position()),
+                Span::new(start, crate::input_offset(reader.original_position())),
                 format!("memory={memory} address={address} byte_length={length} end={end}; allocation-owner and runtime overlap checks not performed"),
             );
             entry.children = children;
             out.push(entry);
         }
     }
-    r.pos += reader.original_position() - r.position();
+    r.pos += crate::input_offset(reader.original_position()) - r.position();
     Ok(out)
 }
 
@@ -319,12 +319,12 @@ pub(crate) fn function_names(bytes: &[u8]) -> BTreeMap<u32, String> {
         while !all.eof() {
             let id = all.read_u8().ok()?;
             let size = all.read_var_u32().ok()? as usize;
-            let start = all.original_position();
+            let start = crate::input_offset(all.original_position());
             let data = all.read_bytes(size).ok()?;
             if id != 0 {
                 continue;
             }
-            let mut outer = BinaryReader::new(data, start);
+            let mut outer = BinaryReader::new(data, start.try_into().unwrap());
             let name = outer.read_unlimited_string().ok()?;
             if name != "name" {
                 continue;
@@ -338,8 +338,10 @@ pub(crate) fn function_names(bytes: &[u8]) -> BTreeMap<u32, String> {
             // canonical-only custom-region rendering must not discard these
             // valid function labels used as advisory matching hints.
             let reader = wasmparser::NameSectionReader::new(BinaryReader::new(
-                &data[outer.original_position() - start..],
-                outer.original_position(),
+                &data[crate::input_offset(outer.original_position()) - start..],
+                crate::input_offset(outer.original_position())
+                    .try_into()
+                    .unwrap(),
             ));
             let mut found = false;
             for part in reader {

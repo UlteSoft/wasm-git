@@ -807,7 +807,7 @@ fn load_lane_requires_a_complete_known_memarg_before_its_missing_byte() {
         8,
         "v128.load32_lane lane index",
     );
-    eof(&[0xfd, 0x57, 0x3f, 0], 4, "v128.load64_lane lane index");
+    eof(&[0xfd, 0x57, 0x0f, 0], 4, "v128.load64_lane lane index");
 }
 
 #[test]
@@ -954,7 +954,7 @@ fn present_lane_bytes_are_complete_u8_values_and_never_leb_or_end_markers() {
     decoded(&[0xfd, 0x1f, 3], "F32x4ExtractLane");
     decoded(&[0xfd, 0x22, 0xff], "F64x2ReplaceLane");
     decoded(&[0xfd, 0x54, 0, 0, 0xff], "V128Load8Lane");
-    decoded(&[0xfd, 0x5b, 0x3f, 0, 0xff], "V128Store64Lane");
+    decoded(&[0xfd, 0x5b, 0x0f, 0, 0xff], "V128Store64Lane");
 }
 
 #[test]

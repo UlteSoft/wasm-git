@@ -93,7 +93,7 @@ impl<'a> Memory<'a> {
                             segments.push(Segment {
                                 start,
                                 end,
-                                file: segment.range.end - segment.data.len(),
+                                file: crate::input_offset(segment.range.end) - segment.data.len(),
                                 bytes: segment.data,
                             });
                         }

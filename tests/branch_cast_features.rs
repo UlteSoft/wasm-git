@@ -150,12 +150,12 @@ const CASES: &[Case] = &[
         extra_features: &["function_references"],
     },
     Case {
-        name: "continuation target needs relaxed cast rule",
+        name: "continuation target is forbidden even with relaxed cast rules",
         prefix: CONT,
         cast: "fb1803006868",
         extension: true,
         core3_valid: false,
-        all_valid: true,
+        all_valid: false,
         extra_features: &["stack_switching"],
     },
     Case {

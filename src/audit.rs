@@ -224,7 +224,7 @@ pub fn inspect_with_standard(bytes: &[u8], standard: Standard) -> Result<AuditMo
     let mut function_index_context_valid = true;
     let mut last_section_rank = 0;
     while !cursor.eof() {
-        let start = cursor.original_position();
+        let start = crate::input_offset(cursor.original_position());
         let id = cursor.read_u8().map_err(|e| e.to_string())?;
         let occurrence = occurrences.entry(id).or_default();
         let duplicate = (1..=13).contains(&id) && *occurrence != 0;
@@ -269,7 +269,7 @@ pub fn inspect_with_standard(bytes: &[u8], standard: Standard) -> Result<AuditMo
                     &mut module.diagnostics,
                     "error",
                     "section_framing",
-                    error.offset(),
+                    crate::input_offset(error.offset()),
                     error.to_string(),
                 );
                 let mut section = AuditSection {
@@ -295,7 +295,7 @@ pub fn inspect_with_standard(bytes: &[u8], standard: Standard) -> Result<AuditMo
                 break;
             }
         };
-        let payload_start = cursor.original_position();
+        let payload_start = crate::input_offset(cursor.original_position());
         let end = payload_start.saturating_add(size).min(bytes.len());
         let mut section = AuditSection {
             ordinal: module.sections.len(),
@@ -338,7 +338,7 @@ pub fn inspect_with_standard(bytes: &[u8], standard: Standard) -> Result<AuditMo
             break;
         }
         let payload = cursor.read_bytes(size).map_err(|e| e.to_string())?;
-        let reader = BinaryReader::new(payload, payload_start);
+        let reader = BinaryReader::new(payload, payload_start.try_into().unwrap());
         let diagnostic_start = module.diagnostics.len();
         let decoded = if id == 0 {
             custom(&mut section, payload, &mut module.diagnostics)
@@ -399,7 +399,7 @@ pub fn inspect_with_standard(bytes: &[u8], standard: Standard) -> Result<AuditMo
                 &mut module.diagnostics,
                 "error",
                 "core_decode",
-                error.offset(),
+                crate::input_offset(error.offset()),
                 error.to_string(),
             );
             if let Some(recovered) =
@@ -418,7 +418,10 @@ pub fn inspect_with_standard(bytes: &[u8], standard: Standard) -> Result<AuditMo
                     crate::decode_error::section_failure(
                         &error,
                         id,
-                        BinaryReader::new(&bytes[opaque_start..end], opaque_start),
+                        BinaryReader::new(
+                            &bytes[opaque_start..end],
+                            opaque_start.try_into().unwrap(),
+                        ),
                         opaque_start == payload_start,
                     )
                 };
@@ -428,7 +431,8 @@ pub fn inspect_with_standard(bytes: &[u8], standard: Standard) -> Result<AuditMo
                     format!("{}: {error}; undecoded payload includes the failed entry and remaining bytes, without inferred later entry boundaries", invalid.unwrap_or("unrecognized or unclassified grammar")),
                 ).feature(if invalid.is_some() { "invalid_encoding" } else { "unknown" });
                 let at_payload_start = opaque_start == payload_start;
-                let reader = BinaryReader::new(&bytes[opaque_start..end], opaque_start);
+                let reader =
+                    BinaryReader::new(&bytes[opaque_start..end], opaque_start.try_into().unwrap());
                 let (failure, field_path) = if at_payload_start {
                     match id {
                         8 => (
@@ -497,7 +501,10 @@ pub fn inspect_with_standard(bytes: &[u8], standard: Standard) -> Result<AuditMo
                 if !at_payload_start {
                     if let Some(failure) = crate::decode_error::linkage_failure(
                         id,
-                        BinaryReader::new(&bytes[opaque_start..end], opaque_start),
+                        BinaryReader::new(
+                            &bytes[opaque_start..end],
+                            opaque_start.try_into().unwrap(),
+                        ),
                     ) {
                         suffix.children.push(
                             Region::new(
@@ -557,7 +564,7 @@ pub fn inspect_with_standard(bytes: &[u8], standard: Standard) -> Result<AuditMo
                 &mut module.diagnostics,
                 "error",
                 "validation",
-                error.offset(),
+                crate::input_offset(error.offset()),
                 error.to_string(),
             );
         }
@@ -636,26 +643,26 @@ fn entries<'a, T: FromReader<'a>>(
     completed: &mut Vec<Region>,
     mut visit: impl FnMut(usize, Span, T) -> wasmparser::Result<Region>,
 ) -> wasmparser::Result<Vec<Region>> {
-    let start = reader.original_position();
+    let start = crate::input_offset(reader.original_position());
     let section = wasmparser::SectionLimited::<T>::new(reader.clone())?;
     let count = section.count() as usize;
     let mut out = vec![Region::new(
         format!("{path}/count"),
-        Span::new(start, section.original_position()),
+        Span::new(start, crate::input_offset(section.original_position())),
         section.count().to_string(),
     )];
     let mut it = section.into_iter();
     let mut index = 0;
     loop {
-        let start = it.original_position();
+        let start = crate::input_offset(it.original_position());
         if index < count {
             let mut entry_reader = reader.clone();
-            entry_reader.read_bytes(start - reader.original_position())?;
+            entry_reader.read_bytes(start - crate::input_offset(reader.original_position()))?;
             if let Some(offset) = crate::value_guard::unknown_entry_value(section_id, entry_reader)
             {
                 let mut suffix = Region::new(
                     format!("{path}/undecoded"),
-                    Span::new(start, reader.range().end),
+                    Span::new(start, crate::input_range(reader.range()).end),
                     format!("unknown value-type prefix at offset {offset}; the current entry/group and remaining section are not decoded; no later declaration boundaries inferred"),
                 ).feature("unknown_declaration_type");
                 suffix.children.push(
@@ -675,14 +682,19 @@ fn entries<'a, T: FromReader<'a>>(
             match value {
                 Err(error) => {
                     completed.append(&mut out);
-                    completed.push(Region::new(format!("{path}/trailing_bytes"), Span::new(start, reader.range().end), "bytes after the declared section entry count; not decoded as entries or instructions").feature("invalid_encoding"));
+                    completed.push(Region::new(format!("{path}/trailing_bytes"), Span::new(start, crate::input_range(reader.range()).end), "bytes after the declared section entry count; not decoded as entries or instructions").feature("invalid_encoding"));
                     return Err(error);
                 }
                 Ok(_) => unreachable!("section iterator cannot exceed its declared count"),
             }
         }
-        let region =
-            value.and_then(|value| visit(index, Span::new(start, it.original_position()), value));
+        let region = value.and_then(|value| {
+            visit(
+                index,
+                Span::new(start, crate::input_offset(it.original_position())),
+                value,
+            )
+        });
         match region {
             Ok(region) => out.push(region),
             Err(error) => {
@@ -770,13 +782,16 @@ fn core_section(
                         span,
                         format!("recursive_group explicit={}", group.is_explicit_rec_group()),
                     );
-                    let types: Vec<_> = group.into_types_and_offsets().collect();
+                    let types: Vec<_> = group
+                        .into_types_and_offsets()
+                        .map(|(offset, ty)| (crate::input_offset(offset), ty))
+                        .collect();
                     for (i, (start, ty)) in types.iter().enumerate() {
                         let end = types.get(i + 1).map_or(span.end, |(offset, _)| *offset);
                         let feature = match ty.composite_type.inner {
                             CompositeInnerType::Array(_) | CompositeInnerType::Struct(_) => "gc",
                             CompositeInnerType::Cont(_) => "stack_switching",
-                            _ if !ty.is_final || ty.supertype_idx.is_some() => "gc",
+                            _ if !ty.is_final || !ty.supertype_idxs.is_empty() => "gc",
                             _ => "core_types",
                         };
                         let mut member = Region::new(
@@ -786,7 +801,7 @@ fn core_section(
                         )
                         .feature(feature);
                         let mut raw = source.clone();
-                        raw.read_bytes(*start - raw.original_position())?;
+                        raw.read_bytes(*start - crate::input_offset(raw.original_position()))?;
                         match crate::operator_fields::subtype(
                             raw,
                             member.span,
@@ -828,23 +843,30 @@ fn core_section(
                 let shared = matches!(&imports, Imports::Compact2 { .. });
                 if let Imports::Compact2 { ty, .. } = &imports {
                     let mut raw = source.clone();
-                    raw.read_bytes(span.start - raw.original_position())?;
-                    let mut raw =
-                        BinaryReader::new(raw.read_bytes(span.end - span.start)?, span.start);
+                    raw.read_bytes(span.start - crate::input_offset(raw.original_position()))?;
+                    let mut raw = BinaryReader::new(
+                        raw.read_bytes(span.end - span.start)?,
+                        span.start.try_into().unwrap(),
+                    );
                     raw.read_unlimited_string()?;
                     raw.read_unlimited_string()?;
                     raw.read_u8()?; // Proven Compact2 discriminator, not a type byte.
-                    let start = raw.original_position();
+                    let start = crate::input_offset(raw.original_position());
                     raw.read::<TypeRef>()?;
                     region.children.push(Region::new(
                         format!("{path}/group[{index}]/shared_type"),
-                        Span::new(start, raw.original_position()),
+                        Span::new(start, crate::input_offset(raw.original_position())),
                         format!(
                             "shared_type={ty:?}; encoded once for the group's actual name entries"
                         ),
                     ));
                 }
-                let imports: Vec<_> = imports.into_iter().collect::<wasmparser::Result<_>>()?;
+                let imports: Vec<_> = imports
+                    .into_iter()
+                    .map(|entry| {
+                        entry.map(|(offset, import)| (crate::input_offset(offset), import))
+                    })
+                    .collect::<wasmparser::Result<_>>()?;
                 for (i, (start, import)) in imports.iter().enumerate() {
                     let end = imports.get(i + 1).map_or(span.end, |(offset, _)| *offset);
                     if matches!(import.ty, TypeRef::Func(_) | TypeRef::FuncExact(_)) {
@@ -917,11 +939,11 @@ fn core_section(
         )?,
         7 => simple_entries::<Export<'_>>(&mut reader, section.id, &path, &mut section.regions)?,
         8 | 12 => {
-            let start = reader.original_position();
+            let start = crate::input_offset(reader.original_position());
             let value = reader.read_var_u32()?;
             let mut regions = vec![Region::new(
                 format!("{path}/value"),
-                Span::new(start, reader.original_position()),
+                Span::new(start, crate::input_offset(reader.original_position())),
                 value.to_string(),
             )];
             if !reader.eof() {
@@ -930,13 +952,16 @@ fn core_section(
                     diagnostics,
                     "error",
                     "core_decode",
-                    reader.original_position(),
+                    crate::input_offset(reader.original_position()),
                     "section size mismatch: trailing bytes after scalar payload",
                 );
                 regions.push(
                     Region::new(
                         format!("{path}/undecoded"),
-                        Span::new(reader.original_position(), section.payload_span.end),
+                        Span::new(
+                            crate::input_offset(reader.original_position()),
+                            section.payload_span.end,
+                        ),
                         "trailing bytes after scalar payload",
                     )
                     .feature("invalid_encoding"),
@@ -975,12 +1000,12 @@ fn core_section(
                         let mut it = items.into_iter();
                         let mut i = 0;
                         loop {
-                            let start = it.original_position();
+                            let start = crate::input_offset(it.original_position());
                             let Some(item) = it.next() else { break };
                             let function = item?;
                             region.children.push(Region::new(
                                 format!("{entry_path}/item[{i}]"),
-                                Span::new(start, it.original_position()),
+                                Span::new(start, crate::input_offset(it.original_position())),
                                 format!("function={function}"),
                             ));
                             i += 1;
@@ -1023,7 +1048,7 @@ fn core_section(
                         )
                     },
                 );
-                let body_span = body.range();
+                let body_span = crate::input_range(body.range());
                 region.children.push(Region::new(
                     format!("{entry_path}/body_size"),
                     Span::new(span.start, body_span.start),
@@ -1033,13 +1058,16 @@ fn core_section(
                     Ok(mut locals) => {
                         region.children.push(Region::new(
                             format!("{entry_path}/locals_count"),
-                            Span::new(body_span.start, locals.original_position()),
+                            Span::new(
+                                body_span.start,
+                                crate::input_offset(locals.original_position()),
+                            ),
                             locals.get_count().to_string(),
                         ));
                         let mut failed = false;
                         let mut total_count = 0u32;
                         for i in 0..locals.get_count() {
-                            let start = locals.original_position();
+                            let start = crate::input_offset(locals.original_position());
                             let mut raw = body.get_binary_reader();
                             raw.read_bytes(start - body_span.start)
                                 .expect("local cursor is inside the framed body");
@@ -1058,7 +1086,7 @@ fn core_section(
                                     diagnostics,
                                     if invalid { "error" } else { "warning" },
                                     "locals_decode",
-                                    value.original_position(),
+                                    crate::input_offset(value.original_position()),
                                     "untrusted local value-type prefix; no later group or instruction boundaries inferred",
                                 );
                                 region.children.push(Region::new(format!("{entry_path}/opaque"), Span::new(start, body_span.end), if invalid { "a bare positive type index is not a value-type shorthand; remaining locals and body are not decoded" } else { "unknown local value-type prefix; remaining locals and body are not decoded" }).feature(if invalid { "invalid_encoding" } else { "unknown" }));
@@ -1070,7 +1098,10 @@ fn core_section(
                                     total_count += count;
                                     region.children.push(Region::new(
                                         format!("{entry_path}/local_group[{i}]"),
-                                        Span::new(start, locals.original_position()),
+                                        Span::new(
+                                            start,
+                                            crate::input_offset(locals.original_position()),
+                                        ),
                                         format!("count={count} type={ty:?}"),
                                     ));
                                 }
@@ -1086,7 +1117,7 @@ fn core_section(
                                         diagnostics,
                                         "error",
                                         "locals_decode",
-                                        error.offset(),
+                                        crate::input_offset(error.offset()),
                                         error.to_string(),
                                     );
                                     let mut suffix = Region::new(
@@ -1130,7 +1161,7 @@ fn core_section(
                             diagnostics,
                             "error",
                             "locals_decode",
-                            error.offset(),
+                            crate::input_offset(error.offset()),
                             error.to_string(),
                         );
                         let mut suffix = Region::new(
@@ -1240,7 +1271,7 @@ fn recover_failed_expression(
         .count();
     let path = format!("{}/entry[{index}]", section.path);
     let end = section.payload_span.end;
-    let mut reader = BinaryReader::new(&bytes[start..end], start);
+    let mut reader = BinaryReader::new(&bytes[start..end], start.try_into().unwrap());
     let mut completed = Vec::new();
     let mut first_expr_start = None;
     fn take_expression<'a>(
@@ -1249,7 +1280,7 @@ fn recover_failed_expression(
         completed: &mut Vec<(String, ConstExpr<'a>)>,
         first_expr_start: &mut Option<usize>,
     ) -> Option<(String, BinaryReader<'a>)> {
-        first_expr_start.get_or_insert(reader.original_position());
+        first_expr_start.get_or_insert(crate::input_offset(reader.original_position()));
         let before = reader.clone();
         if crate::decode_error::expression_needs_recovery(before.clone()) {
             return Some((path, before));
@@ -1370,7 +1401,7 @@ fn recover_failed_expression(
         }
         match scan.read() {
             Ok(Operator::End) => {
-                horizon = scan.original_position();
+                horizon = crate::input_offset(scan.original_position());
                 break;
             }
             Ok(_) => {}
@@ -1390,14 +1421,16 @@ fn recover_failed_expression(
     }
     let mut failed_region = Region::new(
         &failed_path,
-        Span::new(failed.original_position(), horizon),
+        Span::new(crate::input_offset(failed.original_position()), horizon),
         "incomplete constant expression",
     )
     .feature("recovered_expression");
     decode_operators(
         OperatorsReader::new(BinaryReader::new(
-            &bytes[failed.original_position()..horizon],
-            failed.original_position(),
+            &bytes[crate::input_offset(failed.original_position())..horizon],
+            crate::input_offset(failed.original_position())
+                .try_into()
+                .unwrap(),
         )),
         horizon,
         &failed_path,
@@ -1412,7 +1445,7 @@ fn recover_failed_expression(
 }
 
 fn expression(expr: ConstExpr<'_>, path: &str, diagnostics: &mut Vec<Diagnostic>) -> Region {
-    let range = expr.get_binary_reader().range();
+    let range = crate::input_range(expr.get_binary_reader().range());
     let mut region = Region::new(
         path,
         Span::new(range.start, range.end),
@@ -1527,7 +1560,7 @@ fn decode_operators(
 ) {
     let mut index = 0;
     while !reader.eof() {
-        let start = reader.original_position();
+        let start = crate::input_offset(reader.original_position());
         if reader.current_frame().is_none() {
             let error = reader
                 .finish()
@@ -1569,7 +1602,7 @@ fn decode_operators(
             Ok(op) => {
                 let mut region = Region::new(
                     format!("{path}/operator[{index}]"),
-                    Span::new(start, reader.original_position()),
+                    Span::new(start, crate::input_offset(reader.original_position())),
                     format!("{op:?}"),
                 )
                 .feature(operator_feature(&op));
@@ -1783,13 +1816,13 @@ fn decode_operators(
             diagnostics,
             "error",
             "expression_structure",
-            reader.original_position(),
+            crate::input_offset(reader.original_position()),
             error.to_string(),
         );
         regions.push(
             Region::new(
                 format!("{path}/expression_structure"),
-                Span::new(reader.original_position(), end),
+                Span::new(crate::input_offset(reader.original_position()), end),
                 "expression ended before all control frames were closed by End",
             )
             .feature("invalid_encoding"),
@@ -1876,7 +1909,7 @@ fn custom(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> wasmparser::Result<()> {
     // The custom section name is part of the core binary grammar, including UTF-8.
-    let mut outer = BinaryReader::new(payload, section.payload_span.start);
+    let mut outer = BinaryReader::new(payload, section.payload_span.start.try_into().unwrap());
     let name = match (|| {
         let mut probe = outer.clone();
         let length = probe.read_var_u32()? as usize;
@@ -1899,7 +1932,7 @@ fn custom(
             return Err(error);
         }
     };
-    let data_start = outer.original_position();
+    let data_start = crate::input_offset(outer.original_position());
     section.kind = format!("custom:{name}");
     section.regions.push(Region::new(
         format!("{}/name", section.path),

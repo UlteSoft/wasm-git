@@ -159,7 +159,7 @@ pub(super) fn inspect_envelopes(
     let mut reader = BinaryReader::new(&bytes[8..], 8);
     let mut counts = BTreeMap::<u8, usize>::new();
     while !reader.eof() {
-        let start = reader.original_position();
+        let start = crate::input_offset(reader.original_position());
         let id = reader.read_u8().map_err(|e| e.to_string())?;
         let count = counts.entry(id).or_default();
         let kind = if core {
@@ -176,7 +176,7 @@ pub(super) fn inspect_envelopes(
         let size = reader.read_var_u32();
         let (payload_start, end, framing_error) = match size {
             Ok(size) => {
-                let at = reader.original_position();
+                let at = crate::input_offset(reader.original_position());
                 if size as usize > reader.bytes_remaining() {
                     (
                         at,
@@ -223,7 +223,7 @@ pub(super) fn inspect_envelopes(
         }
         if id == 0 {
             let payload = &bytes[payload_start..end];
-            let mut name_reader = BinaryReader::new(payload, payload_start);
+            let mut name_reader = BinaryReader::new(payload, payload_start.try_into().unwrap());
             let name = (|| -> Result<&str, String> {
                 let len = name_reader.read_var_u32().map_err(|e| e.to_string())? as usize;
                 if len > name_reader.bytes_remaining() {
@@ -253,7 +253,7 @@ pub(super) fn inspect_envelopes(
                         &mut module.diagnostics,
                         "error",
                         "custom_name",
-                        error.offset(),
+                        crate::input_offset(error.offset()),
                         error.to_string(),
                     );
                 }

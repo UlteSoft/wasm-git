@@ -219,14 +219,14 @@ fn cli_function_analysis_respects_unknown_declaration_frontiers() {
         assert!(json["function_analysis"]["reason"]
             .as_str()
             .unwrap()
-            .contains("invalid Core encoding"));
+            .contains("incomplete Core grammar at type[0] (malformed)"));
         assert!(json["module"].is_null());
         assert!(json["summary"].is_null());
         assert!(json["audit"]["sections"]
             .as_array()
             .unwrap()
             .iter()
-            .all(|section| section["status"] == "decoded"));
+            .all(|section| section["status"] == "malformed"));
         assert!(json["audit"]["standard"]["evidence"]
             .as_array()
             .unwrap()
@@ -244,7 +244,7 @@ fn cli_function_analysis_respects_unknown_declaration_frontiers() {
         assert!(diff["function_analysis"]["reason"]
             .as_str()
             .unwrap()
-            .contains("invalid Core encoding"));
+            .contains("incomplete Core grammar at type[0] (malformed)"));
         assert!(diff["summary"].is_null());
         assert_eq!(diff["binary_changed"], true);
         assert!(!diff["audit"]["edits"].as_array().unwrap().is_empty());
@@ -368,7 +368,7 @@ fn verify_binding_position(bytes: &[u8], site: &serde_json::Value) {
             let mut reader = body.get_operators_reader().unwrap();
             let mut index = 0;
             while !reader.eof() {
-                let offset = reader.original_position();
+                let offset = reader.original_position() as usize;
                 let operator = reader.read().unwrap();
                 if offset as u64 == site["offset"].as_u64().unwrap() {
                     let (opcode, target) = match operator {

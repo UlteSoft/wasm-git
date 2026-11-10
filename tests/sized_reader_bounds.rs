@@ -1,4 +1,4 @@
-//! Finite literal length requests for the vendored wasmparser 0.249.0 reader.
+//! Finite literal length requests for the vendored wasmparser 0.263.0 reader.
 //! No large buffer is allocated, no panic is caught, and no Wasm is executed.
 //!
 //! Source oracle: BinaryReader::read_bytes checks ensure_has_bytes before moving
@@ -315,7 +315,7 @@ fn framing_survives(fixture: &Fixture, module: &AuditModule) {
 
 fn eof(error: &BinaryReaderError, offset: usize) {
     assert_eq!(error.message(), "unexpected end-of-file");
-    assert_eq!(error.offset(), offset);
+    assert_eq!(error.offset(), offset as u64);
 }
 
 fn failed_length(bytes: &[u8], failure: &Failure, profile: Standard, module: &AuditModule) {
@@ -384,11 +384,11 @@ fn failed_length(bytes: &[u8], failure: &Failure, profile: Standard, module: &Au
         // reads the forged item. The audit's local EOF is still independently
         // located above; do not invent an EOF as this validator's first error.
         assert_eq!(actual.message(), PASSIVE_ERROR);
-        assert_eq!(actual.offset(), offset);
+        assert_eq!(actual.offset(), offset as u64);
     } else {
         eof(&actual, failure.contents.start);
     }
-    assert_eq!(selected.offset, actual.offset());
+    assert_eq!(selected.offset as u64, actual.offset());
     assert_eq!(selected.message, actual.to_string());
 }
 
@@ -525,7 +525,7 @@ fn complete(fixture: &Fixture, validator: [bool; 4], compatibility: [bool; 4]) {
         );
         if let Some(error) = actual.err() {
             assert_eq!(error.message(), PASSIVE_ERROR);
-            assert_eq!(error.offset(), fixture.failure.entry.start);
+            assert_eq!(error.offset(), fixture.failure.entry.start as u64);
         }
         let path = fixture
             .failure

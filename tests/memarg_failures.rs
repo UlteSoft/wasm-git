@@ -646,7 +646,7 @@ fn explicit_memory_indices_follow_only_complete_known_flags() {
     eof(&[0x28, 0x40], 2, "memarg memory index");
     eof(&[0xfd, 0, 0x40], 3, "memarg memory index");
     eof(&[0xfe, 0x10, 0x40], 3, "memarg memory index");
-    eof(&[0x28, 0x7f, 0x80], 2, "memarg memory index");
+    eof(&[0x28, 0x4f, 0x80], 2, "memarg memory index");
     width(
         &[0xfd, 0x54, 0x40, 0x80, 0x80, 0x80, 0x80, 0x10],
         3,
@@ -661,7 +661,7 @@ fn explicit_memory_indices_follow_only_complete_known_flags() {
     );
     eof(&[0x28, 0xc0, 0], 3, "memarg memory index");
     width(
-        &[0xfd, 0xd4, 0, 0x7f, 0x80, 0x80, 0x80, 0x80, 0x10],
+        &[0xfd, 0xd4, 0, 0x4f, 0x80, 0x80, 0x80, 0x80, 0x10],
         4,
         9,
         "memarg memory index",
@@ -972,8 +972,8 @@ fn completed_unknown_flags_block_every_later_index_offset_and_lane_claim() {
 
 #[test]
 fn full_alignment_u32_indices_and_u64_offsets_do_not_gain_semantic_encoding_caps() {
-    decoded(&[0x28, 0x3f, 0], Some("I32Load"));
-    decoded(&[0x28, 0x7f, 0, 0], Some("I32Load"));
+    decoded(&[0x28, 0x0f, 0], Some("I32Load"));
+    decoded(&[0x28, 0x4f, 0, 0], Some("I32Load"));
     decoded(&[0x28, 2, 0x80, 0x80, 0x80, 0x80, 0x10], Some("I32Load"));
     decoded(&[0x28, 2, 0x80, 0x80, 0x80, 0x80, 0x80, 0], Some("I32Load"));
     decoded(
@@ -1015,7 +1015,7 @@ fn adjacent_grammars_and_failed_or_future_subopcodes_have_no_memarg_leaf() {
         EOF_REASON,
         "simd_immediate_error",
     );
-    owned(&fixture(&[0xfe, 3, 1], true), UNKNOWN_READER);
+    owned(&fixture(&[0xfe, 3, 2], true), UNKNOWN_READER);
     owned(
         &fixture(&[0xfe, 0x4f, 0, 0x80, 0x80, 0x80, 0x80, 0x10], true),
         INVALID_OWNER,
@@ -1029,7 +1029,7 @@ fn adjacent_grammars_and_failed_or_future_subopcodes_have_no_memarg_leaf() {
         &fixture(&[0xfd, 0xff, 0xff, 0xff, 0xff, 0x0f, 0xc0, 1, 0x80], true),
         UNKNOWN_OWNER,
     );
-    owned(&fixture(&[0xfe, 4, 0xc0, 1, 0x80], true), UNKNOWN_OWNER);
+    owned(&fixture(&[0xfe, 5, 0xc0, 1, 0x80], true), UNKNOWN_OWNER);
 }
 
 #[test]

@@ -173,3 +173,5 @@ they do not prove correctness for every possible or future Wasm module.
 ## Release engineering
 
 See the [platform and release guide](documents/RELEASE.eu_US.md) for native and WASIp1 builds, CI/CD gates, QEMU tests and capability limits.
+
+For parser upgrades and handling modules produced by future Wasm revisions, see [Forward syntax evolution](documents/SYNTAX_EVOLUTION.eu_US.md).

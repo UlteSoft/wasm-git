@@ -25,6 +25,7 @@ jobs:
           components: rustfmt, clippy
           cache-workspaces: . -> .tmp/target
       - run: python tools/release.py inventory
+      - run: python tools/check-grammar.py
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-features --all-targets -- -D warnings
       # Runtime tests intentionally run only in the existing qualification cgroup.

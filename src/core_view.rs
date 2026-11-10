@@ -6,7 +6,7 @@ use wasmparser::BinaryReader;
 
 use crate::audit::Span;
 
-// wasmparser 0.249.0's private MAX_WASM_STRING_SIZE. This is an implementation
+// wasmparser 0.263.0's private MAX_WASM_STRING_SIZE. This is an implementation
 // limit on read_string(), not a bound in the Core name grammar.
 const PINNED_NAME_LIMIT: usize = 100_000;
 
@@ -58,7 +58,7 @@ impl<'a> ReaderView<'a> {
             let Ok(size) = cursor.read_var_u32() else {
                 break;
             };
-            let start = cursor.original_position();
+            let start = crate::input_offset(cursor.original_position());
             if size as usize > cursor.bytes_remaining() {
                 break;
             }
@@ -72,7 +72,7 @@ impl<'a> ReaderView<'a> {
             custom_index += 1;
             // The bounded slice is essential: a truncated name must never
             // borrow bytes from the following independently framed section.
-            let mut name_reader = BinaryReader::new(payload, start);
+            let mut name_reader = BinaryReader::new(payload, start.try_into().unwrap());
             let Ok(name_len) = name_reader.read_var_u32() else {
                 continue;
             };
@@ -94,7 +94,7 @@ impl<'a> ReaderView<'a> {
                 path: format!("custom[{index}]/name"),
                 name_span: Span {
                     start,
-                    end: name_reader.original_position(),
+                    end: crate::input_offset(name_reader.original_position()),
                 },
                 byte_span: Span {
                     start,

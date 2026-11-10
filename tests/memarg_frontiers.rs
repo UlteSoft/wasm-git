@@ -773,19 +773,19 @@ fn complete_unknown_flag_values_padding_and_known_aligned_stops_remain_opaque() 
         &[0x28, 0x80, 1, 0x80, 0x80, 0x80, 0x80, 0x10],
         true,
         "unknown",
-        "malformed memop alignment",
+        "malformed memop: reserved flags bits set",
     );
     opaque(
         &[0x28, 0xff, 0xff, 0xff, 0xff, 0x0f],
         false,
         "unknown",
-        "unexpected end-of-file",
+        "cannot specify both memory and array index",
     );
     opaque(
         &[0xfd, 0, 0xff, 0xff, 0xff, 0xff, 0x0f, 0x80],
         false,
         "unknown",
-        "unexpected end-of-file",
+        "cannot specify both memory and array index",
     );
     opaque(
         &[0xfe, 0x10, 0xc0, 0x81, 0],
@@ -805,7 +805,7 @@ fn complete_unknown_flag_values_padding_and_known_aligned_stops_remain_opaque() 
         &[0x28, 0xc0, 1, 0, 0x80, 0x80, 0x80, 0x80, 0x10],
         true,
         "unknown",
-        "malformed memop alignment",
+        "malformed memop: reserved flags bits set",
     );
 }
 
@@ -842,7 +842,7 @@ fn incomplete_flags_and_known_low_bits_preserve_real_integer_and_lane_eof_errors
         (2, 2, "memarg memory index", EOF_REASON),
     );
     opaque_memarg(
-        &[0x28, 0x7f, 0x80, 0x80, 0x80, 0x80, 0x10],
+        &[0x28, 0x4f, 0x80, 0x80, 0x80, 0x80, 0x10],
         true,
         "invalid var_u32",
         (2, 7, "memarg memory index", WIDTH_REASON),
@@ -861,10 +861,10 @@ fn non_memarg_secondary_grammars_do_not_borrow_the_flag_rule() {
     opaque_simd(&[0xfd, 0x0c, 0xc0, 1], 2, 4, "v128.const value bytes");
     decoded(&[0xfd, 0x15, 0xc0], "I8x16ExtractLaneS");
     opaque(
-        &[0xfe, 3, 1],
+        &[0xfe, 3, 2],
         true,
         "unknown",
-        "nonzero byte after `atomic.fence`",
+        "invalid atomic consistency ordering",
     );
     opaque(
         &[0xfe, 0x4f, 0, 0x80, 0x80, 0x80, 0x80, 0x10],
@@ -883,13 +883,13 @@ fn non_memarg_secondary_grammars_do_not_borrow_the_flag_rule() {
         &[0xfd, 0xff, 0xff, 0xff, 0xff, 0x0f, 0xc0, 1, 0x80],
         "unknown 0xfd subopcode",
     );
-    unknown_opcode(&[0xfe, 4, 0xc0, 1, 0x80], "unknown 0xfe subopcode");
+    unknown_opcode(&[0xfe, 5, 0xc0, 1, 0x80], "unknown 0xfe subopcode");
 }
 
 #[test]
 fn known_alignment_fields_and_u64_offsets_keep_complete_decoded_boundaries() {
     decoded(&[0x28, 3, 0], "I32Load");
-    decoded(&[0x28, 0x7f, 0, 0], "I32Load");
+    decoded(&[0x28, 0x4f, 0, 0], "I32Load");
     decoded(&[0x28, 2, 0x80, 0x80, 0x80, 0x80, 0x10], "I32Load");
     decoded(&[0x28, 2, 0x80, 0x80, 0x80, 0x80, 0x80, 0], "I32Load");
     decoded(

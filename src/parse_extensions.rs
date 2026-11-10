@@ -22,7 +22,27 @@ fn ordering(value: wasmparser::Ordering) -> AtomicOrdering {
         wasmparser::Ordering::AcqRel => AtomicOrdering::AcqRel,
     }
 }
+
+pub(super) fn memarg(value: wasmparser::MemArg, lane: Option<u8>) -> Immediate {
+    use crate::ir::{MemoryOrdering, MemoryTarget};
+    Immediate::MemoryOperand {
+        align: value.align as u32,
+        offset: value.offset,
+        target: match value.target {
+            wasmparser::MemArgTarget::Memory(i) => MemoryTarget::Memory(i),
+            wasmparser::MemArgTarget::Array(i) => MemoryTarget::Array(i),
+        },
+        ordering: value.ordering.map(|o| match o {
+            wasmparser::MemArgOrdering::Op(o) => MemoryOrdering::Op(ordering(o)),
+            wasmparser::MemArgOrdering::Rmw(o) => MemoryOrdering::Rmw(ordering(o)),
+        }),
+        lane,
+    }
+}
 macro_rules! operands {
+    ($ordering:ident; ordering) => {
+        Immediate::AtomicFence(ordering($ordering))
+    };
     ($index:ident; cont_type_index) => {
         Immediate::ContinuationType($index)
     };
@@ -75,19 +95,10 @@ macro_rules! operands {
         Immediate::None
     };
     ($memarg:ident; memarg) => {
-        Immediate::MemoryArg {
-            align: $memarg.align as u32,
-            offset: $memarg.offset,
-            memory: $memarg.memory,
-        }
+        self::memarg($memarg, None)
     };
     ($memarg:ident,$lane:ident; memarg,lane) => {
-        Immediate::SimdMemoryLane {
-            align: $memarg.align as u32,
-            offset: $memarg.offset,
-            memory: $memarg.memory,
-            lane: $lane,
-        }
+        self::memarg($memarg, Some($lane))
     };
     ($lane:ident; lane) => {
         Immediate::Lane($lane)
@@ -126,6 +137,7 @@ macro_rules! operands {
 }
 macro_rules! group {
     (simd,$op:ident $(,$arg:ident)*) => {Some((Opcode::$op,group!(args $($arg),*)))};
+    (acquire_release_atomics,$op:ident $(,$arg:ident)*) => {Some((Opcode::$op,group!(args $($arg),*)))};
     (threads,$op:ident $(,$arg:ident)*) => {Some((Opcode::$op,group!(args $($arg),*)))};
     (shared_everything_threads,$op:ident $(,$arg:ident)*) => {Some((Opcode::$op,group!(args $($arg),*)))};
     (stack_switching,$op:ident $(,$arg:ident)*) => {Some((Opcode::$op,group!(args $($arg),*)))};
@@ -174,7 +186,8 @@ mod tests {
                     align: 2,
                     max_align: 3,
                     offset: 0x123456789,
-                    memory: 7,
+                    target: wasmparser::MemArgTarget::Memory(7),
+                    ordering: None,
                 }
             };
             (lane) => {
@@ -197,6 +210,7 @@ mod tests {
         macro_rules! check {
             (simd,$op:ident $(,$arg:ident)*) => {check!(run,$op $(,$arg)*)};
             (threads,$op:ident $(,$arg:ident)*) => {check!(run,$op $(,$arg)*)};
+            (acquire_release_atomics,$op:ident $(,$arg:ident)*) => {check!(run,$op $(,$arg)*)};
             (shared_everything_threads,$op:ident $(,$arg:ident)*) => {check!(run,$op $(,$arg)*)};
             (stack_switching,$op:ident $(,$arg:ident)*) => {check!(run,$op $(,$arg)*)};
             (custom_descriptors,$op:ident $(,$arg:ident)*) => {check!(run,$op $(,$arg)*)};
@@ -218,6 +232,6 @@ mod tests {
             }
         }
         wasmparser::for_each_operator!(checks);
-        assert_eq!(count, 358);
+        assert_eq!(count, 359);
     }
 }

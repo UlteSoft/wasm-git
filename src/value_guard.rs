@@ -113,10 +113,10 @@ pub(crate) fn simd_immediate_failure(
             0x22 => "f64x2.replace_lane lane index",
             0x54..=0x5b => {
                 let flags = checked(reader.read_var_u32())?;
-                if flags >= 128 {
-                    return Err(Stop::Unproved);
-                }
-                if flags & 64 != 0 {
+                let layout = crate::grammar::MemargKind::Plain
+                    .flags(flags)
+                    .ok_or(Stop::Unproved)?;
+                if layout.index.is_some() {
                     checked(reader.read_var_u32())?;
                 }
                 // All-known grammar uses u64 even for a 32-bit memory.
@@ -335,28 +335,18 @@ pub(crate) fn memarg_failure(
     mut reader: BinaryReader<'_>,
 ) -> Option<FieldFailure> {
     crate::decode_error::invalid_encoding(error)?;
-    let selected = match reader.read_u8().ok()? {
-        0x28..=0x3e => true,
-        0xfd => matches!(reader.read_var_u32().ok()?, 0x00..=0x0b | 0x54..=0x5d),
-        0xfe => matches!(reader.read_var_u32().ok()?, 0x00..=0x02 | 0x10..=0x4e),
-        _ => false,
-    };
-    if !selected {
-        return None;
-    }
+    let kind = crate::grammar::MemargKind::read(&mut reader)?;
     let scan = (|| -> Scan {
         let flags = field_checked(&mut reader, "memarg flags", BinaryReader::read_var_u32)?;
-        if flags >= 128 {
-            // The pinned reader may fail in an apparent memory index before
-            // checking unknown flags. Never use that suffix as known grammar.
-            return Err(Stop::Unproved);
+        let layout = kind.flags(flags).ok_or(Stop::Unproved)?;
+        if let Some(field) = layout.index {
+            field_checked(&mut reader, field, BinaryReader::read_var_u32)?;
         }
-        if flags & 64 != 0 {
-            field_checked(
-                &mut reader,
-                "memarg memory index",
-                BinaryReader::read_var_u32,
-            )?;
+        if layout.ordering {
+            let byte = field_checked(&mut reader, "memarg ordering", BinaryReader::read_u8)?;
+            if !layout.ordering_known(byte) {
+                return Err(Stop::Unproved);
+            }
         }
         // All-known readers use u64 even when the selected profile is Core1
         // or the referenced memory is 32-bit. Alignment bounds are semantic.
@@ -530,12 +520,12 @@ fn numeric_heap_operand(
     reader: &mut BinaryReader<'_>,
     field: &'static str,
 ) -> Option<FieldFailure> {
-    let start = reader.original_position();
+    let start = crate::input_offset(reader.original_position());
     if !matches!(reader.read_u8().ok()?, 0x7b..=0x7f) {
         return None;
     }
     Some(FieldFailure {
-        span: start..reader.original_position(),
+        span: start..crate::input_offset(reader.original_position()),
         field,
         reason: "known numeric or vector value type is forbidden in a heap-type operand",
     })
@@ -548,7 +538,7 @@ fn emit(
     facts: &mut impl FnMut(PrefixFact),
 ) {
     facts(PrefixFact {
-        span: start..reader.original_position(),
+        span: start..crate::input_offset(reader.original_position()),
         kind,
     });
 }
@@ -562,7 +552,7 @@ fn field_checked<'a, T>(
     field: &'static str,
     read: impl FnOnce(&mut BinaryReader<'a>) -> wasmparser::Result<T>,
 ) -> Scan<T> {
-    let start = reader.original_position();
+    let start = crate::input_offset(reader.original_position());
     read(reader).map_err(|error| {
         crate::decode_error::invalid_encoding(&error).map_or(Stop::Unproved, |reason| {
             // HeapType may probe with a cloned cursor. A truncated string's
@@ -570,14 +560,13 @@ fn field_checked<'a, T>(
             // EOF uses this field's bounded reader end; integer errors cover
             // the last failing byte without extending into following fields.
             let error_end = if error.message() == "unexpected end-of-file" {
-                reader.range().end
+                crate::input_range(reader.range()).end
             } else {
-                error.offset().saturating_add(1)
+                crate::input_offset(error.offset()).saturating_add(1)
             };
-            let end = reader
-                .original_position()
+            let end = crate::input_offset(reader.original_position())
                 .max(error_end)
-                .min(reader.range().end);
+                .min(crate::input_range(reader.range()).end);
             if end < start {
                 return Stop::Unproved;
             }
@@ -610,22 +599,28 @@ fn value_field(reader: &mut BinaryReader<'_>, reference: bool, field: &'static s
     if reference && matches!(reader.clone().read_u8(), Ok(0x7b..=0x7f)) {
         // These are complete known value types, but none is a reference type.
         // Diagnose only this token at the proved slot; never read its suffix.
-        let start = reader.original_position();
+        let start = crate::input_offset(reader.original_position());
         checked(reader.read_u8())?;
         return Err(Stop::Known(FieldFailure {
-            span: start..reader.original_position(),
+            span: start..crate::input_offset(reader.original_position()),
             field,
             reason: NUMERIC_REFERENCE,
         }));
     }
-    // Bare one-byte positive indices keep their existing definite-illegal
-    // classification. Never apply this value-prefix check to a heap type or
-    // an indexed block type: their positive s33 encodings are legitimate.
+    // These are complete index tokens in a slot requiring a value constructor.
+    // Heap-type and block-type slots have different grammars and never enter here.
     if crate::decode_error::forbidden_bare_index(reader) {
-        return Err(Stop::Unproved);
+        let start = crate::input_offset(reader.original_position());
+        return Err(Stop::Known(FieldFailure {
+            span: start..start + 1,
+            field,
+            reason: "a bare positive type index is not a value-type shorthand",
+        }));
     }
     if !crate::decode_error::value_prefix_known(reader) {
-        return Err(Stop::Unknown(reader.original_position()));
+        return Err(Stop::Unknown(crate::input_offset(
+            reader.original_position(),
+        )));
     }
     if reference {
         field_checked(reader, field, |reader| reader.read::<RefType>())?;
@@ -661,7 +656,7 @@ fn type_count(
     limit_name: &'static str,
     facts: &mut impl FnMut(PrefixFact),
 ) -> Scan<usize> {
-    let start = reader.original_position();
+    let start = crate::input_offset(reader.original_position());
     // Match the pinned type reader's resource admission before visiting any
     // member. These implementation limits do not narrow the Core wire format.
     let count = field_checked(reader, role, |reader| reader.read_size(limit, limit_name))?;
@@ -675,7 +670,7 @@ fn type_count(
 }
 
 fn type_value(reader: &mut BinaryReader<'_>, facts: &mut impl FnMut(PrefixFact)) -> Scan {
-    let start = reader.original_position();
+    let start = crate::input_offset(reader.original_position());
     value_field(reader, false, "value type")?;
     emit(start, reader, PrefixKind::TypeValue, facts);
     Ok(())
@@ -695,14 +690,14 @@ fn values(
 }
 
 fn field(reader: &mut BinaryReader<'_>, facts: &mut impl FnMut(PrefixFact)) -> Scan {
-    let start = reader.original_position();
+    let start = crate::input_offset(reader.original_position());
     if matches!(reader.clone().read_u8(), Ok(0x77 | 0x78)) {
         checked(reader.read_u8())?;
         type_syntax(start, reader, "gc", "packed field storage type", facts);
     } else {
         type_value(reader, facts)?;
     }
-    let start = reader.original_position();
+    let start = crate::input_offset(reader.original_position());
     if field_checked(reader, "field mutability", BinaryReader::read_u8)? > 1 {
         return Err(Stop::Unproved);
     }
@@ -711,7 +706,7 @@ fn field(reader: &mut BinaryReader<'_>, facts: &mut impl FnMut(PrefixFact)) -> S
 }
 
 fn subtype(reader: &mut BinaryReader<'_>, facts: &mut impl FnMut(PrefixFact)) -> Scan {
-    let mut start = reader.original_position();
+    let mut start = crate::input_offset(reader.original_position());
     let mut opcode = type_opcode(reader)?;
     if matches!(opcode, 0x4f | 0x50) {
         type_syntax(
@@ -723,12 +718,12 @@ fn subtype(reader: &mut BinaryReader<'_>, facts: &mut impl FnMut(PrefixFact)) ->
         );
         let count = type_count(reader, "gc", "supertype count", 1, "supertype idxs", facts)?;
         for _ in 0..count {
-            let start = reader.original_position();
+            let start = crate::input_offset(reader.original_position());
             let index = field_checked(reader, "supertype index", BinaryReader::read_var_u32)?;
             wasmparser::PackedIndex::from_module_index(index).ok_or(Stop::Unproved)?;
             type_syntax(start, reader, "gc", "supertype index wire field", facts);
         }
-        start = reader.original_position();
+        start = crate::input_offset(reader.original_position());
         opcode = type_opcode(reader)?;
     }
     if opcode == 0x65 {
@@ -739,7 +734,7 @@ fn subtype(reader: &mut BinaryReader<'_>, facts: &mut impl FnMut(PrefixFact)) ->
             "shared composite type marker",
             facts,
         );
-        start = reader.original_position();
+        start = crate::input_offset(reader.original_position());
         opcode = type_opcode(reader)?;
     }
     if opcode == 0x4c {
@@ -750,7 +745,7 @@ fn subtype(reader: &mut BinaryReader<'_>, facts: &mut impl FnMut(PrefixFact)) ->
             "describes clause marker",
             facts,
         );
-        start = reader.original_position();
+        start = crate::input_offset(reader.original_position());
         let index = field_checked(reader, "described type index", BinaryReader::read_var_u32)?;
         wasmparser::PackedIndex::from_module_index(index).ok_or(Stop::Unproved)?;
         type_syntax(
@@ -760,7 +755,7 @@ fn subtype(reader: &mut BinaryReader<'_>, facts: &mut impl FnMut(PrefixFact)) ->
             "described type index wire field",
             facts,
         );
-        start = reader.original_position();
+        start = crate::input_offset(reader.original_position());
         opcode = type_opcode(reader)?;
     }
     if opcode == 0x4d {
@@ -771,7 +766,7 @@ fn subtype(reader: &mut BinaryReader<'_>, facts: &mut impl FnMut(PrefixFact)) ->
             "descriptor clause marker",
             facts,
         );
-        start = reader.original_position();
+        start = crate::input_offset(reader.original_position());
         let index = field_checked(reader, "descriptor type index", BinaryReader::read_var_u32)?;
         wasmparser::PackedIndex::from_module_index(index).ok_or(Stop::Unproved)?;
         type_syntax(
@@ -781,7 +776,7 @@ fn subtype(reader: &mut BinaryReader<'_>, facts: &mut impl FnMut(PrefixFact)) ->
             "descriptor type index wire field",
             facts,
         );
-        start = reader.original_position();
+        start = crate::input_offset(reader.original_position());
         opcode = type_opcode(reader)?;
     }
     match opcode {
@@ -819,7 +814,7 @@ fn subtype(reader: &mut BinaryReader<'_>, facts: &mut impl FnMut(PrefixFact)) ->
             );
             // A continuation refers to a function type with a positive s33,
             // not a value-type encoding.
-            let start = reader.original_position();
+            let start = crate::input_offset(reader.original_position());
             field_checked(reader, "continuation function type index", |reader| {
                 reader.read::<wasmparser::ContType>()
             })?;
@@ -838,7 +833,7 @@ fn subtype(reader: &mut BinaryReader<'_>, facts: &mut impl FnMut(PrefixFact)) ->
 
 fn group(reader: &mut BinaryReader<'_>, facts: &mut impl FnMut(PrefixFact)) -> Scan {
     if reader.clone().read_u8().ok() == Some(0x4e) {
-        let start = reader.original_position();
+        let start = crate::input_offset(reader.original_position());
         checked(reader.read_u8())?;
         type_syntax(
             start,
@@ -921,7 +916,7 @@ fn tag_type(reader: &mut BinaryReader<'_>) -> Scan {
 }
 
 fn import_type(reader: &mut BinaryReader<'_>, facts: &mut impl FnMut(PrefixFact)) -> Scan {
-    let start = reader.original_position();
+    let start = crate::input_offset(reader.original_position());
     let mut original = reader.clone();
     let kind = field_checked(reader, "import kind", |reader| {
         reader.read::<ExternalKind>()
@@ -948,7 +943,7 @@ fn name(
     role: &'static str,
     facts: &mut impl FnMut(PrefixFact),
 ) -> Scan<bool> {
-    let start = reader.original_position();
+    let start = crate::input_offset(reader.original_position());
     let empty = field_checked(reader, role, BinaryReader::read_string)?.is_empty();
     emit(start, reader, PrefixKind::Name(role), facts);
     Ok(empty)
@@ -959,10 +954,10 @@ fn imports(reader: &mut BinaryReader<'_>, facts: &mut impl FnMut(PrefixFact)) ->
     let name_is_empty = name(reader, "item name", facts)?;
     let discriminator = reader.clone().read_u8().ok();
     if name_is_empty && discriminator == Some(0x7f) {
-        let start = reader.original_position();
+        let start = crate::input_offset(reader.original_position());
         checked(reader.read_u8())?;
         emit(start, reader, PrefixKind::CompactImports, facts);
-        let start = reader.original_position();
+        let start = crate::input_offset(reader.original_position());
         let count = field_checked(
             reader,
             "compact import member count",
@@ -975,11 +970,11 @@ fn imports(reader: &mut BinaryReader<'_>, facts: &mut impl FnMut(PrefixFact)) ->
         }
         Ok(())
     } else if name_is_empty && discriminator == Some(0x7e) {
-        let start = reader.original_position();
+        let start = crate::input_offset(reader.original_position());
         checked(reader.read_u8())?;
         emit(start, reader, PrefixKind::CompactImports, facts);
         import_type(reader, facts)?;
-        let start = reader.original_position();
+        let start = crate::input_offset(reader.original_position());
         let count = field_checked(
             reader,
             "compact import member count",
@@ -1023,7 +1018,7 @@ fn expression(reader: &mut BinaryReader<'_>) -> Scan {
 fn table_header(reader: &mut BinaryReader<'_>, facts: &mut impl FnMut(PrefixFact)) -> Scan<bool> {
     let initialized = reader.clone().read_u8().ok() == Some(0x40);
     if initialized {
-        let start = reader.original_position();
+        let start = crate::input_offset(reader.original_position());
         checked(reader.read_u8())?;
         if field_checked(
             reader,
@@ -1338,7 +1333,14 @@ pub(crate) fn reference_slot_failure(
         _ => return None,
     };
     match scan {
-        Err(Stop::Known(failure)) if failure.reason == NUMERIC_REFERENCE => Some(failure),
+        Err(Stop::Known(failure))
+            if matches!(
+                failure.reason,
+                NUMERIC_REFERENCE | "a bare positive type index is not a value-type shorthand"
+            ) =>
+        {
+            Some(failure)
+        }
         _ => None,
     }
 }
@@ -1348,7 +1350,16 @@ fn declaration_failure(
     error: &wasmparser::BinaryReaderError,
     mut reader: BinaryReader<'_>,
 ) -> Option<FieldFailure> {
-    crate::decode_error::invalid_encoding(error)?;
+    // The strict scan, not an upstream error string, proves the offending token.
+    // Upstream now rejects bare indices before its former permissive fallback.
+    if crate::decode_error::invalid_encoding(error).is_none()
+        && !matches!(
+            error.message(),
+            "invalid value type" | "malformed reference type"
+        )
+    {
+        return None;
+    }
     let scan = if section == 4 {
         table_header(&mut reader, &mut |_| {}).map(|_| ())
     } else {

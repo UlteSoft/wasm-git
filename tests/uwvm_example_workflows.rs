@@ -174,7 +174,17 @@ impl Case {
     }
 
     fn source(&mut self, relative: &str) -> String {
-        let path = self.examples.join(relative);
+        let mut path = self.examples.join(relative);
+        // Current uwvm keeps the ROS binary fixtures beside its test sources.
+        // Read that actual source when the historical staged layout is absent.
+        if !path.exists() && relative.starts_with("ros_dual/") {
+            path = self
+                .examples
+                .parent()
+                .unwrap()
+                .join("test/0073.ros-tests/support/source/ros/fixtures")
+                .join(relative);
+        }
         let bytes = std::fs::read(&path).expect("read original example snapshot");
         self.sources
             .push(json!({"path":path,"sha256_before":sha(&bytes),"length":bytes.len()}));
@@ -363,6 +373,17 @@ impl Case {
             binding,
             "--wasip1-single-enable",
             binding,
+            "--wasip1-single-interface",
+            binding,
+            "args_sizes_get",
+            "allow",
+            "--wasip1-single-grant",
+            binding,
+            "args",
+            "--wasip1-single-limit",
+            binding,
+            "args-env-bytes",
+            "4096",
             "--wasip1-single-set-argv0",
             binding,
             "pre",
@@ -432,15 +453,15 @@ fn sections(bytes: &[u8]) -> Vec<(u8, std::ops::Range<usize>, std::ops::Range<us
     let mut reader = BinaryReader::new(&bytes[8..], 8);
     let mut result = Vec::new();
     while !reader.eof() {
-        let start = reader.original_position();
+        let start = reader.original_position() as usize;
         let id = reader.read_u8().unwrap();
         let length = reader.read_var_u32().unwrap() as usize;
-        let payload = reader.original_position();
+        let payload = reader.original_position() as usize;
         reader.read_bytes(length).unwrap();
         result.push((
             id,
-            start..reader.original_position(),
-            payload..reader.original_position(),
+            start..(reader.original_position() as usize),
+            payload..(reader.original_position() as usize),
         ));
     }
     result
@@ -480,9 +501,9 @@ fn oracle(bytes: &[u8]) -> Value {
                 let mut reader = body.get_operators_reader().unwrap();
                 let mut ops = Vec::new();
                 while !reader.eof() {
-                    let start = reader.original_position();
+                    let start = reader.original_position() as usize;
                     let operator = reader.read().unwrap();
-                    let mut op = json!({"start":start,"end":reader.original_position(),"description":format!("{operator:?}")});
+                    let mut op = json!({"start":start,"end":(reader.original_position() as usize),"description":format!("{operator:?}")});
                     match operator {
                         Operator::Call { function_index } => {
                             op["code"] = json!("Call");
@@ -507,10 +528,10 @@ fn oracle(bytes: &[u8]) -> Value {
                 while !reader.eof() {
                     let id = reader.read_u8().unwrap();
                     let length = reader.read_var_u32().unwrap() as usize;
-                    let offset = reader.original_position();
+                    let offset = reader.original_position() as usize;
                     let data = reader.read_bytes(length).unwrap();
                     if id == 1 {
-                        let mut map = BinaryReader::new(data, offset);
+                        let mut map = BinaryReader::new(data, offset as u64);
                         for _ in 0..map.read_var_u32().unwrap() {
                             let index = map.read_var_u32().unwrap();
                             names.insert(index.to_string(), map.read_string().unwrap().to_owned());
@@ -800,7 +821,7 @@ fn require_trap(output: &Output) {
     );
 }
 
-fn require_link_failure(output: &Output, binding: &str) {
+fn require_link_failure(output: &Output, binding: &str, redacted_diagnostic: &str) {
     let diagnostics = format!(
         "{} {}",
         String::from_utf8_lossy(&output.stdout),
@@ -808,8 +829,11 @@ fn require_link_failure(output: &Output, binding: &str) {
     )
     .to_ascii_lowercase();
     assert!(
-        diagnostics.contains(binding),
-        "missing changed binding in link diagnostic: {diagnostics}"
+        diagnostics.contains(binding)
+            || diagnostics
+                .lines()
+                .any(|line| line.trim() == redacted_diagnostic),
+        "expected the changed binding or its precise redacted link diagnostic: {diagnostics}"
     );
     assert!(
         diagnostics.contains("import")
@@ -920,6 +944,7 @@ fn real_preload_import_export_rebinding_workflow() {
             Expected::Failure,
         ),
         "lib.other",
+        "uwvm: [error] missing module dependency: an import has no approved provider",
     );
     case.runtime(
         "runtime-matched-module-binding",
@@ -937,6 +962,7 @@ fn real_preload_import_export_rebinding_workflow() {
             Expected::Failure,
         ),
         "get_argc",
+        "uwvm: [error] missing export: an import has no approved function binding",
     );
     case.runtime(
         "runtime-matched-renamed-export",
@@ -1112,7 +1138,7 @@ fn real_name_only_opaque_custom_and_unknown_opcode_preserve_every_byte() {
     let mut changed = 0;
     for (id, range, payload) in sections(&old) {
         if id == 0 {
-            let mut reader = BinaryReader::new(&old[payload.clone()], payload.start);
+            let mut reader = BinaryReader::new(&old[payload.clone()], payload.start as u64);
             if reader.read_string().unwrap() == "name" {
                 let body = b"\x04name\x01\x02\x80\x00";
                 malformed.push(0);
@@ -1171,7 +1197,7 @@ fn real_name_only_opaque_custom_and_unknown_opcode_preserve_every_byte() {
             }
         })
         .expect("independent parser rejects deliberately unknown opcode");
-    assert_eq!(rejection.offset(), first);
+    assert_eq!(rejection.offset(), first as u64);
     case.save(
         "unknown-opcode-independent-rejection",
         json!({"offset":first,"message":rejection.to_string(),"runtime_executed":false}),
@@ -1858,7 +1884,7 @@ fn reference_oracle(bytes: &[u8]) -> Value {
                 let mut reader = body.get_operators_reader().unwrap();
                 let mut ordinal = 0usize;
                 while !reader.eof() {
-                    let offset = reader.original_position();
+                    let offset = reader.original_position() as usize;
                     let op = reader.read().unwrap();
                     if let Operator::Call { function_index } = op {
                         let target_index = function_index as usize;
@@ -1872,7 +1898,7 @@ fn reference_oracle(bytes: &[u8]) -> Value {
                         };
                         calls.push(json!({
                             "defined_function_index":defined_index,"global_function_index":imports.len()+defined_index,
-                            "operator_ordinal":ordinal,"span":{"start":offset,"end":reader.original_position()},
+                            "operator_ordinal":ordinal,"span":{"start":offset,"end":(reader.original_position() as usize)},
                             "opcode":"Call","operand_index":function_index,"resolved_target":target,
                         }));
                     }

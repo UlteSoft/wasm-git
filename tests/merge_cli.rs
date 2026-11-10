@@ -279,7 +279,8 @@ fn synthesized_merge_rejects_pinned_accepted_untrusted_contexts_without_store_wr
             for bytes in [&base, &left, &right] {
                 Validator::new_with_features(WasmFeatures::all())
                     .validate_all(bytes)
-                    .expect("the pinned validator alone must miss this fixed wire/trust gap");
+                    .err()
+                    .expect("the current validator rejects the former wire/trust gap");
                 let audit = wasm_git::audit::inspect(bytes).unwrap();
                 assert_eq!(audit.validation, "failed_or_unsupported");
                 assert_eq!(audit.standard.validation, "invalid");
@@ -603,7 +604,7 @@ fn unknown_first_opcode(bytes: &[u8]) -> Vec<u8> {
                 let (operator, offset) = operator.unwrap();
                 if matches!(operator, Operator::I32Const { .. }) {
                     let mut changed = bytes.to_vec();
-                    changed[offset] = 0xff;
+                    changed[offset as usize] = 0xff;
                     return changed;
                 }
             }

@@ -531,22 +531,25 @@ fn unknown_or_failed_groups_are_atomic_but_trusted_illegal_value_bytes_keep_thei
     });
     let illegal = fixture(TYPES, &[compact2(&[3, 0, 0], 1)], &[], &[]);
     check(&illegal, |_, module| {
-        let shared = shared_region(module, &illegal, 0, &[3, 0, 0]);
+        let start = illegal
+            .bytes
+            .windows(4)
+            .position(|w| w == [0x7e, 3, 0, 0])
+            .unwrap()
+            + 2;
         assert!(module
             .standard
             .evidence
             .iter()
-            .any(|entry| entry.path == shared.path
-                && entry.status == "invalid_encoding"
-                && entry.span
-                    == (Span {
-                        start: shared.span.start + 1,
-                        end: shared.span.start + 2
-                    })
-                && entry.raw_hex == "00"));
-        assert!(regions(module)
+            .any(|entry| entry.status == "invalid_encoding"
+                && entry.raw_hex == "00"
+                && entry.span.start == start
+                && entry.span.end == start + 1));
+        // The strict reader rejects the shared type before the name vector.
+        // No import entry may be invented from its undecoded suffix.
+        assert!(!regions(module)
             .iter()
-            .any(|entry| entry.path == "import[0]/group[0]/import[0]"));
+            .any(|entry| entry.path.starts_with("import[0]/group[0]/import[")));
     });
     let mut bad_utf8 = compact2(&[2, 4, 0], 2);
     *bad_utf8.bytes.last_mut().unwrap() = 0xff;

@@ -1,5 +1,16 @@
 //! Shared native Wasm engine for the client and server executables.
 extern crate self as wasm_git;
+// Parsing always starts from a complete in-memory input and addressable slice
+// origins. The upstream u64 cursor is therefore representable as usize here;
+// keep this conversion explicit instead of silently truncating on 32-bit hosts.
+pub(crate) fn input_offset(offset: u64) -> usize {
+    usize::try_from(offset).expect("parser offset belongs to an addressable input slice")
+}
+
+pub(crate) fn input_range(range: std::ops::Range<u64>) -> std::ops::Range<usize> {
+    input_offset(range.start)..input_offset(range.end)
+}
+
 pub mod analysis;
 mod archive_commands;
 pub mod audit;
@@ -20,6 +31,7 @@ mod export_dependencies;
 pub mod feature_set;
 pub mod features;
 mod fingerprint;
+pub mod grammar;
 mod history_commands;
 mod history_query_commands;
 pub mod ir;

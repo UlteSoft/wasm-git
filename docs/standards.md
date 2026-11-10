@@ -141,7 +141,7 @@ Compact2 必须先确认共享 TypeRef，再读取名称列表。
 也不把 custom 元数据的 reader 投影应用到 Core 链接名称。
 
 `FuncExact` kind `20` 在 import TypeRef 中属于 custom descriptors 提案；
-[固定 export reader](https://github.com/bytecodealliance/wasm-tools/blob/v1.249.0/crates/wasmparser/src/readers/core/exports.rs)
+[固定 export reader](https://github.com/bytecodealliance/wasm-tools/blob/7a2fa422cdf9aeeaf488a2acac8bc94a078bfa32/crates/wasmparser/src/readers/core/exports.rs)
 则明确禁止把它用于 export descriptor。在可信 export 名称之后出现该 kind，
 会精确定位这一字节并标为 `invalid_encoding`，包括 all-known 配置；
 这与已知但被所选标准禁用的合法提案编码不同。
@@ -205,7 +205,7 @@ EOF 和越界偏移分别明确标记，原始报告偏移不被改写，字节�
 ## 提案与函数 diff 的支持边界（2026-11-05 复核）
 
 不能将 `all-known` 理解为所有当前或未来提案均完整支持。生产解码器固定为
-wasmparser 0.249.0（含仓库内的边界读取修复）；官方提案可以先于该版本演进。
+wasmparser 0.263.0（含仓库内的 memtag 扩展）；官方提案可以先于该版本演进。
 [官方提案列表](https://github.com/WebAssembly/proposals/blob/main/README.md)仍将
 threads、compact imports、wide arithmetic 列在提案中；
 [Core 3.0 变更](https://webassembly.github.io/spec/core/appendix/changes.html)不包含 threads。
@@ -245,4 +245,6 @@ threads、compact imports、wide arithmetic 列在提案中；
 逐字节重建。宏枚举检查固定依赖的 344 个 SIMD/threads/shared atomics/wide/memory-control
 操作码，升级依赖时漏映射会编译或测试失败。
 
-0.1.3 的精确 feature 校验与逐字段审计见 [Feature combinations](../documents/FEATURE_COMBINATIONS.eu_US.md)。
+0.1.4 的精确 feature 校验与逐字段审计见 [Feature combinations](../documents/FEATURE_COMBINATIONS.eu_US.md)。
+
+语法升级与旧 patch 兼容的约定见 [Forward syntax evolution](../documents/SYNTAX_EVOLUTION.eu_US.md)。

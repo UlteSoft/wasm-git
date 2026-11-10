@@ -17,7 +17,7 @@ fn validator_cursor_has_bounded_original_bytes_and_physical_locations() {
             .expect("missing operands must fail validation");
         let module = audit::inspect_with_standard(&bytes, profile).unwrap();
         let error = module.standard.validator_error.as_ref().unwrap();
-        assert_eq!(error.offset, independent.offset());
+        assert_eq!(error.offset as u64, independent.offset());
         assert!(error.byte_context.offset_in_module);
         let span = error.byte_context.span;
         assert!(span.end <= bytes.len() && span.end - span.start <= 16);

@@ -880,7 +880,7 @@ fn unknown_code_opaque_custom_and_noncanonical_leb_remain_traceable_as_raw_bytes
         if let Payload::CodeSectionEntry(body) = payload.unwrap() {
             let mut reader = body.get_operators_reader().unwrap();
             while !reader.eof() {
-                let offset = reader.original_position();
+                let offset = reader.original_position() as usize;
                 if matches!(reader.read().unwrap(), Operator::I32Const { .. }) {
                     opcode = Some(offset);
                 }

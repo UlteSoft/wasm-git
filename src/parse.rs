@@ -73,7 +73,10 @@ fn parse_module_impl(bytes: &[u8], debug_names: bool) -> Result<ParsedModule, Pa
                 saw_module = true;
             }
             Payload::TypeSection(section) => {
-                for group in section.into_iter_with_offsets() {
+                for group in section
+                    .into_iter_with_offsets()
+                    .map(|entry| entry.map(|(offset, value)| (crate::input_offset(offset), value)))
+                {
                     let (offset, group) = group?;
                     let group_index =
                         checked_u32(module.recursion_groups.len(), "recursion group")?;
@@ -84,7 +87,10 @@ fn parse_module_impl(bytes: &[u8], debug_names: bool) -> Result<ParsedModule, Pa
                         type_count: checked_u32(group.types().len(), "recursion group type count")?,
                         explicit: group.is_explicit_rec_group(),
                     });
-                    for (offset, ty) in group.into_types_and_offsets() {
+                    for (offset, ty) in group
+                        .into_types_and_offsets()
+                        .map(|(offset, ty)| (crate::input_offset(offset), ty))
+                    {
                         let source_index = checked_u32(module.types.len(), "type index")?;
                         let (params, results, composite) = match &ty.composite_type.inner {
                             CompositeInnerType::Func(function) => {
@@ -132,7 +138,7 @@ fn parse_module_impl(bytes: &[u8], debug_names: bool) -> Result<ParsedModule, Pa
                         };
                         let id = if matches!(&ty.composite_type.inner, CompositeInnerType::Func(_))
                             && ty.is_final
-                            && ty.supertype_idx.is_none()
+                            && ty.supertype_idxs.is_empty()
                             && !ty.composite_type.shared
                             && ty.composite_type.descriptor_idx.is_none()
                             && ty.composite_type.describes_idx.is_none()
@@ -152,7 +158,7 @@ fn parse_module_impl(bytes: &[u8], debug_names: bool) -> Result<ParsedModule, Pa
                             offset: offset as u64,
                             recursion_group_index: group_index,
                             is_final: ty.is_final,
-                            supertype: ty.supertype_idx.map(|index| index.to_string()),
+                            supertypes: ty.supertype_idxs.iter().map(ToString::to_string).collect(),
                             shared: ty.composite_type.shared,
                             descriptor: ty
                                 .composite_type
@@ -391,13 +397,10 @@ fn convert_field_type(field: &wasmparser::FieldType) -> FieldTypeIr {
 // ── Phase 1: typed operator conversion ─────────────────────────────────────
 
 /// Convert a wasmparser `Operator` into our typed `(Opcode, Immediate)`.
-fn convert_operator<'a>(
-    operator: Operator<'a>,
-    offset: usize,
-) -> Result<ParsedOperator, ParseError> {
+fn convert_operator<'a>(operator: Operator<'a>, offset: u64) -> Result<ParsedOperator, ParseError> {
     let (opcode, immediate) = operator_to_opcode_immediate(operator)?;
     Ok(ParsedOperator {
-        offset: offset as u64,
+        offset,
         opcode,
         immediate,
     })
@@ -474,189 +477,97 @@ fn operator_to_opcode_immediate<'a>(op: Operator<'a>) -> Result<(Opcode, Immedia
         // ── MVP: Memory loads ──
         I32Load { memarg } => Ok((
             Oc::I32Load,
-            Immediate::MemoryArg {
-                align: memarg.align as u32,
-                offset: memarg.offset,
-                memory: memarg.memory,
-            },
+            extensions::memarg(memarg, None),
         ),),
         I64Load { memarg } => Ok((
             Oc::I64Load,
-            Immediate::MemoryArg {
-                align: memarg.align as u32,
-                offset: memarg.offset,
-                memory: memarg.memory,
-            },
+            extensions::memarg(memarg, None),
         ),),
         F32Load { memarg } => Ok((
             Oc::F32Load,
-            Immediate::MemoryArg {
-                align: memarg.align as u32,
-                offset: memarg.offset,
-                memory: memarg.memory,
-            },
+            extensions::memarg(memarg, None),
         ),),
         F64Load { memarg } => Ok((
             Oc::F64Load,
-            Immediate::MemoryArg {
-                align: memarg.align as u32,
-                offset: memarg.offset,
-                memory: memarg.memory,
-            },
+            extensions::memarg(memarg, None),
         ),),
         I32Load8S { memarg } => Ok((
             Oc::I32Load8S,
-            Immediate::MemoryArg {
-                align: memarg.align as u32,
-                offset: memarg.offset,
-                memory: memarg.memory,
-            },
+            extensions::memarg(memarg, None),
         ),),
         I32Load8U { memarg } => Ok((
             Oc::I32Load8U,
-            Immediate::MemoryArg {
-                align: memarg.align as u32,
-                offset: memarg.offset,
-                memory: memarg.memory,
-            },
+            extensions::memarg(memarg, None),
         ),),
         I32Load16S { memarg } => Ok((
             Oc::I32Load16S,
-            Immediate::MemoryArg {
-                align: memarg.align as u32,
-                offset: memarg.offset,
-                memory: memarg.memory,
-            },
+            extensions::memarg(memarg, None),
         ),),
         I32Load16U { memarg } => Ok((
             Oc::I32Load16U,
-            Immediate::MemoryArg {
-                align: memarg.align as u32,
-                offset: memarg.offset,
-                memory: memarg.memory,
-            },
+            extensions::memarg(memarg, None),
         ),),
         I64Load8S { memarg } => Ok((
             Oc::I64Load8S,
-            Immediate::MemoryArg {
-                align: memarg.align as u32,
-                offset: memarg.offset,
-                memory: memarg.memory,
-            },
+            extensions::memarg(memarg, None),
         ),),
         I64Load8U { memarg } => Ok((
             Oc::I64Load8U,
-            Immediate::MemoryArg {
-                align: memarg.align as u32,
-                offset: memarg.offset,
-                memory: memarg.memory,
-            },
+            extensions::memarg(memarg, None),
         ),),
         I64Load16S { memarg } => Ok((
             Oc::I64Load16S,
-            Immediate::MemoryArg {
-                align: memarg.align as u32,
-                offset: memarg.offset,
-                memory: memarg.memory,
-            },
+            extensions::memarg(memarg, None),
         ),),
         I64Load16U { memarg } => Ok((
             Oc::I64Load16U,
-            Immediate::MemoryArg {
-                align: memarg.align as u32,
-                offset: memarg.offset,
-                memory: memarg.memory,
-            },
+            extensions::memarg(memarg, None),
         ),),
         I64Load32S { memarg } => Ok((
             Oc::I64Load32S,
-            Immediate::MemoryArg {
-                align: memarg.align as u32,
-                offset: memarg.offset,
-                memory: memarg.memory,
-            },
+            extensions::memarg(memarg, None),
         ),),
         I64Load32U { memarg } => Ok((
             Oc::I64Load32U,
-            Immediate::MemoryArg {
-                align: memarg.align as u32,
-                offset: memarg.offset,
-                memory: memarg.memory,
-            },
+            extensions::memarg(memarg, None),
         ),),
 
         // ── MVP: Memory stores ──
         I32Store { memarg } => Ok((
             Oc::I32Store,
-            Immediate::MemoryArg {
-                align: memarg.align as u32,
-                offset: memarg.offset,
-                memory: memarg.memory,
-            },
+            extensions::memarg(memarg, None),
         ),),
         I64Store { memarg } => Ok((
             Oc::I64Store,
-            Immediate::MemoryArg {
-                align: memarg.align as u32,
-                offset: memarg.offset,
-                memory: memarg.memory,
-            },
+            extensions::memarg(memarg, None),
         ),),
         F32Store { memarg } => Ok((
             Oc::F32Store,
-            Immediate::MemoryArg {
-                align: memarg.align as u32,
-                offset: memarg.offset,
-                memory: memarg.memory,
-            },
+            extensions::memarg(memarg, None),
         ),),
         F64Store { memarg } => Ok((
             Oc::F64Store,
-            Immediate::MemoryArg {
-                align: memarg.align as u32,
-                offset: memarg.offset,
-                memory: memarg.memory,
-            },
+            extensions::memarg(memarg, None),
         ),),
         I32Store8 { memarg } => Ok((
             Oc::I32Store8,
-            Immediate::MemoryArg {
-                align: memarg.align as u32,
-                offset: memarg.offset,
-                memory: memarg.memory,
-            },
+            extensions::memarg(memarg, None),
         ),),
         I32Store16 { memarg } => Ok((
             Oc::I32Store16,
-            Immediate::MemoryArg {
-                align: memarg.align as u32,
-                offset: memarg.offset,
-                memory: memarg.memory,
-            },
+            extensions::memarg(memarg, None),
         ),),
         I64Store8 { memarg } => Ok((
             Oc::I64Store8,
-            Immediate::MemoryArg {
-                align: memarg.align as u32,
-                offset: memarg.offset,
-                memory: memarg.memory,
-            },
+            extensions::memarg(memarg, None),
         ),),
         I64Store16 { memarg } => Ok((
             Oc::I64Store16,
-            Immediate::MemoryArg {
-                align: memarg.align as u32,
-                offset: memarg.offset,
-                memory: memarg.memory,
-            },
+            extensions::memarg(memarg, None),
         ),),
         I64Store32 { memarg } => Ok((
             Oc::I64Store32,
-            Immediate::MemoryArg {
-                align: memarg.align as u32,
-                offset: memarg.offset,
-                memory: memarg.memory,
-            },
+            extensions::memarg(memarg, None),
         ),),
 
         // ── MVP: Memory misc ──
@@ -1110,75 +1021,35 @@ fn operator_to_opcode_immediate<'a>(op: Operator<'a>) -> Result<(Opcode, Immedia
         // ── SIMD lane loads/stores ──
         V128Load8Lane { memarg, lane } => Ok((
             Oc::V128Load8Lane,
-            Immediate::SimdMemoryLane {
-                align: memarg.align as u32,
-                offset: memarg.offset,
-                memory: memarg.memory,
-                lane,
-            },
+            extensions::memarg(memarg, Some(lane)),
         ),),
         V128Load16Lane { memarg, lane } => Ok((
             Oc::V128Load16Lane,
-            Immediate::SimdMemoryLane {
-                align: memarg.align as u32,
-                offset: memarg.offset,
-                memory: memarg.memory,
-                lane,
-            },
+            extensions::memarg(memarg, Some(lane)),
         ),),
         V128Load32Lane { memarg, lane } => Ok((
             Oc::V128Load32Lane,
-            Immediate::SimdMemoryLane {
-                align: memarg.align as u32,
-                offset: memarg.offset,
-                memory: memarg.memory,
-                lane,
-            },
+            extensions::memarg(memarg, Some(lane)),
         ),),
         V128Load64Lane { memarg, lane } => Ok((
             Oc::V128Load64Lane,
-            Immediate::SimdMemoryLane {
-                align: memarg.align as u32,
-                offset: memarg.offset,
-                memory: memarg.memory,
-                lane,
-            },
+            extensions::memarg(memarg, Some(lane)),
         ),),
         V128Store8Lane { memarg, lane } => Ok((
             Oc::V128Store8Lane,
-            Immediate::SimdMemoryLane {
-                align: memarg.align as u32,
-                offset: memarg.offset,
-                memory: memarg.memory,
-                lane,
-            },
+            extensions::memarg(memarg, Some(lane)),
         ),),
         V128Store16Lane { memarg, lane } => Ok((
             Oc::V128Store16Lane,
-            Immediate::SimdMemoryLane {
-                align: memarg.align as u32,
-                offset: memarg.offset,
-                memory: memarg.memory,
-                lane,
-            },
+            extensions::memarg(memarg, Some(lane)),
         ),),
         V128Store32Lane { memarg, lane } => Ok((
             Oc::V128Store32Lane,
-            Immediate::SimdMemoryLane {
-                align: memarg.align as u32,
-                offset: memarg.offset,
-                memory: memarg.memory,
-                lane,
-            },
+            extensions::memarg(memarg, Some(lane)),
         ),),
         V128Store64Lane { memarg, lane } => Ok((
             Oc::V128Store64Lane,
-            Immediate::SimdMemoryLane {
-                align: memarg.align as u32,
-                offset: memarg.offset,
-                memory: memarg.memory,
-                lane,
-            },
+            extensions::memarg(memarg, Some(lane)),
         ),),
 
         // ── SIMD division / pmin / pmax ──
@@ -1645,9 +1516,9 @@ mod tests {
         let bytes = b"\0asm\x01\0\0\0\x01\x0c\x01\x4e\x02\x50\x00\x5f\x00\x4f\x01\x00\x5f\x00";
         let module = parse_module(bytes).expect("GC subtypes should parse");
         assert!(!module.type_definitions[0].is_final);
-        assert_eq!(module.type_definitions[0].supertype, None);
+        assert!(module.type_definitions[0].supertypes.is_empty());
         assert!(module.type_definitions[1].is_final);
-        assert!(module.type_definitions[1].supertype.is_some());
+        assert!(!module.type_definitions[1].supertypes.is_empty());
         assert_ne!(module.types[0].id, module.types[1].id);
     }
 
@@ -1671,16 +1542,19 @@ mod tests {
                 align: 2,
                 max_align: 2,
                 offset: u64::MAX,
-                memory: 7,
+                target: wasmparser::MemArgTarget::Memory(7),
+                ordering: None,
             },
         })
         .unwrap();
         assert_eq!(
             immediate,
-            Immediate::MemoryArg {
+            Immediate::MemoryOperand {
                 align: 2,
                 offset: u64::MAX,
-                memory: 7
+                target: crate::ir::MemoryTarget::Memory(7),
+                ordering: None,
+                lane: None
             }
         );
         let (_, immediate) = operator_to_opcode_immediate(wasmparser::Operator::MemoryInit {

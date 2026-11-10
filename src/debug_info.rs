@@ -541,21 +541,22 @@ fn sections<'a>(bytes: &'a [u8], out: &mut DebugInfo) -> Result<Sections<'a>, St
     while !all.eof() {
         let id = all.read_u8().map_err(err)?;
         let size = all.read_var_u32().map_err(err)? as usize;
-        let start = all.original_position();
+        let start = crate::input_offset(all.original_position());
         let data = all.read_bytes(size).map_err(err)?;
         if id == 0 {
-            let mut r = BinaryReader::new(data, start);
+            let mut r = BinaryReader::new(data, start.try_into().unwrap());
             let n = r.read_var_u32().map_err(err)? as usize;
             let name = std::str::from_utf8(r.read_bytes(n).map_err(err)?).map_err(err)?;
-            let offset = r.original_position();
+            let offset = crate::input_offset(r.original_position());
             let payload = &data[offset - start..];
             if name == "go:buildid" {
                 result.go = true;
             }
             if name == "producers" {
-                if let Ok(fields) =
-                    wasmparser::ProducersSectionReader::new(BinaryReader::new(payload, offset))
-                {
+                if let Ok(fields) = wasmparser::ProducersSectionReader::new(BinaryReader::new(
+                    payload,
+                    offset.try_into().unwrap(),
+                )) {
                     for field in fields.into_iter().flatten() {
                         result.go |= field
                             .values
@@ -596,7 +597,7 @@ fn sections<'a>(bytes: &'a [u8], out: &mut DebugInfo) -> Result<Sections<'a>, St
                     debug_ordinals.insert(ordinal);
                 }
             } else if name.starts_with("reloc.") {
-                let mut r = BinaryReader::new(payload, offset);
+                let mut r = BinaryReader::new(payload, offset.try_into().unwrap());
                 match r.read_var_u32() {
                     Ok(target) => relocation_targets.push(target),
                     Err(_) => result.debug_relocations = true,
@@ -635,7 +636,7 @@ fn find_function(functions: &[FunctionLayout], index: u32) -> Option<&FunctionLa
 fn imported_functions(sections: &Sections<'_>) -> Result<u32, String> {
     let mut imports = 0u32;
     if let Some((data, start)) = sections.imports {
-        for import in ImportSectionReader::new(BinaryReader::new(data, start))
+        for import in ImportSectionReader::new(BinaryReader::new(data, start.try_into().unwrap()))
             .map_err(err)?
             .into_imports()
         {
@@ -658,7 +659,8 @@ fn layouts(
     let Some((code, start)) = sections.code else {
         return Ok(Vec::new());
     };
-    let reader = CodeSectionReader::new(BinaryReader::new(code, start)).map_err(err)?;
+    let reader =
+        CodeSectionReader::new(BinaryReader::new(code, start.try_into().unwrap())).map_err(err)?;
     if reader.count() as usize > MAX_RECORDS {
         return Err("function-layout interpretation budget exceeded".into());
     }
@@ -674,8 +676,8 @@ fn layouts(
     let result = crate::parallel::map(bodies.len(), |i| {
         let body = &bodies[i];
         let body_span = Span {
-            start: body.range().start,
-            end: body.range().end,
+            start: crate::input_range(body.range()).start,
+            end: crate::input_range(body.range()).end,
         };
         let index = imports.saturating_add(i as u32);
         let mut instructions = Vec::new();
@@ -709,14 +711,14 @@ fn layouts(
                 {
                     return Err("instruction-layout interpretation budget exceeded".to_owned());
                 }
-                let start = reader.original_position();
+                let start = crate::input_offset(reader.original_position());
                 if reader.read().is_err() {
                     complete = false;
                     break;
                 }
                 instructions.push(Span {
                     start,
-                    end: reader.original_position(),
+                    end: crate::input_offset(reader.original_position()),
                 });
             }
         } else {
@@ -824,10 +826,19 @@ fn read_impl(bytes: &[u8], parsed: Option<&[FunctionIr]>, include_names: bool) -
             let names = crate::audit::function_names(bytes);
             let mut offsets = BTreeMap::new();
             if let Some(&(data, offset)) = sections.custom.get("name") {
-                for part in wasmparser::NameSectionReader::new(BinaryReader::new(data, offset)) {
-                    if let Ok(wasmparser::Name::Function(entries)) = part {
-                        for (offset, entry) in entries.into_iter_with_offsets().flatten() {
-                            offsets.insert(entry.index, offset);
+                for part in wasmparser::NameSectionReader::new(BinaryReader::new(
+                    data,
+                    offset.try_into().unwrap(),
+                )) {
+                    if let Ok(wasmparser::Name::Function(mut entries)) = part {
+                        loop {
+                            let offset = crate::input_offset(entries.names.original_position());
+                            let Some(entry) = entries.next() else {
+                                break;
+                            };
+                            if let Ok(entry) = entry {
+                                offsets.insert(entry.index, offset);
+                            }
                         }
                     }
                 }
@@ -923,7 +934,8 @@ fn linking_symbols(
     base: usize,
     functions: &[FunctionLayout],
 ) -> Result<Vec<DebugSymbol>, String> {
-    let reader = LinkingSectionReader::new(BinaryReader::new(data, offset)).map_err(err)?;
+    let reader = LinkingSectionReader::new(BinaryReader::new(data, offset.try_into().unwrap()))
+        .map_err(err)?;
     let mut out = Vec::new();
     let mut seen = false;
     for subsection in reader {
@@ -932,7 +944,10 @@ fn linking_symbols(
                 return Err("repeated linking symbol table".into());
             }
             seen = true;
-            for entry in table.into_iter_with_offsets() {
+            for entry in table
+                .into_iter_with_offsets()
+                .map(|entry| entry.map(|(offset, value)| (crate::input_offset(offset), value)))
+            {
                 let (metadata_offset, symbol) = entry.map_err(err)?;
                 let defined = matches!(symbol, SymbolInfo::Func { flags, .. } if !flags.contains(wasmparser::SymbolFlags::UNDEFINED));
                 if out.len() >= MAX_RECORDS {

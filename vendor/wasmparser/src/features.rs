@@ -105,6 +105,34 @@ macro_rules! define_wasm_features {
             }
         }
         pub(crate) use foreach_wasm_feature;
+
+        #[allow(dead_code)]
+        pub(crate) mod require_feature {
+            use crate::Error;
+            use super::WasmFeatures;
+
+            $(
+                #[inline]
+                #[doc = "Returns an error if [`WasmFeatures::"]
+                #[doc = stringify!($const)]
+                #[doc = "`] is not enabled in `features`."]
+                pub fn $field(
+                    features: WasmFeatures,
+                    msg: impl core::fmt::Display,
+                    offset: u64,
+                ) -> Result<(), Error> {
+                    if features.$field() {
+                        Ok(())
+                    } else {
+                        #[cfg(feature = "features")]
+                        let feature = WasmFeatures::$const;
+                        #[cfg(not(feature = "features"))]
+                        let feature = WasmFeatures::default();
+                        Err(Error::wasm_feature(feature, msg, offset))
+                    }
+                }
+            )*
+        }
     };
 }
 
@@ -237,7 +265,7 @@ define_wasm_features! {
         /// The WebAssembly [stack-switching proposal](https://github.com/WebAssembly/stack-switching).
         pub stack_switching: STACK_SWITCHING(1 << 25) = false;
         /// The WebAssembly [wide-arithmetic proposal](https://github.com/WebAssembly/wide-arithmetic).
-        pub wide_arithmetic: WIDE_ARITHMETIC(1 << 26) = false;
+        pub wide_arithmetic: WIDE_ARITHMETIC(1 << 26) = true;
 
         /// Support for the `value` type in the component model proposal.
         ///
@@ -253,7 +281,7 @@ define_wasm_features! {
         ///
         /// Corresponds to the 🔀 character in
         /// <https://github.com/WebAssembly/component-model/blob/main/design/mvp/Explainer.md>.
-        pub cm_async: CM_ASYNC(1 << 27) = false;
+        pub cm_async: CM_ASYNC(1 << 27) = true;
         /// Gates the "stackful ABI" in the component model async proposal.
         ///
         /// Corresponds to the 🚟 character in
@@ -305,13 +333,13 @@ define_wasm_features! {
         pub custom_descriptors: CUSTOM_DESCRIPTORS(1 << 36) = false;
 
         // Compact import section proposal.
-        pub compact_imports: COMPACT_IMPORTS(1 << 37) = false;
+        pub compact_imports: COMPACT_IMPORTS(1 << 37) = true;
 
         /// Support for maps in the component model proposal.
         ///
         /// Corresponds to the 🗺️ character in
         /// <https://github.com/WebAssembly/component-model/blob/main/design/mvp/Explainer.md>.
-        pub cm_map: CM_MAP(1 << 38) = false;
+        pub cm_map: CM_MAP(1 << 38) = true;
 
         /// Support for 64-bit contexts in the component model proposal.
         ///
@@ -323,10 +351,41 @@ define_wasm_features! {
         ///
         /// Corresponds to the 🏷️ character in
         /// <https://github.com/WebAssembly/component-model/blob/main/design/mvp/Explainer.md>.
-        pub cm_implements: CM_IMPLEMENTS(1 << 40) = false;
+        pub cm_implements: CM_IMPLEMENTS(1 << 40) = true;
+
+        /// Support for the `(version-suffix "...")` directive in the component model
+        ///
+        /// Corresponds to the 🔗 character in
+        /// <https://github.com/WebAssembly/component-model/blob/main/design/mvp/Explainer.md>.
+        pub cm_canon_names: CM_CANON_NAMES(1 << 41) = false;
+
+        /// Support for the `stream.forward` and `future.forward` built-ins in
+        /// the component model async proposal.
+        ///
+        /// Corresponds to the ➡️ character in
+        /// <https://github.com/WebAssembly/component-model/blob/main/design/mvp/Explainer.md>.
+        pub cm_forward: CM_FORWARD(1 << 42) = false;
+
+        /// Support for `[get]` and `[set]` annotations on function names in the component model.
+        ///
+        /// Corresponds to the 📡 character in
+        /// <https://github.com/WebAssembly/component-model/blob/main/design/mvp/Explainer.md>.
+        pub cm_accessors: CM_ACCESSORS(1 << 43) = false;
+
+        /// The WebAssembly [acquire-release-atomics proposal][proposal] which
+        /// adds an `acqrel` memory ordering to atomic instructions and the
+        /// `pause` instruction.
+        ///
+        /// [proposal]: https://github.com/WebAssembly/acquire-release-atomics
+        pub acquire_release_atomics: ACQUIRE_RELEASE_ATOMICS(1 << 44) = false;
+
+        /// The WebAssembly [multibyte-array-access proposal][proposal].
+        ///
+        /// [proposal]: https://github.com/WebAssembly/multibyte-array-access
+        pub multibyte_array_access: MULTIBYTE_ARRAY_ACCESS(1 << 45) = false;
 
         /// WasmMTE in the uwvm2-ros VM instruction extension; not Core.
-        pub memtag_extension: MEMTAG_EXTENSION(1 << 41) = false;
+        pub memtag_extension: MEMTAG_EXTENSION(1 << 63) = false;
     }
 }
 

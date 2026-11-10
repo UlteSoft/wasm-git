@@ -3,13 +3,17 @@ use super::*;
 use wasmparser::{IndirectNameMap, Name, NameMap, NameSectionReader};
 
 fn direct(
-    map: NameMap<'_>,
+    mut map: NameMap<'_>,
     space: &'static str,
     scope: Option<u32>,
     out: &mut Vec<DebugName>,
 ) -> Result<(), String> {
-    for entry in map.into_iter_with_offsets() {
-        let (metadata_offset, entry) = entry.map_err(err)?;
+    loop {
+        let metadata_offset = crate::input_offset(map.names.original_position());
+        let Some(entry) = map.next() else {
+            break;
+        };
+        let entry = entry.map_err(err)?;
         if out.len() >= MAX_RECORDS {
             return Err("name record budget exceeded".into());
         }
@@ -38,14 +42,14 @@ pub(super) fn read(data: &[u8], offset: usize) -> Result<(Vec<DebugName>, Vec<St
     let mut out = Vec::new();
     let mut diagnostics = Vec::new();
     let mut seen = BTreeSet::new();
-    for part in NameSectionReader::new(BinaryReader::new(data, offset)) {
+    for part in NameSectionReader::new(BinaryReader::new(data, offset.try_into().unwrap())) {
         match part.map_err(err)? {
             Name::Module { name, name_range } => out.push(DebugName {
                 index_space: "module",
                 index: 0,
                 scope_index: None,
                 name: bounded_string(name)?,
-                metadata_offset: name_range.start,
+                metadata_offset: crate::input_offset(name_range.start),
             }),
             Name::Function(map) => direct(map, "function", None, &mut out)?,
             Name::Local(map) => indirect(map, "local", &mut out)?,
@@ -58,6 +62,8 @@ pub(super) fn read(data: &[u8], offset: usize) -> Result<(Vec<DebugName>, Vec<St
             Name::Data(map) => direct(map, "data", None, &mut out)?,
             Name::Field(map) => indirect(map, "field", &mut out)?,
             Name::Tag(map) => direct(map, "tag", None, &mut out)?,
+            Name::Parameter(map) => indirect(map, "parameter", &mut out)?,
+            Name::TagParameter(map) => indirect(map, "tag_parameter", &mut out)?,
             Name::Unknown { ty, .. } => {
                 if diagnostics.len() < 32 {
                     diagnostics.push(format!(

@@ -24,11 +24,12 @@
 
 #[cfg(feature = "simd")]
 use crate::VisitSimdOperator;
+use crate::features::require_feature;
 use crate::{
-    AbstractHeapType, BinaryReaderError, BlockType, BrTable, Catch, ContType, FieldType, FrameKind,
-    FrameStack, FuncType, GlobalType, Handle, HeapType, Ieee32, Ieee64, MemArg, ModuleArity,
-    RefType, Result, ResumeTable, StorageType, StructType, SubType, TableType, TryTable,
-    UnpackedIndex, ValType, VisitOperator, WasmFeatures, WasmModuleResources,
+    AbstractHeapType, BlockType, BrTable, Catch, ContType, Error, FieldType, FrameKind, FrameStack,
+    FuncType, GlobalType, Handle, HeapType, Ieee32, Ieee64, MemArg, MemArgTarget, ModuleArity,
+    PackedIndex, RefType, Result, ResumeTable, StorageType, StructType, SubType, TableType,
+    TryTable, UnpackedIndex, ValType, VisitOperator, WasmFeatures, WasmModuleResources,
     limits::MAX_WASM_FUNCTION_LOCALS,
 };
 use crate::{CompositeInnerType, Ordering, prelude::*};
@@ -46,6 +47,12 @@ mod transaction_disabled;
 use transaction_disabled as transaction;
 
 use transaction::{RollbackLogAllocations, Transaction};
+
+#[derive(Copy, Clone, Debug)]
+struct MemAddr<'a> {
+    index_ty: ValType,
+    memarg: &'a MemArg,
+}
 
 #[derive(Clone, PartialEq)]
 pub(crate) struct OperatorValidator {
@@ -67,12 +74,9 @@ pub(crate) struct OperatorValidator {
     /// Whether validation is happening in a shared context.
     shared: bool,
 
-    /// A trace of all operand push/pop operations performed while validating an
-    /// opcode. This is then compared to the arity that we report to double
-    /// check that arity report's correctness. `true` is "push" and `false` is
-    /// "pop".
+    /// A count of operands popped from or pushed to the operand stack.
     #[cfg(debug_assertions)]
-    pub(crate) pop_push_log: Vec<bool>,
+    pub(crate) pop_push_count: (u64, u64),
 
     /// When "try-op" validation of an operator is pending, this is a trace
     /// of discarded info that can restore the OperatorValidator to its
@@ -233,7 +237,7 @@ pub struct Frame {
 }
 
 struct OperatorValidatorTemp<'validator, 'resources, T> {
-    offset: usize,
+    offset: u64,
     inner: &'validator mut OperatorValidator,
     resources: &'resources T,
 }
@@ -373,7 +377,7 @@ impl OperatorValidator {
             control,
             shared: false,
             #[cfg(debug_assertions)]
-            pop_push_log: vec![],
+            pop_push_count: (0, 0),
             transaction: Transaction::new(rollback_log),
         }
     }
@@ -385,7 +389,7 @@ impl OperatorValidator {
     /// `ty`.
     pub fn new_func<T>(
         ty: u32,
-        offset: usize,
+        offset: u64,
         features: &WasmFeatures,
         resources: &T,
         allocs: OperatorValidatorAllocations,
@@ -450,7 +454,7 @@ impl OperatorValidator {
 
     pub fn define_locals(
         &mut self,
-        offset: usize,
+        offset: u64,
         count: u32,
         mut ty: ValType,
         resources: &impl WasmModuleResources,
@@ -460,10 +464,7 @@ impl OperatorValidator {
             return Ok(());
         }
         if !self.locals.define(count, ty) {
-            return Err(BinaryReaderError::new(
-                "too many locals: locals exceed maximum",
-                offset,
-            ));
+            return Err(Error::new("too many locals: locals exceed maximum", offset));
         }
         self.local_inits.define_locals(count, ty);
         Ok(())
@@ -515,7 +516,7 @@ impl OperatorValidator {
     pub fn with_resources<'a, 'validator, 'resources, T>(
         &'validator mut self,
         resources: &'resources T,
-        offset: usize,
+        offset: u64,
     ) -> impl VisitOperator<'a, Output = Result<()>> + ModuleArity + FrameStack + 'validator
     where
         T: WasmModuleResources,
@@ -534,7 +535,7 @@ impl OperatorValidator {
     pub fn with_resources_simd<'a, 'validator, 'resources, T>(
         &'validator mut self,
         resources: &'resources T,
-        offset: usize,
+        offset: u64,
     ) -> impl VisitSimdOperator<'a, Output = Result<()>> + ModuleArity + 'validator
     where
         T: WasmModuleResources,
@@ -569,14 +570,23 @@ impl OperatorValidator {
     // records a pop that mutated the operand stack
     fn record_pop(&mut self, ty: MaybeType) {
         self.transaction.map(|log| log.record_pop(ty));
-        self.record_any_pop();
+        self.record_any_pop(1);
     }
 
-    // records any pop, including a Bottom synthesized from an empty polymorphic operand stack
-    fn record_any_pop(&mut self) {
+    // records any pops, including a Bottom synthesized from an empty polymorphic operand stack.
+    // Hides the fact that we might push and then pop a temporary while validating an
+    // instruction, which shouldn't be visible from the outside.
+    fn record_any_pop(&mut self, _count: u32) {
         #[cfg(debug_assertions)]
         {
-            self.pop_push_log.push(false);
+            let mut count = _count as u64;
+            let (pop_count, push_count) = &mut self.pop_push_count;
+            if *push_count > 0 {
+                let internal_pushes = u64::min(count, *push_count);
+                *push_count -= internal_pushes;
+                count -= internal_pushes;
+            }
+            *pop_count += count;
         }
     }
 
@@ -584,7 +594,7 @@ impl OperatorValidator {
         self.transaction.map(|log| log.record_push());
         #[cfg(debug_assertions)]
         {
-            self.pop_push_log.push(true);
+            self.pop_push_count.1 += 1;
         }
     }
 
@@ -758,8 +768,8 @@ where
                 })?;
                 self.resources.is_subtype(rt.into(), expected.into())
             }
-            MaybeType::Bottom => true,
-            _ => false,
+            MaybeType::Bottom | MaybeType::UnknownRef(None) => true,
+            MaybeType::UnknownRef(Some(_)) | MaybeType::Known(_) => false,
         };
         Ok((ty, is_exact))
     }
@@ -839,7 +849,7 @@ where
         self.operands.extend(popped);
         let control = self.control.last().unwrap();
         let actual = if self.operands.len() == control.height && control.unreachable {
-            self.record_any_pop();
+            self.record_any_pop(1);
             MaybeType::Bottom
         } else {
             if self.operands.len() == control.height {
@@ -918,11 +928,7 @@ where
     }
 
     /// Match expected vs. actual operand.
-    fn match_operand(
-        &mut self,
-        actual: ValType,
-        expected: ValType,
-    ) -> Result<(), BinaryReaderError> {
+    fn match_operand(&mut self, actual: ValType, expected: ValType) -> Result<(), Error> {
         self.push_operand(actual)?;
         self.pop_operand(Some(expected))?;
         Ok(())
@@ -1132,26 +1138,78 @@ where
         }
     }
 
-    /// Validates a `memarg for alignment and such (also the memory it
-    /// references), and returns the type of index used to address the memory.
-    fn check_memarg(&self, memarg: MemArg) -> Result<ValType> {
-        let index_ty = self.check_memory_index(memarg.memory)?;
+    /// Validates the `memarg` of a load instruction.
+    ///
+    /// Returns the shape of how to address what this `memarg` targets.
+    fn check_load_memarg<'a>(&self, memarg: &'a MemArg) -> Result<MemAddr<'a>> {
+        self.check_memarg_inner(memarg, false)
+    }
+
+    /// Validates the `memarg` of a store instruction.
+    ///
+    /// Returns the shape of how to address what this `memarg` targets.
+    fn check_store_memarg<'a>(&self, memarg: &'a MemArg) -> Result<MemAddr<'a>> {
+        self.check_memarg_inner(memarg, true)
+    }
+
+    fn check_memarg_inner<'a>(&self, memarg: &'a MemArg, is_store: bool) -> Result<MemAddr<'a>> {
         if memarg.align > memarg.max_align {
             bail!(
                 self.offset,
                 "invalid memop alignment: alignment must not be larger than natural"
             );
         }
+        let index_ty = match memarg.target {
+            MemArgTarget::Memory(memory_index) => self.check_memory_index(memory_index)?,
+            MemArgTarget::Array(type_index) => {
+                require_feature::multibyte_array_access(
+                    self.features,
+                    "multibyte array access support is not enabled",
+                    self.offset,
+                )?;
+                let field = if is_store {
+                    self.mutable_array_type_at(type_index)?
+                } else {
+                    self.array_type_at(type_index)?
+                };
+                match field.element_type {
+                    StorageType::I8
+                    | StorageType::I16
+                    | StorageType::Val(ValType::I32)
+                    | StorageType::Val(ValType::I64)
+                    | StorageType::Val(ValType::F32)
+                    | StorageType::Val(ValType::F64)
+                    | StorageType::Val(ValType::V128) => {}
+                    StorageType::Val(ValType::Ref(ty)) => bail!(
+                        self.offset,
+                        "array access instructions require a numeric, vector, \
+                         or packed element type, found `{ty}`"
+                    ),
+                }
+                ValType::I32
+            }
+        };
         if index_ty == ValType::I32 && memarg.offset > u64::from(u32::MAX) {
             bail!(self.offset, "offset out of range: must be <= 2**32");
         }
-        Ok(index_ty)
+        Ok(MemAddr { index_ty, memarg })
+    }
+
+    /// Pops the address operands described by `addr`.
+    fn pop_address(&mut self, addr: MemAddr<'_>) -> Result<()> {
+        self.pop_operand(Some(addr.index_ty))?;
+        if let MemArgTarget::Array(type_index) = addr.memarg.target {
+            self.pop_concrete_ref(true, type_index)?;
+        }
+        Ok(())
     }
 
     fn check_floats_enabled(&self) -> Result<()> {
-        if !self.features.floats() {
-            bail!(self.offset, "floating-point instruction disallowed");
-        }
+        require_feature::floats(
+            self.features,
+            "floating-point instruction disallowed",
+            self.offset,
+        )?;
         Ok(())
     }
 
@@ -1162,7 +1220,13 @@ where
                 "atomic instructions must always specify maximum alignment"
             );
         }
-        self.check_memarg(memarg)
+        match memarg.target {
+            MemArgTarget::Memory(_) => {}
+            MemArgTarget::Array(_) => {
+                bail!(self.offset, "atomic instructions cannot operate on arrays");
+            }
+        }
+        Ok(self.check_load_memarg(&memarg)?.index_ty)
     }
 
     /// Validates a block type, primarily with various in-flight proposals.
@@ -1173,13 +1237,12 @@ where
                 .resources
                 .check_value_type(t, &self.features, self.offset),
             BlockType::FuncType(idx) => {
-                if !self.features.multi_value() {
-                    bail!(
-                        self.offset,
-                        "blocks, loops, and ifs may only produce a resulttype \
-                         when multi-value is not enabled",
-                    );
-                }
+                require_feature::multi_value(
+                    self.features,
+                    "blocks, loops, and ifs may only produce a resulttype \
+                     when multi-value is not enabled",
+                    self.offset,
+                )?;
                 self.func_type_at(*idx)?;
                 Ok(())
             }
@@ -1414,19 +1477,24 @@ where
 
     /// Common helper for `ref.test` and `ref.cast` downcasting/checking
     /// instructions. Returns the given `heap_type` as a `ValType`.
-    fn check_downcast(&mut self, nullable: bool, mut heap_type: HeapType) -> Result<RefType> {
-        self.resources
-            .check_heap_type(&mut heap_type, self.offset)?;
-
-        let sub_ty = RefType::new(nullable, heap_type).ok_or_else(|| {
-            BinaryReaderError::new("implementation limit: type index too large", self.offset)
-        })?;
+    fn check_downcast(&mut self, nullable: bool, heap_type: HeapType) -> Result<RefType> {
+        let mut sub_ty = RefType::new(nullable, heap_type)
+            .ok_or_else(|| Error::new("implementation limit: type index too large", self.offset))?;
+        self.check_ref_type(&mut sub_ty)?;
+        let heap_type = sub_ty.heap_type();
         let top = self.resources.top_type(&heap_type);
         self.check_cast_to_allowed(top)?;
         let sup_ty = RefType::new(true, top).expect("can't panic with non-concrete heap types");
 
         self.pop_ref(Some(sup_ty))?;
         Ok(sub_ty)
+    }
+
+    /// Validates that `ty` is valid in this module under the enabled
+    /// features, and canonicalizes it.
+    fn check_ref_type(&self, ty: &mut RefType) -> Result<()> {
+        self.features.check_ref_type(*ty, self.offset)?;
+        self.resources.check_ref_type(ty, self.offset)
     }
 
     fn check_cast_to_allowed(&self, ty: HeapType) -> Result<()> {
@@ -1466,6 +1534,8 @@ where
         from_ref_type: RefType,
         to_ref_type: RefType,
     ) -> Result<()> {
+        self.check_cast_to_allowed(to_ref_type.heap_type())?;
+
         if self.features.custom_descriptors() {
             // The constraint C |- rt_2 <: rt_1 on branching cast instructions
             // before the custom descriptors proposal is relaxed to the constraint
@@ -1482,8 +1552,6 @@ where
             return Ok(());
         }
 
-        self.check_cast_to_allowed(to_ref_type.heap_type())?;
-
         if !self
             .resources
             .is_subtype(to_ref_type.into(), from_ref_type.into())
@@ -1497,7 +1565,7 @@ where
     }
 
     /// Common helper to check descriptor for the specified type.
-    fn check_descriptor(&self, heap_type: HeapType) -> Result<u32> {
+    fn check_descriptor(&self, heap_type: HeapType) -> Result<PackedIndex> {
         Ok(match heap_type {
             HeapType::Exact(idx) | HeapType::Concrete(idx) => {
                 if let Some(descriptor_idx) = self
@@ -1505,10 +1573,7 @@ where
                     .composite_type
                     .descriptor_idx
                 {
-                    u32::try_from(crate::validator::types::TypeIdentifier::index(
-                        &descriptor_idx.as_core_type_id().unwrap(),
-                    ))
-                    .unwrap()
+                    descriptor_idx
                 } else {
                     bail!(self.offset, "cast target must have descriptor")
                 }
@@ -1519,15 +1584,9 @@ where
 
     fn check_maybe_exact_descriptor_ref(&mut self, heap_type: HeapType) -> Result<bool> {
         let descriptor_idx = self.check_descriptor(heap_type)?;
-        let (ty, _is_exact) = self.pop_concrete_or_exact_ref(true, descriptor_idx)?;
+        let ty = self.pop_operand(Some(RefType::concrete(true, descriptor_idx).into()))?;
         let is_exact = if let HeapType::Exact(_) = heap_type {
-            let mut descriptor_ty = HeapType::Exact(UnpackedIndex::Module(descriptor_idx));
-            self.resources
-                .check_heap_type(&mut descriptor_ty, self.offset)?;
-            let descriptor_ty = ValType::Ref(
-                RefType::new(true, descriptor_ty)
-                    .expect("existing heap types should be within our limits"),
-            );
+            let descriptor_ty = ValType::Ref(RefType::exact(true, descriptor_idx));
 
             match ty {
                 MaybeType::Known(actual) if !self.resources.is_subtype(actual, descriptor_ty) => {
@@ -1559,10 +1618,7 @@ where
             match heap_type {
                 HeapType::Concrete(index) | HeapType::Exact(index) => {
                     index.pack().ok_or_else(|| {
-                        BinaryReaderError::new(
-                            "implementation limit: type index too large",
-                            self.offset,
-                        )
+                        Error::new("implementation limit: type index too large", self.offset)
                     })?
                 }
                 _ => panic!(),
@@ -1676,16 +1732,13 @@ where
     }
 
     fn struct_field_at(&self, struct_type_index: u32, field_index: u32) -> Result<FieldType> {
-        let field_index = usize::try_from(field_index).map_err(|_| {
-            BinaryReaderError::new("unknown field: field index out of bounds", self.offset)
-        })?;
+        let field_index = usize::try_from(field_index)
+            .map_err(|_| Error::new("unknown field: field index out of bounds", self.offset))?;
         self.struct_type_at(struct_type_index)?
             .fields
             .get(field_index)
             .copied()
-            .ok_or_else(|| {
-                BinaryReaderError::new("unknown field: field index out of bounds", self.offset)
-            })
+            .ok_or_else(|| Error::new("unknown field: field index out of bounds", self.offset))
     }
 
     fn mutable_struct_field_at(
@@ -1924,10 +1977,21 @@ where
                 }
                 Handle::OnSwitch { tag } => {
                     let tag_ty = self.tag_at(tag)?;
-                    if !self.is_func_subtype(
+                    // The tag's type must be *equivalent* to (not merely a
+                    // subtype of) `[] -> [old results]`: the handler judgment
+                    // has no subsumption rule, so `(on tu switch) : t*` together
+                    // with the required `hdl : t2*` forces `t* = t2*`. Checking
+                    // subtyping in both directions gives equivalence, and also
+                    // pins the tag to zero parameters (via the param-length
+                    // check inside `is_func_subtype`).
+                    let tag_matches = self.is_func_subtype(
                         (tag_ty.params(), tag_ty.results()),
                         (&[], old_func_ty.results()),
-                    ) {
+                    ) && self.is_func_subtype(
+                        (&[], old_func_ty.results()),
+                        (tag_ty.params(), tag_ty.results()),
+                    );
+                    if !tag_matches {
                         bail!(
                             self.offset,
                             "type mismatch: switch tag does not match continuation"
@@ -1945,18 +2009,13 @@ where
         (p1, r1): (&[ValType], &[ValType]),
         (p2, r2): (&[ValType], &[ValType]),
     ) -> bool {
-        // Note that the order of params/results is intentionally swapped
-        // and matches the variance needed for this subtyping check.
-        p1.len() == p2.len()
-            && p1
-                .iter()
-                .zip(p2.iter())
-                .all(|(t1, t2)| self.resources.is_subtype(*t2, *t1))
-            && r1.len() == r2.len()
-            && r1
-                .iter()
-                .zip(r2.iter())
-                .all(|(r1, r2)| self.resources.is_subtype(*r1, *r2))
+        crate::func_signature_matches(
+            p1.iter().copied(),
+            r1.iter().copied(),
+            p2.iter().copied(),
+            r2.iter().copied(),
+            |a, b| self.resources.is_subtype(a, b),
+        )
     }
 
     fn check_binop128(&mut self) -> Result<()> {
@@ -1975,13 +2034,6 @@ where
         self.push_operand(ValType::I64)?;
         self.push_operand(ValType::I64)?;
         Ok(())
-    }
-
-    fn check_enabled(&self, flag: bool, desc: &str) -> Result<()> {
-        if flag {
-            return Ok(());
-        }
-        bail!(self.offset, "{desc} support is not enabled");
     }
 }
 
@@ -2028,7 +2080,11 @@ macro_rules! validate_proposal {
     (validate self $proposal:ident / MemoryCopy) => {};
 
     (validate $self:ident $proposal:ident / $op:ident) => {
-        $self.0.check_enabled($self.0.features.$proposal(), validate_proposal!(desc $proposal))?
+        require_feature::$proposal(
+            $self.0.features,
+            concat!(validate_proposal!(desc $proposal), " support is not enabled"),
+            $self.0.offset,
+        )?
     };
 
     (desc simd) => ("SIMD");
@@ -2048,6 +2104,7 @@ macro_rules! validate_proposal {
     (desc legacy_exceptions) => ("legacy exceptions");
     (desc stack_switching) => ("stack switching");
     (desc wide_arithmetic) => ("wide arithmetic");
+    (desc acquire_release_atomics) => ("acquire-release atomics");
     (desc custom_descriptors) => ("custom descriptors operations");
 }
 
@@ -2535,131 +2592,101 @@ where
     }
 
     fn visit_i32_load(&mut self, memarg: MemArg) -> Self::Output {
-        let ty = self.check_memarg(memarg)?;
-        self.pop_operand(Some(ty))?;
+        let ty = self.check_load_memarg(&memarg)?;
+        self.pop_address(ty)?;
         self.push_operand(ValType::I32)?;
         Ok(())
     }
     fn visit_i64_load(&mut self, memarg: MemArg) -> Self::Output {
-        let ty = self.check_memarg(memarg)?;
-        self.pop_operand(Some(ty))?;
+        let ty = self.check_load_memarg(&memarg)?;
+        self.pop_address(ty)?;
         self.push_operand(ValType::I64)?;
         Ok(())
     }
     fn visit_f32_load(&mut self, memarg: MemArg) -> Self::Output {
         self.check_floats_enabled()?;
-        let ty = self.check_memarg(memarg)?;
-        self.pop_operand(Some(ty))?;
+        let ty = self.check_load_memarg(&memarg)?;
+        self.pop_address(ty)?;
         self.push_operand(ValType::F32)?;
         Ok(())
     }
     fn visit_f64_load(&mut self, memarg: MemArg) -> Self::Output {
         self.check_floats_enabled()?;
-        let ty = self.check_memarg(memarg)?;
-        self.pop_operand(Some(ty))?;
+        let ty = self.check_load_memarg(&memarg)?;
+        self.pop_address(ty)?;
         self.push_operand(ValType::F64)?;
         Ok(())
     }
     fn visit_i32_load8_s(&mut self, memarg: MemArg) -> Self::Output {
-        let ty = self.check_memarg(memarg)?;
-        self.pop_operand(Some(ty))?;
-        self.push_operand(ValType::I32)?;
-        Ok(())
+        self.visit_i32_load(memarg)
     }
     fn visit_i32_load8_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.visit_i32_load8_s(memarg)
+        self.visit_i32_load(memarg)
     }
     fn visit_i32_load16_s(&mut self, memarg: MemArg) -> Self::Output {
-        let ty = self.check_memarg(memarg)?;
-        self.pop_operand(Some(ty))?;
-        self.push_operand(ValType::I32)?;
-        Ok(())
+        self.visit_i32_load(memarg)
     }
     fn visit_i32_load16_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.visit_i32_load16_s(memarg)
+        self.visit_i32_load(memarg)
     }
     fn visit_i64_load8_s(&mut self, memarg: MemArg) -> Self::Output {
-        let ty = self.check_memarg(memarg)?;
-        self.pop_operand(Some(ty))?;
-        self.push_operand(ValType::I64)?;
-        Ok(())
+        self.visit_i64_load(memarg)
     }
     fn visit_i64_load8_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.visit_i64_load8_s(memarg)
+        self.visit_i64_load(memarg)
     }
     fn visit_i64_load16_s(&mut self, memarg: MemArg) -> Self::Output {
-        let ty = self.check_memarg(memarg)?;
-        self.pop_operand(Some(ty))?;
-        self.push_operand(ValType::I64)?;
-        Ok(())
+        self.visit_i64_load(memarg)
     }
     fn visit_i64_load16_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.visit_i64_load16_s(memarg)
+        self.visit_i64_load(memarg)
     }
     fn visit_i64_load32_s(&mut self, memarg: MemArg) -> Self::Output {
-        let ty = self.check_memarg(memarg)?;
-        self.pop_operand(Some(ty))?;
-        self.push_operand(ValType::I64)?;
-        Ok(())
+        self.visit_i64_load(memarg)
     }
     fn visit_i64_load32_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.visit_i64_load32_s(memarg)
+        self.visit_i64_load(memarg)
     }
     fn visit_i32_store(&mut self, memarg: MemArg) -> Self::Output {
-        let ty = self.check_memarg(memarg)?;
+        let ty = self.check_store_memarg(&memarg)?;
         self.pop_operand(Some(ValType::I32))?;
-        self.pop_operand(Some(ty))?;
+        self.pop_address(ty)?;
         Ok(())
     }
     fn visit_i64_store(&mut self, memarg: MemArg) -> Self::Output {
-        let ty = self.check_memarg(memarg)?;
+        let ty = self.check_store_memarg(&memarg)?;
         self.pop_operand(Some(ValType::I64))?;
-        self.pop_operand(Some(ty))?;
+        self.pop_address(ty)?;
         Ok(())
     }
     fn visit_f32_store(&mut self, memarg: MemArg) -> Self::Output {
         self.check_floats_enabled()?;
-        let ty = self.check_memarg(memarg)?;
+        let ty = self.check_store_memarg(&memarg)?;
         self.pop_operand(Some(ValType::F32))?;
-        self.pop_operand(Some(ty))?;
+        self.pop_address(ty)?;
         Ok(())
     }
     fn visit_f64_store(&mut self, memarg: MemArg) -> Self::Output {
         self.check_floats_enabled()?;
-        let ty = self.check_memarg(memarg)?;
+        let ty = self.check_store_memarg(&memarg)?;
         self.pop_operand(Some(ValType::F64))?;
-        self.pop_operand(Some(ty))?;
+        self.pop_address(ty)?;
         Ok(())
     }
     fn visit_i32_store8(&mut self, memarg: MemArg) -> Self::Output {
-        let ty = self.check_memarg(memarg)?;
-        self.pop_operand(Some(ValType::I32))?;
-        self.pop_operand(Some(ty))?;
-        Ok(())
+        self.visit_i32_store(memarg)
     }
     fn visit_i32_store16(&mut self, memarg: MemArg) -> Self::Output {
-        let ty = self.check_memarg(memarg)?;
-        self.pop_operand(Some(ValType::I32))?;
-        self.pop_operand(Some(ty))?;
-        Ok(())
+        self.visit_i32_store(memarg)
     }
     fn visit_i64_store8(&mut self, memarg: MemArg) -> Self::Output {
-        let ty = self.check_memarg(memarg)?;
-        self.pop_operand(Some(ValType::I64))?;
-        self.pop_operand(Some(ty))?;
-        Ok(())
+        self.visit_i64_store(memarg)
     }
     fn visit_i64_store16(&mut self, memarg: MemArg) -> Self::Output {
-        let ty = self.check_memarg(memarg)?;
-        self.pop_operand(Some(ValType::I64))?;
-        self.pop_operand(Some(ty))?;
-        Ok(())
+        self.visit_i64_store(memarg)
     }
     fn visit_i64_store32(&mut self, memarg: MemArg) -> Self::Output {
-        let ty = self.check_memarg(memarg)?;
-        self.pop_operand(Some(ValType::I64))?;
-        self.pop_operand(Some(ty))?;
-        Ok(())
+        self.visit_i64_store(memarg)
     }
     fn visit_memory_size(&mut self, mem: u32) -> Self::Output {
         let index_ty = self.check_memory_index(mem)?;
@@ -3310,14 +3337,25 @@ where
         self.push_operand(ValType::I32)?;
         Ok(())
     }
-    fn visit_atomic_fence(&mut self) -> Self::Output {
+    fn visit_atomic_fence(&mut self, ordering: Ordering) -> Self::Output {
+        match ordering {
+            Ordering::SeqCst => {}
+            Ordering::AcqRel => {
+                require_feature::acquire_release_atomics(
+                    self.features,
+                    "acquire-release atomics are not enabled",
+                    self.offset,
+                )?;
+            }
+        }
+        Ok(())
+    }
+    fn visit_pause(&mut self) -> Self::Output {
         Ok(())
     }
     fn visit_ref_null(&mut self, mut heap_type: HeapType) -> Self::Output {
         if let Some(ty) = RefType::new(true, heap_type) {
-            self.features
-                .check_ref_type(ty)
-                .map_err(|e| BinaryReaderError::new(e, self.offset))?;
+            self.features.check_ref_type(ty, self.offset)?;
         }
         self.resources
             .check_heap_type(&mut heap_type, self.offset)?;
@@ -3388,7 +3426,7 @@ where
             HeapType::Concrete(index)
         };
         let ty = ValType::Ref(RefType::new(false, hty).ok_or_else(|| {
-            BinaryReaderError::new("implementation limit: type index too large", self.offset)
+            Error::new("implementation limit: type index too large", self.offset)
         })?);
         self.push_operand(ty)?;
         Ok(())
@@ -3427,7 +3465,11 @@ where
         Ok(())
     }
     fn visit_memory_copy(&mut self, dst: u32, src: u32) -> Self::Output {
-        self.check_enabled(self.features.bulk_memory_opt(), "bulk memory")?;
+        require_feature::bulk_memory_opt(
+            self.features,
+            "bulk memory support is not enabled",
+            self.offset,
+        )?;
         let dst_ty = self.check_memory_index(dst)?;
         let src_ty = self.check_memory_index(src)?;
 
@@ -3445,7 +3487,11 @@ where
         Ok(())
     }
     fn visit_memory_fill(&mut self, mem: u32) -> Self::Output {
-        self.check_enabled(self.features.bulk_memory_opt(), "bulk memory")?;
+        require_feature::bulk_memory_opt(
+            self.features,
+            "bulk memory support is not enabled",
+            self.offset,
+        )?;
         let ty = self.check_memory_index(mem)?;
         self.pop_operand(Some(ty))?;
         self.pop_operand(Some(ValType::I32))?;
@@ -4042,7 +4088,25 @@ where
     fn visit_array_new_fixed(&mut self, type_index: u32, n: u32) -> Self::Output {
         let array_ty = self.array_type_at(type_index)?;
         let elem_ty = array_ty.element_type.unpack();
-        for _ in 0..n {
+        for i in 0..n {
+            // Generally speaking this loop is `O(n)`, but for most modules that
+            // requires doing `O(n)` work to create the operand stack so that's
+            // not really a huge problem. This is a problem for unreachable
+            // code, however, where `array.new_fixed HUGE` is valid and
+            // executing this loop would be `O(HUGE)` for just a single
+            // instruction. To help counteract that this breaks out as soon as
+            // the control stack is empty and unreachable and instead just
+            // breaks out immediately since there's nothing else to remove.
+            let frame = self.control.last().unwrap();
+            if self.operands.len() == frame.height && frame.unreachable {
+                let _ = i;
+                assert_eq!(self.pop_operand(Some(elem_ty))?, MaybeType::Bottom);
+                #[cfg(debug_assertions)]
+                {
+                    self.record_any_pop(n - i - 1);
+                }
+                break;
+            }
             self.pop_operand(Some(elem_ty))?;
         }
         self.push_exact_ref_if_available(false, type_index)
@@ -4403,10 +4467,8 @@ where
         mut from_ref_type: RefType,
         mut to_ref_type: RefType,
     ) -> Self::Output {
-        self.resources
-            .check_ref_type(&mut from_ref_type, self.offset)?;
-        self.resources
-            .check_ref_type(&mut to_ref_type, self.offset)?;
+        self.check_ref_type(&mut from_ref_type)?;
+        self.check_ref_type(&mut to_ref_type)?;
 
         self.check_br_on_cast_type_hierarchy(from_ref_type, to_ref_type)?;
 
@@ -4439,10 +4501,8 @@ where
         mut from_ref_type: RefType,
         mut to_ref_type: RefType,
     ) -> Self::Output {
-        self.resources
-            .check_ref_type(&mut from_ref_type, self.offset)?;
-        self.resources
-            .check_ref_type(&mut to_ref_type, self.offset)?;
+        self.check_ref_type(&mut from_ref_type)?;
+        self.check_ref_type(&mut to_ref_type)?;
 
         self.check_br_on_cast_type_hierarchy(from_ref_type, to_ref_type)?;
 
@@ -4737,10 +4797,8 @@ where
     ) -> Self::Output {
         let described_ty = to_ref_type.heap_type();
 
-        self.resources
-            .check_ref_type(&mut from_ref_type, self.offset)?;
-        self.resources
-            .check_ref_type(&mut to_ref_type, self.offset)?;
+        self.check_ref_type(&mut from_ref_type)?;
+        self.check_ref_type(&mut to_ref_type)?;
 
         self.check_br_on_cast_type_hierarchy(from_ref_type, to_ref_type)?;
 
@@ -4777,10 +4835,8 @@ where
     ) -> Self::Output {
         let described_ty = to_ref_type.heap_type();
 
-        self.resources
-            .check_ref_type(&mut from_ref_type, self.offset)?;
-        self.resources
-            .check_ref_type(&mut to_ref_type, self.offset)?;
+        self.check_ref_type(&mut from_ref_type)?;
+        self.check_ref_type(&mut to_ref_type)?;
 
         self.check_br_on_cast_type_hierarchy(from_ref_type, to_ref_type)?;
 

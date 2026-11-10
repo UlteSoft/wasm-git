@@ -1,29 +1,29 @@
 {
   "format": 1,
   "name": "wasmparser",
-  "version": "0.249.0",
-  "canonical_crate_sha256": "30538cae9a794215f490b532df01c557e2e2bfac92569482554acd0992a102ea",
-  "upstream_vcs": "efeee7cafa5a3dcdddb5aab27bc0c05f279929ed",
+  "version": "0.263.0",
+  "canonical_crate_sha256": "4f5fa0a054ae153606df820eb0a84213e28cda41bbe04ba2628e71b6ba100fcb",
+  "upstream_vcs": "7a2fa422cdf9aeeaf488a2acac8bc94a078bfa32",
   "upstream_files": [
     {
       "path": ".cargo_vcs_info.json",
       "byte_len": 111,
-      "sha256": "fd1557bd2d4d62076cf10eef51fa3e49252931d7dee525d1cfc31b4e333fe54a"
+      "sha256": "36f0bca45ff4042b27732c94a4f36a35d81aa245400c5c01063a7a3bed56fa3f"
     },
     {
       "path": "Cargo.lock",
-      "byte_len": 17512,
-      "sha256": "f744c1337ecf01627d20934a7f9183d348db08a442d6bd8499348a6dc8d044a4"
+      "byte_len": 20111,
+      "sha256": "e84535322bee2718a2c5e33e3641abb9bef12e3b7d6812447b580f024ff86f06"
     },
     {
       "path": "Cargo.toml",
-      "byte_len": 3500,
-      "sha256": "2dfdc6d415ca8c07132c2903848099d66e7b227a8bc255044b2148b600864af3"
+      "byte_len": 3412,
+      "sha256": "b9dc461965d02383702a3c68f18764fc7d3fb3b85520b6416d95fad82f2d05e6"
     },
     {
       "path": "Cargo.toml.orig",
-      "byte_len": 3320,
-      "sha256": "09d79bbfeb0e648ec3718a5e7ceb0d34c29c1f4fbc48f762f396c27ee70363dc"
+      "byte_len": 3232,
+      "sha256": "ac1f942925bb5311869a088cd8fa2b7570f8fbbbee81e06df9dcbc31f87f41c1"
     },
     {
       "path": "LICENSE-APACHE",
@@ -62,13 +62,13 @@
     },
     {
       "path": "src/arity.rs",
-      "byte_len": 11311,
-      "sha256": "f2b23b274beb55c682496e455c45dab3e6149de49e64e1815ba3288317415d09"
+      "byte_len": 11667,
+      "sha256": "867cb6e7ca588c1f1387e5d0c63cb401bef894ce6ef0412d4ab36dbf60ddd74c"
     },
     {
       "path": "src/binary_reader.rs",
-      "byte_len": 88006,
-      "sha256": "14684674cc11c192d1114c1341a68638a519ae3ba29fbfc49583519e04a70a3a"
+      "byte_len": 92695,
+      "sha256": "8de573c18c66c36a1c8e88e8620d35fec9dd380bc3b2b7d96ace36556922494c"
     },
     {
       "path": "src/collections/hash.rs",
@@ -77,13 +77,13 @@
     },
     {
       "path": "src/collections/index_map/detail.rs",
-      "byte_len": 31833,
-      "sha256": "2e9c56ff3ebf0473704b8bf304d8cca4dd39fa6c5973e06b5493a45332bb656a"
+      "byte_len": 32176,
+      "sha256": "a085b1d016dd4e6071746f263fc5fc52876950d8fc7b3aecbbe165ecaf6c9b4a"
     },
     {
       "path": "src/collections/index_map/tests.rs",
-      "byte_len": 6333,
-      "sha256": "7761fda67a871bcef24579f0cbe4762e40fb8e7ca5147c67187da510c545c016"
+      "byte_len": 7706,
+      "sha256": "813d2b995529ac6a20fdde981b963a9559138882c0d27b601e29b0022a3bd908"
     },
     {
       "path": "src/collections/index_map.rs",
@@ -111,44 +111,54 @@
       "sha256": "b9680f5c2f0cb7c52a935ce80f1ec3f5c6239913c1b621556f289a708e0f373b"
     },
     {
+      "path": "src/error.rs",
+      "byte_len": 3672,
+      "sha256": "2b663d456756a2f58a28d1f2b0ab0822ed009695cc46ae74bff7d0c0ef1d5fa1"
+    },
+    {
       "path": "src/features.rs",
-      "byte_len": 21118,
-      "sha256": "64b2bd64e30059282d320fb94b957b3e4cc9087dd77de714504fad44024b686f"
+      "byte_len": 23690,
+      "sha256": "9876bf28a7580f0539f7f5b6d6666bad50494dc922ca1faab2be140b7507eee2"
     },
     {
       "path": "src/lib.rs",
-      "byte_len": 75697,
-      "sha256": "d218bec68bafcfc187af44e655ebf1f0e57506ccc07492c7c4251cc88bbe7378"
+      "byte_len": 76398,
+      "sha256": "27088d70b24192b0b0d58749a2d7596c8cb4dbc2f9b51d09d358fbf8697f8655"
     },
     {
       "path": "src/limits.rs",
-      "byte_len": 4054,
-      "sha256": "ac608007fb4e7c45c99159230230e0ab35739055980259920e3e4ad71b87ed61"
+      "byte_len": 4455,
+      "sha256": "9075ab37fbefa92586d9ff7471143f3c738bfed091aa2c0ac6941b7e79dd4605"
+    },
+    {
+      "path": "src/offsets.rs",
+      "byte_len": 2382,
+      "sha256": "1d844b7b7064baff0fc5981a422f7eefc1e2f350567673fa52b14af30f243086"
     },
     {
       "path": "src/parser.rs",
-      "byte_len": 77908,
-      "sha256": "8abb0c08909f78418eb8a1a48b96185cdab67817afc5793dd1da7f87e57404ff"
+      "byte_len": 81527,
+      "sha256": "d74977fd942d004fe0c9ced9423346f7eb74602039771fc85d957035d76f16b8"
     },
     {
       "path": "src/readers/component/aliases.rs",
-      "byte_len": 3969,
-      "sha256": "97398d9fdcb7b4227b8bb68a6677ebf09c62f6a43b9aa7591b37a2413848e759"
+      "byte_len": 4188,
+      "sha256": "f075f077c3b8ee33f4597de6247d778ed2c56318234d8c47b6ed05e549048cce"
     },
     {
       "path": "src/readers/component/canonicals.rs",
-      "byte_len": 19099,
-      "sha256": "7b31f979220fea9c3e81a56c9cf468e7276792a1dc9f58826bd838ebab3fa620"
+      "byte_len": 19631,
+      "sha256": "ae4b9337239e913c974dff3e8d1cbf20a0e42f3e20335ab30d383e5448bf8624"
     },
     {
       "path": "src/readers/component/exports.rs",
-      "byte_len": 3677,
-      "sha256": "ff6cac09a756be842dba7b3661a5579af063646e16dec4abe6d8cb310ff7ce10"
+      "byte_len": 3675,
+      "sha256": "77cd2b57a313c8c8ce0926be92f545309da5552bd45dda9f475c9d96e4c77603"
     },
     {
       "path": "src/readers/component/imports.rs",
-      "byte_len": 6879,
-      "sha256": "4a76fb2ffde548f16829219d228510063d7739b0e3bdad2ef180e2d2fbc960fa"
+      "byte_len": 9409,
+      "sha256": "7022d02572f44a2bfca04c9c5846af199dd2edd4c484e634d986d1a0d4908186"
     },
     {
       "path": "src/readers/component/instances.rs",
@@ -157,8 +167,8 @@
     },
     {
       "path": "src/readers/component/names.rs",
-      "byte_len": 3836,
-      "sha256": "1bfdffe04b15760ab573359c864ead0c45a0afe42811d16af535d9e19125daa6"
+      "byte_len": 3842,
+      "sha256": "e504d04c35566ff9bebbb2a567b76632eb2c848c8e0382b51f7e327e6f197af5"
     },
     {
       "path": "src/readers/component/start.rs",
@@ -167,8 +177,8 @@
     },
     {
       "path": "src/readers/component/types.rs",
-      "byte_len": 19357,
-      "sha256": "0396e49080670013691fe42012443c9f9162c86beac9b64f288cb0cf34e1b2cb"
+      "byte_len": 20945,
+      "sha256": "4a9357e0d387405b53a5234da2074462d59f3f1509531fa5d108c39bc498fd62"
     },
     {
       "path": "src/readers/component.rs",
@@ -182,8 +192,8 @@
     },
     {
       "path": "src/readers/core/code.rs",
-      "byte_len": 5498,
-      "sha256": "96b4f12b666576100bfa9807e087792ec96b4d315317475180c086f18fe86b4d"
+      "byte_len": 5494,
+      "sha256": "cdff052a32f80010abde6967325f89c6a69325c8b36831fffc9af711a1f2e2cb"
     },
     {
       "path": "src/readers/core/coredumps.rs",
@@ -192,23 +202,23 @@
     },
     {
       "path": "src/readers/core/custom.rs",
-      "byte_len": 5366,
-      "sha256": "f3c965fcd044576a2c0f3ee87c78e4f9f345ce87899a76d609e5a8709f5d7d9e"
+      "byte_len": 5685,
+      "sha256": "ed2aa56d193eeada3fb4a1e8537f2529982723ce0f33436eff3ea09b860ae6b4"
     },
     {
       "path": "src/readers/core/data.rs",
-      "byte_len": 3384,
-      "sha256": "da78898a19accca90f05ee762cf3388c0f8a40a3d60cb78acaa3f0eb71a0cb3c"
+      "byte_len": 3358,
+      "sha256": "7cb8faa913ecbc0af1d9eb6ea8f791c1380aba26e5d5f263e34caf3b183595bd"
     },
     {
       "path": "src/readers/core/dylink0.rs",
-      "byte_len": 3905,
-      "sha256": "c92d75e417eb444673408c00311da3f59427b6f966009f4830be8b518a8bda21"
+      "byte_len": 3986,
+      "sha256": "d9e354b19446377a3482edbdb195d5ca7bf0ff472feb37fcdb6432e7a4652e18"
     },
     {
       "path": "src/readers/core/elements.rs",
-      "byte_len": 5632,
-      "sha256": "16342061fef1f04b68b99db7767e11608fec2922f07831df60922d6a9500e2dc"
+      "byte_len": 5594,
+      "sha256": "8fb6ee921eabd28a7e358e85a5ae40694ffeb5477b7431969eb63e39583d4ddc"
     },
     {
       "path": "src/readers/core/exports.rs",
@@ -227,8 +237,8 @@
     },
     {
       "path": "src/readers/core/imports.rs",
-      "byte_len": 10339,
-      "sha256": "b8c9ad9a48211c4d1a076861a1f8b68905981100379f198e5152e79a294678eb"
+      "byte_len": 10375,
+      "sha256": "a6b46d276a4cbc53e5a205ef0cc924fc6c9933aed3515a2110129ab783b063b9"
     },
     {
       "path": "src/readers/core/init.rs",
@@ -237,8 +247,8 @@
     },
     {
       "path": "src/readers/core/linking.rs",
-      "byte_len": 15523,
-      "sha256": "02b1eb463b516fff4fa9f1ba06c623dd8e6b2ea3e632669415074d9ee4ac9968"
+      "byte_len": 15580,
+      "sha256": "49de963621e99fed00a31db382276df13b8de4df1b4c3625d76908f7c3a64a2d"
     },
     {
       "path": "src/readers/core/memories.rs",
@@ -247,13 +257,13 @@
     },
     {
       "path": "src/readers/core/names.rs",
-      "byte_len": 5637,
-      "sha256": "722dc47fcd523fb75987ae501fb893002978b207e31b3bc054901e66737540f6"
+      "byte_len": 9501,
+      "sha256": "302f1edc662f4606d8eb6c0267c0619f30edd7141f8a3a5bd5402c2c449b4acf"
     },
     {
       "path": "src/readers/core/operators.rs",
-      "byte_len": 35869,
-      "sha256": "43d57f761cdde3b02dd617cd5fee8cccf02740b20b4cd4000c89f66b6c17936f"
+      "byte_len": 37771,
+      "sha256": "14328443ba4414866f7576265b439f3897f5c0b0d94e3e4306e8fb92bc12c3b4"
     },
     {
       "path": "src/readers/core/producers.rs",
@@ -262,8 +272,8 @@
     },
     {
       "path": "src/readers/core/reloc.rs",
-      "byte_len": 12430,
-      "sha256": "0e22e51978374e9cdb5e690ac5bc79c49e92f1540d179549d5cfcf558a120f16"
+      "byte_len": 12616,
+      "sha256": "b7ad165377b88b3c77b1b3af8b6c7d90559c00ebb5923ce91f69d226935f38a7"
     },
     {
       "path": "src/readers/core/tables.rs",
@@ -277,13 +287,13 @@
     },
     {
       "path": "src/readers/core/types/matches.rs",
-      "byte_len": 10974,
-      "sha256": "0df58b38f94f3281b91d1edbb568b9b1d3484ea717fcbc8e353459447ded2d13"
+      "byte_len": 11319,
+      "sha256": "7265e5b1d89f2082f611f83c94aa4d13db2017d60b4e643b3ba3b063294d0378"
     },
     {
       "path": "src/readers/core/types.rs",
-      "byte_len": 78027,
-      "sha256": "b1fff7f8eafbe890b82214b8308d34ebd720910357ad0a049a309f141a654579"
+      "byte_len": 78400,
+      "sha256": "e129b18519803a6f77840d621a1939fb979b99a6b1782d685f80080f6ec1cf87"
     },
     {
       "path": "src/readers/core.rs",
@@ -292,48 +302,53 @@
     },
     {
       "path": "src/readers.rs",
-      "byte_len": 9590,
-      "sha256": "bf43b91c1ad97d9d67eaa8fc63381428dc300c97b21ce1ede89ab6b628625da7"
+      "byte_len": 9731,
+      "sha256": "0eb3caffaa13087358e3da04137a9f50790c301f41bc3a607ff86995d00ceee4"
     },
     {
       "path": "src/resources.rs",
-      "byte_len": 8629,
-      "sha256": "eaf203d9b99e167ead8fc8ed8861851bdc1288bc5fe6c435f1ee7cf69e8f9fa5"
+      "byte_len": 8420,
+      "sha256": "407300360383a49a826cecfea84d32f35c9705ea548e97178a8b34ed0737d328"
     },
     {
       "path": "src/validator/component.rs",
-      "byte_len": 185688,
-      "sha256": "c82e2dd7cbcc7e0cc299bea34763e306269bb6af78429055370a84d5d2a9a82d"
+      "byte_len": 198704,
+      "sha256": "bf51613f9496229555611df40cbedd62739e85f19384babe7b737988d75cbac5"
     },
     {
       "path": "src/validator/component_types.rs",
-      "byte_len": 146850,
-      "sha256": "7eae32506f504cd0eedef95f6d39fefe03050c0f70ada885170f0aa4f034a14b"
+      "byte_len": 166604,
+      "sha256": "6fec17099a5a62b076e6a713c355333a644cc304c480f9cfb35efb3df2af10be"
     },
     {
       "path": "src/validator/core/canonical.rs",
-      "byte_len": 22307,
-      "sha256": "1b67e8cd9dfdab40bab41506f320ab5084a2602665cf344c7a1d6c72a09b720c"
+      "byte_len": 23307,
+      "sha256": "d27b9cf87675bdc3cdb0eea89e247f14298934a1ab4722c67d1a3c0c3b2c2bf5"
     },
     {
       "path": "src/validator/core.rs",
-      "byte_len": 45531,
-      "sha256": "89ca13668ab45ee7c90274a0e4cc5e333f974641ef0e77f0be4080546a008f78"
+      "byte_len": 45419,
+      "sha256": "69884c300fd7b81ec14b29120e1bfb5fd9ee3286c31284f8dddaf7dbeafa74bf"
+    },
+    {
+      "path": "src/validator/custom.rs",
+      "byte_len": 18522,
+      "sha256": "db0c78bdb24e01f82bdc98ceb2a1d0a887413aa7d28b8a03e1f2dcebc2c9a2eb"
     },
     {
       "path": "src/validator/func.rs",
-      "byte_len": 22339,
-      "sha256": "3a4f29f72f61ce5602c7474f1b0f1896c66aa2a34a44f26a8d2276723c5ca8d3"
+      "byte_len": 21793,
+      "sha256": "84d705c587d057485d6b2c6770048940558a3ceffa20dfb52b81777684c245c0"
     },
     {
       "path": "src/validator/names.rs",
-      "byte_len": 30249,
-      "sha256": "8f75bef3ac6d1a3d025c8a74743b63820e67ae0f6779ca3e5254d1e0f6e9394a"
+      "byte_len": 43501,
+      "sha256": "a6070342c07a00f53166f715bc83bc867b0efa366f15641e61bcc55b70885c45"
     },
     {
       "path": "src/validator/operators/simd.rs",
-      "byte_len": 33303,
-      "sha256": "a338d3f82be1246a14cb96e5d99a99de0c728256703be36e4caf8142042693a2"
+      "byte_len": 32912,
+      "sha256": "1e23103e4dcb0207c14cbb8050cad7c8785f9bebd45b697b7ccf3224661d2c8e"
     },
     {
       "path": "src/validator/operators/transaction.rs",
@@ -347,49 +362,49 @@
     },
     {
       "path": "src/validator/operators.rs",
-      "byte_len": 182536,
-      "sha256": "3ea4ad31201772a266905b780b65def468c91b49721b8c819799f6be1d46cce6"
+      "byte_len": 185485,
+      "sha256": "d9b4cd67a702ed6f66d3ff92e8d9c6037d975eb71b25704b84c352e3b2065406"
     },
     {
       "path": "src/validator/types.rs",
-      "byte_len": 46205,
-      "sha256": "802c04e769e01dd028803a22d0c07e0bca91781036f8cb38c36701841db7f62d"
+      "byte_len": 47958,
+      "sha256": "cc69f80a5b688edaa62610a0f73f2c7ef0d8d4cafa6d7ee27338b8edac2dec8f"
     },
     {
       "path": "src/validator.rs",
-      "byte_len": 59520,
-      "sha256": "f932e06804e064f93d1546e5292fb40aba6ff0bd368397a2da2c3b9bd1a6b508"
+      "byte_len": 61665,
+      "sha256": "9aa5dbb4142546516050eb4c760da5effeab92470b0c13ae349cdf7a5df14c99"
     },
     {
       "path": "tests/big-module.rs",
-      "byte_len": 1580,
-      "sha256": "114d250505a2a3daf2e778bd4b2c14b7fc6b6be842055fa6b9389167fa430dca"
+      "byte_len": 8960,
+      "sha256": "01e9cec804cc83d43d34e030f9ab0a42a2d5f15c9b7261580821751a42e5264b"
     }
   ],
   "modified_files": [
     {
       "path": "src/binary_reader.rs",
-      "upstream_sha256": "14684674cc11c192d1114c1341a68638a519ae3ba29fbfc49583519e04a70a3a",
-      "patched_sha256": "7dab3a292b6aa0cac09b68b60c5207e4b13558c1b4019259394418868c6c0b20",
-      "change": "Preserves the existing ensure_has_bytes overflow fix. Adds the generic uwvm2-ros VM FF + ULEB32 opcode dispatcher with 19 registered WasmMTE grammars. Unknown IDs never imply operands; no legacy FC decoder."
+      "upstream_sha256": "8de573c18c66c36a1c8e88e8620d35fec9dd380bc3b2b7d96ace36556922494c",
+      "patched_sha256": "e8f05f25444558f14cd6b3e6ab86d043233f3cbb8a5202014e4c8b7e33434872",
+      "change": "Local uwvm packed-wire memtag grammar, independent bit 63, operator family or typed validation; upstream reader bounds retained."
     },
     {
       "path": "src/features.rs",
-      "upstream_sha256": "64b2bd64e30059282d320fb94b957b3e4cc9087dd77de714504fad44024b686f",
-      "patched_sha256": "ae958d5481f8f64d1018c2dd16028ed63688e2032415b4b141118a72a9e5dc3f",
-      "change": "Adds MEMTAG_EXTENSION bit 41, default false and excluded from standard Core presets."
+      "upstream_sha256": "9876bf28a7580f0539f7f5b6d6666bad50494dc922ca1faab2be140b7507eee2",
+      "patched_sha256": "daed9fa60aa072b240cc6d23ed7d5ed5a1482aa8aa5c020e703c5fa45eae7052",
+      "change": "Local uwvm packed-wire memtag grammar, independent bit 63, operator family or typed validation; upstream reader bounds retained."
     },
     {
       "path": "src/lib.rs",
-      "upstream_sha256": "d218bec68bafcfc187af44e655ebf1f0e57506ccc07492c7c4251cc88bbe7378",
-      "patched_sha256": "994940a9469dc282cf484a6886878e48a41689a71ac3889b4e703584c4260d52",
-      "change": "Adds the independent memtag_extension operator family with 19 memory-indexed WasmMTE signatures. Reserved add has no operator implementation."
+      "upstream_sha256": "27088d70b24192b0b0d58749a2d7596c8cb4dbc2f9b51d09d358fbf8697f8655",
+      "patched_sha256": "330a712fd801a79aa8f3757b4b6cca878cbe874f5fa746441024ad84558831d3",
+      "change": "Local uwvm packed-wire memtag grammar, independent bit 63, operator family or typed validation; upstream reader bounds retained."
     },
     {
       "path": "src/validator/operators.rs",
-      "upstream_sha256": "3ea4ad31201772a266905b780b65def468c91b49721b8c819799f6be1d46cce6",
-      "patched_sha256": "28a042b16cbee0f02e3cb3a4a1cae50b073b7a76708cfb4ab1826c179bc2d473",
-      "change": "Gates WasmMTE separately and checks all operand/result types against the selected existing memory; no execution semantics."
+      "upstream_sha256": "d9b4cd67a702ed6f66d3ff92e8d9c6037d975eb71b25704b84c352e3b2065406",
+      "patched_sha256": "5b418fb473a355a5a68bb6a16b11502d9b287639aa4d554e9b032e2eb5d8749e",
+      "change": "Local uwvm packed-wire memtag grammar, independent bit 63, operator family or typed validation; upstream reader bounds retained."
     }
   ]
 }

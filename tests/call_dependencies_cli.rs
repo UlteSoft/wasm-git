@@ -123,7 +123,7 @@ fn raw_functions(bytes: &[u8]) -> Vec<RawFunction> {
             Payload::TypeSection(reader) => {
                 for group in reader {
                     for (_, ty) in group.unwrap().into_types_and_offsets() {
-                        assert!(ty.is_final && ty.supertype_idx.is_none());
+                        assert!(ty.is_final && ty.supertype_idxs.is_empty());
                         assert!(!ty.composite_type.shared);
                         let CompositeInnerType::Func(function) = ty.composite_type.inner else {
                             panic!("fixed oracle requires ordinary function signatures")
@@ -178,7 +178,7 @@ fn raw_functions(bytes: &[u8]) -> Vec<RawFunction> {
                 let mut reader = body.get_operators_reader().unwrap();
                 let mut operators = Vec::new();
                 while !reader.eof() {
-                    let offset = reader.original_position() as u64;
+                    let offset = reader.original_position();
                     let operator = reader.read().unwrap();
                     let reference = match operator {
                         Operator::Call { function_index } => Some(("Call", function_index)),

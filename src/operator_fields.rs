@@ -15,14 +15,14 @@ impl Fields<'_> {
         name: &str,
         read: impl FnOnce(&mut BinaryReader<'_>) -> wasmparser::Result<T>,
     ) -> wasmparser::Result<T> {
-        let start = self.reader.original_position();
+        let start = crate::input_offset(self.reader.original_position());
         let value = read(&mut self.reader)?;
         self.output.push(
             Region::new(
                 format!("{}/{}", self.path, name),
                 Span {
                     start,
-                    end: self.reader.original_position(),
+                    end: crate::input_offset(self.reader.original_position()),
                 },
                 format!("{name}={value:?}"),
             )
@@ -75,13 +75,13 @@ pub(crate) fn declaration(
     kind: u8,
 ) -> std::result::Result<Vec<Region>, String> {
     source
-        .read_bytes(span.start - source.original_position())
+        .read_bytes(span.start - crate::input_offset(source.original_position()))
         .map_err(|e| e.to_string())?;
     let bytes = source
         .read_bytes(span.end - span.start)
         .map_err(|e| e.to_string())?;
     let mut f = Fields {
-        reader: BinaryReader::new(bytes, span.start),
+        reader: BinaryReader::new(bytes, span.start.try_into().unwrap()),
         path: path.into(),
         feature: "core_types",
         output: Vec::new(),
@@ -145,13 +145,30 @@ impl Operand for MemArg {
         if flags & 0x40 != 0 {
             f.read(&format!("{name}/memory_index"), |r| r.read_var_u32())?;
         }
+        if flags & 0x20 != 0 {
+            let old = f.feature;
+            f.feature = "multibyte_array_access";
+            f.read(&format!("{name}/array_type_index"), |r| r.read_var_u32())?;
+            f.feature = old;
+        }
+        if flags & 0x10 != 0 {
+            let old = f.feature;
+            f.feature = "acquire_release_atomics";
+            f.read(&format!("{name}/ordering"), |r| r.read_u8())?;
+            f.feature = old;
+        }
         f.read(&format!("{name}/offset"), |r| r.read_var_u64())?;
         Ok(())
     }
 }
 impl Operand for Ordering {
     fn fields(&self, f: &mut Fields<'_>, name: &str) -> wasmparser::Result<()> {
-        f.read(name, |r| r.read_var_u32())?;
+        let old = f.feature;
+        if *self == Ordering::AcqRel && f.feature == "threads" {
+            f.feature = "acquire_release_atomics";
+        }
+        f.read(name, |r| r.read_u8())?;
+        f.feature = old;
         Ok(())
     }
 }
@@ -232,7 +249,7 @@ pub(crate) fn decode(
         .read_bytes(span.end - span.start)
         .map_err(|e| e.to_string())?;
     let mut f = Fields {
-        reader: BinaryReader::new(bytes, span.start),
+        reader: BinaryReader::new(bytes, span.start.try_into().unwrap()),
         path: path.into(),
         feature,
         output: Vec::new(),
@@ -271,9 +288,6 @@ pub(crate) fn decode(
             if matches!(op, Operator::TypedSelect { .. }) {
                 f.read("type_count", |r| r.read_var_u32())?;
             }
-            if matches!(op, Operator::AtomicFence) {
-                f.read("reserved", |r| r.read_u8())?;
-            }
             macro_rules! fields {
                 ($( @$proposal:ident $op:ident $({ $($arg:ident: $argty:ty),* })? => $visit:ident ($($ann:tt)*))*) => {
                     match op {
@@ -306,7 +320,7 @@ pub(crate) fn subtype(
         .read_bytes(span.end - span.start)
         .map_err(|e| e.to_string())?;
     let mut f = Fields {
-        reader: BinaryReader::new(bytes, span.start),
+        reader: BinaryReader::new(bytes, span.start.try_into().unwrap()),
         path: path.into(),
         feature,
         output: Vec::new(),

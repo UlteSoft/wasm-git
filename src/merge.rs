@@ -139,8 +139,10 @@ fn context_section(id: u8) -> bool {
 }
 
 fn custom_key(bytes: &[u8], section: &AuditSection) -> Option<Vec<u8>> {
-    let mut reader =
-        BinaryReader::new(raw(bytes, section.payload_span), section.payload_span.start);
+    let mut reader = BinaryReader::new(
+        raw(bytes, section.payload_span),
+        section.payload_span.start.try_into().unwrap(),
+    );
     // The custom convention itself can remain opaque. Only the binary name
     // string establishes an existing section's position in the layout.
     let name = reader.read_unlimited_string().ok()?;
@@ -160,7 +162,7 @@ fn framed(module: &AuditModule, bytes: &[u8]) -> bool {
         }
         let mut reader = BinaryReader::new(
             &bytes[section.span.start + 1..section.header_span.end],
-            section.span.start + 1,
+            (section.span.start + 1).try_into().unwrap(),
         );
         if reader.read_var_u32().ok().map(|size| size as usize)
             != Some(section.payload_span.end - section.payload_span.start)
@@ -396,22 +398,24 @@ struct Code {
 }
 
 fn code_frames(bytes: &[u8], section: &AuditSection) -> Result<Code, String> {
-    let mut reader =
-        BinaryReader::new(raw(bytes, section.payload_span), section.payload_span.start);
-    let count_start = reader.original_position();
+    let mut reader = BinaryReader::new(
+        raw(bytes, section.payload_span),
+        section.payload_span.start.try_into().unwrap(),
+    );
+    let count_start = crate::input_offset(reader.original_position());
     let count = reader.read_var_u32().map_err(|error| error.to_string())?;
-    let count_span = span(count_start, reader.original_position());
+    let count_span = span(count_start, crate::input_offset(reader.original_position()));
     // Each body needs at least one size byte. Bound allocation by actual input.
     if count as usize > reader.bytes_remaining() {
         return Err("code count exceeds available body frames".into());
     }
     let mut bodies = Vec::with_capacity(count as usize);
     for _ in 0..count {
-        let start = reader.original_position();
+        let start = crate::input_offset(reader.original_position());
         let len = reader.read_var_u32().map_err(|error| error.to_string())? as usize;
-        let payload_start = reader.original_position();
+        let payload_start = crate::input_offset(reader.original_position());
         reader.read_bytes(len).map_err(|error| error.to_string())?;
-        let end = reader.original_position();
+        let end = crate::input_offset(reader.original_position());
         bodies.push(Body {
             span: span(start, end),
             size: span(start, payload_start),

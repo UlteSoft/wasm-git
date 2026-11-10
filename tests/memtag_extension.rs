@@ -106,7 +106,7 @@ fn padded_memory_index_selects_the_declared_memory_type() {
         assert!(
             matches!(reader.read().unwrap(), wasmparser::Operator::MemtagStatus { mem } if mem == memory)
         );
-        assert_eq!(reader.original_position(), bytes.len());
+        assert_eq!(reader.original_position(), bytes.len() as u64);
     }
 }
 
@@ -392,7 +392,7 @@ fn memory_immediate_is_u32_and_reserved_holes_stay_unknown() {
         let bytes = vec![0xff, opcode | 0x80, 0x80, 0x84, 0x88, 0, 0x81, 0];
         let mut reader = OperatorsReader::new(BinaryReader::new(&bytes, 0));
         assert!(reader.read().is_ok());
-        assert_eq!(reader.original_position(), bytes.len());
+        assert_eq!(reader.original_position(), bytes.len() as u64);
         for immediate in [
             &[][..],
             &[0x80][..],

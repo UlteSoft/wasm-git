@@ -402,7 +402,7 @@ pub(super) fn embedded(sections: &Sections<'_>, out: &mut DebugInfo) {
             if sections.duplicates.contains(kind) {
                 return Err("repeated debug references are ambiguous".to_owned());
             }
-            let mut reader = BinaryReader::new(bytes, offset);
+            let mut reader = BinaryReader::new(bytes, offset.try_into().unwrap());
             // Inline maps commonly exceed the parser's ordinary name-string
             // limit. The enclosing debug-byte budget already bounds this URI.
             let url = reader.read_unlimited_string().map_err(err)?;

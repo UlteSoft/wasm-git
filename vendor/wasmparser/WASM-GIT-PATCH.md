@@ -1,20 +1,19 @@
-# wasm-git local reader bounds patch
+# Local reader provenance
 
-This directory retains all 72 regular files from the wasmparser 0.249.0 crate.
-The canonical crate SHA-256 is `30538cae9a794215f490b532df01c557e2e2bfac92569482554acd0992a102ea`.
-The upstream VCS revision is `efeee7cafa5a3dcdddb5aab27bc0c05f279929ed`.
-The original licenses, Cargo metadata and VCS record are retained.
-File hashes and the sole code delta are recorded in `../wasmparser-upstream.json`.
+This is wasmparser 0.263.0 from wasm-tools revision
+`7a2fa422cdf9aeeaf488a2acac8bc94a078bfa32`, extended with the uwvm packed-wire
+memtag grammar, independent feature gate and typed operator validation. It is
+not an unmodified upstream release. The canonical crate SHA-256 is
+`4f5fa0a054ae153606df820eb0a84213e28cda41bbe04ba2628e71b6ba100fcb`.
 
-Only `BinaryReader::ensure_has_bytes` differs from upstream. Given the reader
-invariant `position <= buffer.len()`, `len <= buffer.len() - position` tests the
-same bound without adding an untrusted length. On EOF, `len - remaining` is the
-same mathematical needed hint without overflowing. Messages and offsets are
-unchanged. No byte is projected or replaced, and validation is still executed.
+The memtag patch originated in wasm-git at
+`42e2c5e48ec657853b8d435342e8fdb617101538` and was ported to this release.
+The private flag uses bit 63 to avoid upstream component-feature bits. The
+previous local bounds-overflow fix is now supplied by upstream's checked
+reader implementation; no validation rule is relaxed. All upstream license
+files and VCS metadata remain intact.
 
-This fixes 32-bit overflows reached by code/data length-prefixed reads, custom
-name re-reading during merge, and other readers using this common bound.
-It does not change Core grammar, selected feature flags or resource limits.
-The crate version remains 0.249.0; this is explicitly a local patch, not an
-unmodified upstream release. Root and fuzz manifests resolve registry users to
-this directory. Keeping the fuzz manifest consistent does not run fuzz.
+Memtag globals v2 metadata validation belongs to the enclosing project;
+this reader alone, like upstream wasmparser, treats custom payloads as opaque.
+
+Canonical and modified file hashes are in `../wasmparser-upstream.json`.

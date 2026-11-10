@@ -13,118 +13,21 @@
  * limitations under the License.
  */
 
+use crate::offsets::*;
 use crate::prelude::*;
 use crate::{limits::*, *};
-use core::fmt;
 use core::marker;
 use core::ops::Range;
 use core::str;
 
 pub(crate) const WASM_MAGIC_NUMBER: &[u8; 4] = b"\0asm";
 
-/// A binary reader for WebAssembly modules.
-#[derive(Debug, Clone)]
-pub struct BinaryReaderError {
-    // Wrap the actual error data in a `Box` so that the error is just one
-    // word. This means that we can continue returning small `Result`s in
-    // registers.
-    pub(crate) inner: Box<BinaryReaderErrorInner>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct BinaryReaderErrorInner {
-    pub(crate) message: String,
-    pub(crate) kind: BinaryReaderErrorKind,
-    pub(crate) offset: usize,
-    pub(crate) needed_hint: Option<usize>,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum BinaryReaderErrorKind {
-    Custom,
-    Invalid,
-}
-
-/// The result for `BinaryReader` operations.
-pub type Result<T, E = BinaryReaderError> = core::result::Result<T, E>;
-
-impl core::error::Error for BinaryReaderError {}
-
-impl fmt::Display for BinaryReaderError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "{} (at offset 0x{:x})",
-            self.inner.message, self.inner.offset
-        )
-    }
-}
-
-impl BinaryReaderError {
-    #[cold]
-    pub(crate) fn _new(kind: BinaryReaderErrorKind, message: String, offset: usize) -> Self {
-        BinaryReaderError {
-            inner: Box::new(BinaryReaderErrorInner {
-                kind,
-                message,
-                offset,
-                needed_hint: None,
-            }),
-        }
-    }
-
-    #[cold]
-    pub(crate) fn new(message: impl Into<String>, offset: usize) -> Self {
-        Self::_new(BinaryReaderErrorKind::Custom, message.into(), offset)
-    }
-
-    #[cold]
-    pub(crate) fn invalid(msg: &'static str, offset: usize) -> Self {
-        Self::_new(BinaryReaderErrorKind::Invalid, msg.into(), offset)
-    }
-
-    #[cold]
-    pub(crate) fn fmt(args: fmt::Arguments<'_>, offset: usize) -> Self {
-        BinaryReaderError::new(args.to_string(), offset)
-    }
-
-    #[cold]
-    pub(crate) fn eof(offset: usize, needed_hint: usize) -> Self {
-        let mut err = BinaryReaderError::new("unexpected end-of-file", offset);
-        err.inner.needed_hint = Some(needed_hint);
-        err
-    }
-
-    pub(crate) fn kind(&mut self) -> BinaryReaderErrorKind {
-        self.inner.kind
-    }
-
-    /// Get this error's message.
-    pub fn message(&self) -> &str {
-        &self.inner.message
-    }
-
-    /// Get the offset within the Wasm binary where the error occurred.
-    pub fn offset(&self) -> usize {
-        self.inner.offset
-    }
-
-    #[cfg(all(feature = "validate", feature = "component-model"))]
-    pub(crate) fn add_context(&mut self, context: String) {
-        self.inner.message = format!("{context}\n{}", self.inner.message);
-    }
-
-    pub(crate) fn set_message(&mut self, message: &str) {
-        self.inner.message = message.to_string();
-    }
-}
-
 /// A binary reader of the WebAssembly structures and types.
 #[derive(Clone, Debug, Hash)]
 pub struct BinaryReader<'a> {
     buffer: &'a [u8],
     position: usize,
-    original_offset: usize,
+    original_offset: u64,
 
     // When the `features` feature is disabled then the `WasmFeatures` type
     // still exists but this field is still omitted. When `features` is
@@ -152,7 +55,17 @@ impl<'a> BinaryReader<'a> {
     /// The returned binary reader will have all features known to this crate
     /// enabled. To reject binaries that aren't valid unless a certain feature
     /// is enabled use the [`BinaryReader::new_features`] constructor instead.
-    pub fn new(data: &[u8], original_offset: usize) -> BinaryReader<'_> {
+    ///
+    /// # Panics
+    ///
+    /// If the data slice is too large, such that `original_offset + data.len()`
+    /// would overflow in `u64` arithmetic, this panics.
+    /// Use [`Self::max_data_len`] if you need to check the length limit.
+    pub fn new(data: &[u8], original_offset: u64) -> BinaryReader<'_> {
+        let max_len = Self::max_data_len(original_offset);
+        if max_len < data.len() {
+            panic_too_many_bytes(original_offset, data.len(), max_len);
+        }
         BinaryReader {
             buffer: data,
             position: 0,
@@ -192,18 +105,34 @@ impl<'a> BinaryReader<'a> {
     /// only affects locations where preexisting bytes are reinterpreted in
     /// different ways with future proposals, such as the `memarg` moving from a
     /// 32-bit offset to a 64-bit offset with the `memory64` proposal.
+    ///
+    /// # Panics
+    ///
+    /// If the data slice is too large, such that `original_offset + data.len()`
+    /// would overflow in `u64` arithmetic, this panics.
+    /// Use [`Self::max_data_len`] if you need to check the length limit.
     #[cfg(feature = "features")]
     pub fn new_features(
         data: &[u8],
-        original_offset: usize,
+        original_offset: u64,
         features: WasmFeatures,
     ) -> BinaryReader<'_> {
+        let max_len = max_data_len(original_offset, u64::MAX);
+        if max_len < data.len() {
+            panic_too_many_bytes(original_offset, data.len(), max_len);
+        }
         BinaryReader {
             buffer: data,
             position: 0,
             original_offset,
             features,
         }
+    }
+
+    /// Returns the maximum length of a slice of data that can be passed when
+    /// constructing a new binary reader without panicking.
+    pub fn max_data_len(original_offset: u64) -> usize {
+        max_data_len(original_offset, u64::MAX)
     }
 
     /// "Shrinks" this binary reader to retain only the buffer left-to-parse.
@@ -217,10 +146,12 @@ impl<'a> BinaryReader<'a> {
     /// Otherwise parsing values from either `self` or the return value should
     /// return the same thing.
     pub(crate) fn shrink(&self) -> BinaryReader<'a> {
+        let buffer = &self.buffer[self.position..];
+        let original_offset = self.original_position();
         BinaryReader {
-            buffer: &self.buffer[self.position..],
+            buffer,
             position: 0,
-            original_offset: self.original_offset + self.position,
+            original_offset,
             #[cfg(feature = "features")]
             features: self.features,
         }
@@ -228,8 +159,8 @@ impl<'a> BinaryReader<'a> {
 
     /// Gets the original position of the binary reader.
     #[inline]
-    pub fn original_position(&self) -> usize {
-        self.original_offset + self.position
+    pub fn original_position(&self) -> u64 {
+        self.original_offset + self.position as u64
     }
 
     /// Returns the currently active set of wasm features that this reader is
@@ -250,29 +181,39 @@ impl<'a> BinaryReader<'a> {
     }
 
     /// Returns a range from the starting offset to the end of the buffer.
-    pub fn range(&self) -> Range<usize> {
-        self.original_offset..self.original_offset + self.buffer.len()
+    pub fn range(&self) -> Range<u64> {
+        self.original_offset..(self.original_offset + self.max_position() as u64)
     }
 
     pub(crate) fn remaining_buffer(&self) -> &'a [u8] {
         &self.buffer[self.position..]
     }
 
+    /// Returns a range from the current position to the end of the buffer.
+    pub fn remaining_range(&self) -> Range<u64> {
+        self.original_position()..(self.original_offset + self.max_position() as u64)
+    }
+
+    fn max_position(&self) -> usize {
+        // constructor enforces:
+        // self.buffer.len() <= max_memory_offset(u64::MAX - self.original_offset, self.buffer.len())
+        self.buffer.len()
+    }
+
     fn ensure_has_byte(&self) -> Result<()> {
-        if self.position < self.buffer.len() {
+        if self.position < self.max_position() {
             Ok(())
         } else {
-            Err(BinaryReaderError::eof(self.original_position(), 1))
+            Err(self.eof_err(1))
         }
     }
 
-    pub(crate) fn ensure_has_bytes(&self, len: usize) -> Result<()> {
-        let remaining = self.buffer.len() - self.position;
-        if len <= remaining {
-            Ok(())
-        } else {
-            let hint = len - remaining;
-            Err(BinaryReaderError::eof(self.original_position(), hint))
+    /// Returns the offset past `len` bytes on success
+    pub(crate) fn ensure_has_bytes(&self, len: usize) -> Result<usize> {
+        let remaining = self.bytes_remaining();
+        match len <= remaining {
+            true => Ok(self.position + len),
+            false => Err(self.eof_err(len - remaining)),
         }
     }
 
@@ -289,15 +230,12 @@ impl<'a> BinaryReader<'a> {
     pub(crate) fn read_u7(&mut self) -> Result<u8> {
         let b = self.read_u8()?;
         if (b & 0x80) != 0 {
-            return Err(BinaryReaderError::new(
-                "invalid u7",
-                self.original_position() - 1,
-            ));
+            return Err(Error::new("invalid u7", self.original_position() - 1));
         }
         Ok(b)
     }
 
-    pub(crate) fn external_kind_from_byte(byte: u8, offset: usize) -> Result<ExternalKind> {
+    pub(crate) fn external_kind_from_byte(byte: u8, offset: u64) -> Result<ExternalKind> {
         match byte {
             0x00 => Ok(ExternalKind::Func),
             0x01 => Ok(ExternalKind::Table),
@@ -346,7 +284,7 @@ impl<'a> BinaryReader<'a> {
     /// Returns whether the `BinaryReader` has reached the end of the file.
     #[inline]
     pub fn eof(&self) -> bool {
-        self.position >= self.buffer.len()
+        self.position >= self.max_position()
     }
 
     /// Returns the `BinaryReader`'s current position.
@@ -358,7 +296,7 @@ impl<'a> BinaryReader<'a> {
     /// Returns the number of bytes remaining in the `BinaryReader`.
     #[inline]
     pub fn bytes_remaining(&self) -> usize {
-        self.buffer.len() - self.position
+        self.max_position() - self.position
     }
 
     /// Advances the `BinaryReader` `size` bytes, and returns a slice from the
@@ -367,10 +305,10 @@ impl<'a> BinaryReader<'a> {
     /// # Errors
     /// If `size` exceeds the remaining length in `BinaryReader`.
     pub fn read_bytes(&mut self, size: usize) -> Result<&'a [u8]> {
-        self.ensure_has_bytes(size)?;
         let start = self.position;
-        self.position += size;
-        Ok(&self.buffer[start..self.position])
+        let end = self.ensure_has_bytes(size)?;
+        self.position = end;
+        Ok(&self.buffer[start..end])
     }
 
     /// Reads a length-prefixed list of bytes from this reader and returns a
@@ -387,13 +325,8 @@ impl<'a> BinaryReader<'a> {
     /// # Errors
     /// If `BinaryReader` has less than four bytes remaining.
     pub fn read_u32(&mut self) -> Result<u32> {
-        self.ensure_has_bytes(4)?;
-        let word = u32::from_le_bytes(
-            self.buffer[self.position..self.position + 4]
-                .try_into()
-                .unwrap(),
-        );
-        self.position += 4;
+        let chunk = self.read_bytes(4)?;
+        let word = u32::from_le_bytes(chunk.try_into().unwrap());
         Ok(word)
     }
 
@@ -401,13 +334,8 @@ impl<'a> BinaryReader<'a> {
     /// # Errors
     /// If `BinaryReader` has less than eight bytes remaining.
     pub fn read_u64(&mut self) -> Result<u64> {
-        self.ensure_has_bytes(8)?;
-        let word = u64::from_le_bytes(
-            self.buffer[self.position..self.position + 8]
-                .try_into()
-                .unwrap(),
-        );
-        self.position += 8;
+        let chunk = self.read_bytes(8)?;
+        let word = u64::from_le_bytes(chunk.try_into().unwrap());
         Ok(word)
     }
 
@@ -420,15 +348,15 @@ impl<'a> BinaryReader<'a> {
     pub fn read_u8(&mut self) -> Result<u8> {
         let b = match self.buffer.get(self.position) {
             Some(b) => *b,
-            None => return Err(self.eof_err()),
+            None => return Err(self.eof_err(1)),
         };
         self.position += 1;
         Ok(b)
     }
 
     #[cold]
-    fn eof_err(&self) -> BinaryReaderError {
-        BinaryReaderError::eof(self.original_position(), 1)
+    fn eof_err(&self, hint: usize) -> Error {
+        Error::eof(self.original_position(), hint)
     }
 
     /// Advances the `BinaryReader` up to four bytes to parse a variable
@@ -462,7 +390,7 @@ impl<'a> BinaryReader<'a> {
                     "invalid var_u32: integer too large"
                 };
                 // The continuation bit or unused bits are set.
-                return Err(BinaryReaderError::new(msg, self.original_position() - 1));
+                return Err(Error::new(msg, self.original_position() - 1));
             }
             shift += 7;
             if (byte & 0x80) == 0 {
@@ -503,7 +431,7 @@ impl<'a> BinaryReader<'a> {
                     "invalid var_u64: integer too large"
                 };
                 // The continuation bit or unused bits are set.
-                return Err(BinaryReaderError::new(msg, self.original_position() - 1));
+                return Err(Error::new(msg, self.original_position() - 1));
             }
             shift += 7;
             if (byte & 0x80) == 0 {
@@ -516,12 +444,13 @@ impl<'a> BinaryReader<'a> {
     /// Executes `f` to skip some data in this binary reader and then returns a
     /// reader which will read the skipped data.
     pub fn skip(&mut self, f: impl FnOnce(&mut Self) -> Result<()>) -> Result<Self> {
+        let start_offset = self.original_position();
         let start = self.position;
         f(self)?;
         let mut ret = self.clone();
         ret.buffer = &self.buffer[start..self.position];
+        ret.original_offset = start_offset;
         ret.position = 0;
-        ret.original_offset = self.original_offset + start;
         Ok(ret)
     }
 
@@ -534,7 +463,7 @@ impl<'a> BinaryReader<'a> {
     pub fn skip_string(&mut self) -> Result<()> {
         let len = self.read_var_u32()? as usize;
         if len > MAX_WASM_STRING_SIZE {
-            return Err(BinaryReaderError::new(
+            return Err(Error::new(
                 "string size out of bounds",
                 self.original_position() - 1,
             ));
@@ -575,7 +504,7 @@ impl<'a> BinaryReader<'a> {
                     } else {
                         "invalid var_i32: integer too large"
                     };
-                    return Err(BinaryReaderError::new(msg, self.original_position() - 1));
+                    return Err(Error::new(msg, self.original_position() - 1));
                 }
                 return Ok(result);
             }
@@ -609,12 +538,11 @@ impl<'a> BinaryReader<'a> {
                 let continuation_bit = (byte & 0x80) != 0;
                 let sign_and_unused_bit = (byte << 1) as i8 >> (33 - shift);
                 if continuation_bit || (sign_and_unused_bit != 0 && sign_and_unused_bit != -1) {
-                    return Err(BinaryReaderError::new(
+                    return Err(Error::new(
                         "invalid var_s33: integer representation too long",
                         self.original_position() - 1,
                     ));
                 }
-                return Ok(result);
             }
             shift += 7;
             if (byte & 0x80) == 0 {
@@ -645,7 +573,7 @@ impl<'a> BinaryReader<'a> {
                     } else {
                         "invalid var_i64: integer too large"
                     };
-                    return Err(BinaryReaderError::new(msg, self.original_position() - 1));
+                    return Err(Error::new(msg, self.original_position() - 1));
                 }
                 return Ok(result);
             }
@@ -679,9 +607,8 @@ impl<'a> BinaryReader<'a> {
     /// (internal) Reads a fixed-size WebAssembly string from the module.
     fn internal_read_string(&mut self, len: usize) -> Result<&'a str> {
         let bytes = self.read_bytes(len)?;
-        str::from_utf8(bytes).map_err(|_| {
-            BinaryReaderError::new("malformed UTF-8 encoding", self.original_position() - 1)
-        })
+        str::from_utf8(bytes)
+            .map_err(|_| Error::new("malformed UTF-8 encoding", self.original_position() - 1))
     }
 
     /// Reads a WebAssembly string from the module.
@@ -694,7 +621,7 @@ impl<'a> BinaryReader<'a> {
     pub fn read_string(&mut self) -> Result<&'a str> {
         let len = self.read_var_u32()? as usize;
         if len > MAX_WASM_STRING_SIZE {
-            return Err(BinaryReaderError::new(
+            return Err(Error::new(
                 "string size out of bounds",
                 self.original_position() - 1,
             ));
@@ -721,11 +648,7 @@ impl<'a> BinaryReader<'a> {
         ))
     }
 
-    pub(crate) fn invalid_leading_byte_error(
-        byte: u8,
-        desc: &str,
-        offset: usize,
-    ) -> BinaryReaderError {
+    pub(crate) fn invalid_leading_byte_error(byte: u8, desc: &str, offset: u64) -> Error {
         format_err!(offset, "invalid leading byte (0x{byte:x}) for {desc}")
     }
 
@@ -735,8 +658,9 @@ impl<'a> BinaryReader<'a> {
     }
 
     pub(crate) fn peek_bytes(&self, len: usize) -> Result<&[u8]> {
-        self.ensure_has_bytes(len)?;
-        Ok(&self.buffer[self.position..(self.position + len)])
+        let start = self.position;
+        let end = self.ensure_has_bytes(len)?;
+        Ok(&self.buffer[start..end])
     }
 
     pub(crate) fn read_block_type(&mut self) -> Result<BlockType> {
@@ -771,7 +695,7 @@ impl<'a> BinaryReader<'a> {
         match u32::try_from(idx) {
             Ok(idx) => Ok(BlockType::FuncType(idx)),
             Err(_) => {
-                return Err(BinaryReaderError::new(
+                return Err(Error::new(
                     "invalid function type",
                     self.original_position(),
                 ));
@@ -788,7 +712,7 @@ impl<'a> BinaryReader<'a> {
     pub(crate) fn read_header_version(&mut self) -> Result<u32> {
         let magic_number = self.read_bytes(4)?;
         if magic_number != WASM_MAGIC_NUMBER {
-            return Err(BinaryReaderError::new(
+            return Err(Error::new(
                 format!(
                     "magic header not detected: bad magic number - expected={WASM_MAGIC_NUMBER:#x?} actual={magic_number:#x?}"
                 ),
@@ -865,6 +789,13 @@ where
     }
 }
 
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum MemArgKind {
+    Plain,
+    Op,
+    Rmw,
+}
+
 impl<'a> BinaryReader<'a> {
     /// Function that must be called after the last opcode in an expression (instruction sequence)
     /// has been processed. Returns an error if there is extra data after the operators.
@@ -925,21 +856,21 @@ impl<'a> BinaryReader<'a> {
                 visitor.visit_else()
             }
             0x06 => {
-                if !self.legacy_exceptions() {
-                    bail!(
-                        pos,
-                        "legacy_exceptions feature required for try instruction"
-                    );
-                }
+                #[cfg(feature = "features")]
+                require_feature::legacy_exceptions(
+                    self.features,
+                    "legacy_exceptions feature required for try instruction",
+                    pos,
+                )?;
                 visitor.visit_try(self.read_block_type()?)
             }
             0x07 => {
-                if !self.legacy_exceptions() {
-                    bail!(
-                        pos,
-                        "legacy_exceptions feature required for catch instruction"
-                    );
-                }
+                #[cfg(feature = "features")]
+                require_feature::legacy_exceptions(
+                    self.features,
+                    "legacy_exceptions feature required for catch instruction",
+                    pos,
+                )?;
                 match self.expect_frame(visitor, FrameKind::LegacyCatch, "catch") {
                     Ok(()) => (),
                     Err(_) => self.expect_frame(visitor, FrameKind::LegacyTry, "catch")?,
@@ -969,12 +900,12 @@ impl<'a> BinaryReader<'a> {
                 visitor.visit_delegate(self.read_var_u32()?)
             }
             0x19 => {
-                if !self.legacy_exceptions() {
-                    bail!(
-                        pos,
-                        "legacy_exceptions feature required for catch_all instruction"
-                    );
-                }
+                #[cfg(feature = "features")]
+                require_feature::legacy_exceptions(
+                    self.features,
+                    "legacy_exceptions feature required for catch_all instruction",
+                    pos,
+                )?;
                 match self.expect_frame(visitor, FrameKind::LegacyCatch, "catch_all") {
                     Ok(()) => (),
                     Err(_) => self.expect_frame(visitor, FrameKind::LegacyTry, "catch_all")?,
@@ -1209,7 +1140,7 @@ impl<'a> BinaryReader<'a> {
 
     fn visit_0xfb_operator<T>(
         &mut self,
-        pos: usize,
+        pos: u64,
         visitor: &mut T,
     ) -> Result<<T as VisitOperator<'a>>::Output>
     where
@@ -1426,7 +1357,7 @@ impl<'a> BinaryReader<'a> {
 
     fn visit_0xfc_operator<T>(
         &mut self,
-        pos: usize,
+        pos: u64,
         visitor: &mut T,
     ) -> Result<<T as VisitOperator<'a>>::Output>
     where
@@ -1509,7 +1440,7 @@ impl<'a> BinaryReader<'a> {
     // version field, memory-index operand, or payload length.
     fn visit_uwvm2_ros_operator<T>(
         &mut self,
-        pos: usize,
+        pos: u64,
         visitor: &mut T,
     ) -> Result<<T as VisitOperator<'a>>::Output>
     where
@@ -1557,7 +1488,7 @@ impl<'a> BinaryReader<'a> {
     #[cfg(feature = "simd")]
     pub(super) fn visit_0xfd_operator<T>(
         &mut self,
-        pos: usize,
+        pos: u64,
         visitor: &mut T,
     ) -> Result<<T as VisitOperator<'a>>::Output>
     where
@@ -1873,7 +1804,7 @@ impl<'a> BinaryReader<'a> {
 
     fn visit_0xfe_operator<T>(
         &mut self,
-        pos: usize,
+        pos: u64,
         visitor: &mut T,
     ) -> Result<<T as VisitOperator<'a>>::Output>
     where
@@ -1885,74 +1816,80 @@ impl<'a> BinaryReader<'a> {
             0x01 => visitor.visit_memory_atomic_wait32(self.read_memarg(2)?),
             0x02 => visitor.visit_memory_atomic_wait64(self.read_memarg(3)?),
             0x03 => {
-                if self.read_u8()? != 0 {
-                    bail!(pos, "nonzero byte after `atomic.fence`");
-                }
-                visitor.visit_atomic_fence()
+                let ordering = if self.acquire_release_atomics() {
+                    self.read_ordering()?
+                } else {
+                    if self.read_u8()? != 0 {
+                        bail!(pos, "nonzero byte after `atomic.fence`");
+                    }
+                    Ordering::SeqCst
+                };
+                visitor.visit_atomic_fence(ordering)
             }
-            0x10 => visitor.visit_i32_atomic_load(self.read_memarg(2)?),
-            0x11 => visitor.visit_i64_atomic_load(self.read_memarg(3)?),
-            0x12 => visitor.visit_i32_atomic_load8_u(self.read_memarg(0)?),
-            0x13 => visitor.visit_i32_atomic_load16_u(self.read_memarg(1)?),
-            0x14 => visitor.visit_i64_atomic_load8_u(self.read_memarg(0)?),
-            0x15 => visitor.visit_i64_atomic_load16_u(self.read_memarg(1)?),
-            0x16 => visitor.visit_i64_atomic_load32_u(self.read_memarg(2)?),
-            0x17 => visitor.visit_i32_atomic_store(self.read_memarg(2)?),
-            0x18 => visitor.visit_i64_atomic_store(self.read_memarg(3)?),
-            0x19 => visitor.visit_i32_atomic_store8(self.read_memarg(0)?),
-            0x1a => visitor.visit_i32_atomic_store16(self.read_memarg(1)?),
-            0x1b => visitor.visit_i64_atomic_store8(self.read_memarg(0)?),
-            0x1c => visitor.visit_i64_atomic_store16(self.read_memarg(1)?),
-            0x1d => visitor.visit_i64_atomic_store32(self.read_memarg(2)?),
-            0x1e => visitor.visit_i32_atomic_rmw_add(self.read_memarg(2)?),
-            0x1f => visitor.visit_i64_atomic_rmw_add(self.read_memarg(3)?),
-            0x20 => visitor.visit_i32_atomic_rmw8_add_u(self.read_memarg(0)?),
-            0x21 => visitor.visit_i32_atomic_rmw16_add_u(self.read_memarg(1)?),
-            0x22 => visitor.visit_i64_atomic_rmw8_add_u(self.read_memarg(0)?),
-            0x23 => visitor.visit_i64_atomic_rmw16_add_u(self.read_memarg(1)?),
-            0x24 => visitor.visit_i64_atomic_rmw32_add_u(self.read_memarg(2)?),
-            0x25 => visitor.visit_i32_atomic_rmw_sub(self.read_memarg(2)?),
-            0x26 => visitor.visit_i64_atomic_rmw_sub(self.read_memarg(3)?),
-            0x27 => visitor.visit_i32_atomic_rmw8_sub_u(self.read_memarg(0)?),
-            0x28 => visitor.visit_i32_atomic_rmw16_sub_u(self.read_memarg(1)?),
-            0x29 => visitor.visit_i64_atomic_rmw8_sub_u(self.read_memarg(0)?),
-            0x2a => visitor.visit_i64_atomic_rmw16_sub_u(self.read_memarg(1)?),
-            0x2b => visitor.visit_i64_atomic_rmw32_sub_u(self.read_memarg(2)?),
-            0x2c => visitor.visit_i32_atomic_rmw_and(self.read_memarg(2)?),
-            0x2d => visitor.visit_i64_atomic_rmw_and(self.read_memarg(3)?),
-            0x2e => visitor.visit_i32_atomic_rmw8_and_u(self.read_memarg(0)?),
-            0x2f => visitor.visit_i32_atomic_rmw16_and_u(self.read_memarg(1)?),
-            0x30 => visitor.visit_i64_atomic_rmw8_and_u(self.read_memarg(0)?),
-            0x31 => visitor.visit_i64_atomic_rmw16_and_u(self.read_memarg(1)?),
-            0x32 => visitor.visit_i64_atomic_rmw32_and_u(self.read_memarg(2)?),
-            0x33 => visitor.visit_i32_atomic_rmw_or(self.read_memarg(2)?),
-            0x34 => visitor.visit_i64_atomic_rmw_or(self.read_memarg(3)?),
-            0x35 => visitor.visit_i32_atomic_rmw8_or_u(self.read_memarg(0)?),
-            0x36 => visitor.visit_i32_atomic_rmw16_or_u(self.read_memarg(1)?),
-            0x37 => visitor.visit_i64_atomic_rmw8_or_u(self.read_memarg(0)?),
-            0x38 => visitor.visit_i64_atomic_rmw16_or_u(self.read_memarg(1)?),
-            0x39 => visitor.visit_i64_atomic_rmw32_or_u(self.read_memarg(2)?),
-            0x3a => visitor.visit_i32_atomic_rmw_xor(self.read_memarg(2)?),
-            0x3b => visitor.visit_i64_atomic_rmw_xor(self.read_memarg(3)?),
-            0x3c => visitor.visit_i32_atomic_rmw8_xor_u(self.read_memarg(0)?),
-            0x3d => visitor.visit_i32_atomic_rmw16_xor_u(self.read_memarg(1)?),
-            0x3e => visitor.visit_i64_atomic_rmw8_xor_u(self.read_memarg(0)?),
-            0x3f => visitor.visit_i64_atomic_rmw16_xor_u(self.read_memarg(1)?),
-            0x40 => visitor.visit_i64_atomic_rmw32_xor_u(self.read_memarg(2)?),
-            0x41 => visitor.visit_i32_atomic_rmw_xchg(self.read_memarg(2)?),
-            0x42 => visitor.visit_i64_atomic_rmw_xchg(self.read_memarg(3)?),
-            0x43 => visitor.visit_i32_atomic_rmw8_xchg_u(self.read_memarg(0)?),
-            0x44 => visitor.visit_i32_atomic_rmw16_xchg_u(self.read_memarg(1)?),
-            0x45 => visitor.visit_i64_atomic_rmw8_xchg_u(self.read_memarg(0)?),
-            0x46 => visitor.visit_i64_atomic_rmw16_xchg_u(self.read_memarg(1)?),
-            0x47 => visitor.visit_i64_atomic_rmw32_xchg_u(self.read_memarg(2)?),
-            0x48 => visitor.visit_i32_atomic_rmw_cmpxchg(self.read_memarg(2)?),
-            0x49 => visitor.visit_i64_atomic_rmw_cmpxchg(self.read_memarg(3)?),
-            0x4a => visitor.visit_i32_atomic_rmw8_cmpxchg_u(self.read_memarg(0)?),
-            0x4b => visitor.visit_i32_atomic_rmw16_cmpxchg_u(self.read_memarg(1)?),
-            0x4c => visitor.visit_i64_atomic_rmw8_cmpxchg_u(self.read_memarg(0)?),
-            0x4d => visitor.visit_i64_atomic_rmw16_cmpxchg_u(self.read_memarg(1)?),
-            0x4e => visitor.visit_i64_atomic_rmw32_cmpxchg_u(self.read_memarg(2)?),
+            0x04 => visitor.visit_pause(),
+            0x10 => visitor.visit_i32_atomic_load(self.read_atomic_memarg(2)?),
+            0x11 => visitor.visit_i64_atomic_load(self.read_atomic_memarg(3)?),
+            0x12 => visitor.visit_i32_atomic_load8_u(self.read_atomic_memarg(0)?),
+            0x13 => visitor.visit_i32_atomic_load16_u(self.read_atomic_memarg(1)?),
+            0x14 => visitor.visit_i64_atomic_load8_u(self.read_atomic_memarg(0)?),
+            0x15 => visitor.visit_i64_atomic_load16_u(self.read_atomic_memarg(1)?),
+            0x16 => visitor.visit_i64_atomic_load32_u(self.read_atomic_memarg(2)?),
+            0x17 => visitor.visit_i32_atomic_store(self.read_atomic_memarg(2)?),
+            0x18 => visitor.visit_i64_atomic_store(self.read_atomic_memarg(3)?),
+            0x19 => visitor.visit_i32_atomic_store8(self.read_atomic_memarg(0)?),
+            0x1a => visitor.visit_i32_atomic_store16(self.read_atomic_memarg(1)?),
+            0x1b => visitor.visit_i64_atomic_store8(self.read_atomic_memarg(0)?),
+            0x1c => visitor.visit_i64_atomic_store16(self.read_atomic_memarg(1)?),
+            0x1d => visitor.visit_i64_atomic_store32(self.read_atomic_memarg(2)?),
+            0x1e => visitor.visit_i32_atomic_rmw_add(self.read_atomic_rmw_memarg(2)?),
+            0x1f => visitor.visit_i64_atomic_rmw_add(self.read_atomic_rmw_memarg(3)?),
+            0x20 => visitor.visit_i32_atomic_rmw8_add_u(self.read_atomic_rmw_memarg(0)?),
+            0x21 => visitor.visit_i32_atomic_rmw16_add_u(self.read_atomic_rmw_memarg(1)?),
+            0x22 => visitor.visit_i64_atomic_rmw8_add_u(self.read_atomic_rmw_memarg(0)?),
+            0x23 => visitor.visit_i64_atomic_rmw16_add_u(self.read_atomic_rmw_memarg(1)?),
+            0x24 => visitor.visit_i64_atomic_rmw32_add_u(self.read_atomic_rmw_memarg(2)?),
+            0x25 => visitor.visit_i32_atomic_rmw_sub(self.read_atomic_rmw_memarg(2)?),
+            0x26 => visitor.visit_i64_atomic_rmw_sub(self.read_atomic_rmw_memarg(3)?),
+            0x27 => visitor.visit_i32_atomic_rmw8_sub_u(self.read_atomic_rmw_memarg(0)?),
+            0x28 => visitor.visit_i32_atomic_rmw16_sub_u(self.read_atomic_rmw_memarg(1)?),
+            0x29 => visitor.visit_i64_atomic_rmw8_sub_u(self.read_atomic_rmw_memarg(0)?),
+            0x2a => visitor.visit_i64_atomic_rmw16_sub_u(self.read_atomic_rmw_memarg(1)?),
+            0x2b => visitor.visit_i64_atomic_rmw32_sub_u(self.read_atomic_rmw_memarg(2)?),
+            0x2c => visitor.visit_i32_atomic_rmw_and(self.read_atomic_rmw_memarg(2)?),
+            0x2d => visitor.visit_i64_atomic_rmw_and(self.read_atomic_rmw_memarg(3)?),
+            0x2e => visitor.visit_i32_atomic_rmw8_and_u(self.read_atomic_rmw_memarg(0)?),
+            0x2f => visitor.visit_i32_atomic_rmw16_and_u(self.read_atomic_rmw_memarg(1)?),
+            0x30 => visitor.visit_i64_atomic_rmw8_and_u(self.read_atomic_rmw_memarg(0)?),
+            0x31 => visitor.visit_i64_atomic_rmw16_and_u(self.read_atomic_rmw_memarg(1)?),
+            0x32 => visitor.visit_i64_atomic_rmw32_and_u(self.read_atomic_rmw_memarg(2)?),
+            0x33 => visitor.visit_i32_atomic_rmw_or(self.read_atomic_rmw_memarg(2)?),
+            0x34 => visitor.visit_i64_atomic_rmw_or(self.read_atomic_rmw_memarg(3)?),
+            0x35 => visitor.visit_i32_atomic_rmw8_or_u(self.read_atomic_rmw_memarg(0)?),
+            0x36 => visitor.visit_i32_atomic_rmw16_or_u(self.read_atomic_rmw_memarg(1)?),
+            0x37 => visitor.visit_i64_atomic_rmw8_or_u(self.read_atomic_rmw_memarg(0)?),
+            0x38 => visitor.visit_i64_atomic_rmw16_or_u(self.read_atomic_rmw_memarg(1)?),
+            0x39 => visitor.visit_i64_atomic_rmw32_or_u(self.read_atomic_rmw_memarg(2)?),
+            0x3a => visitor.visit_i32_atomic_rmw_xor(self.read_atomic_rmw_memarg(2)?),
+            0x3b => visitor.visit_i64_atomic_rmw_xor(self.read_atomic_rmw_memarg(3)?),
+            0x3c => visitor.visit_i32_atomic_rmw8_xor_u(self.read_atomic_rmw_memarg(0)?),
+            0x3d => visitor.visit_i32_atomic_rmw16_xor_u(self.read_atomic_rmw_memarg(1)?),
+            0x3e => visitor.visit_i64_atomic_rmw8_xor_u(self.read_atomic_rmw_memarg(0)?),
+            0x3f => visitor.visit_i64_atomic_rmw16_xor_u(self.read_atomic_rmw_memarg(1)?),
+            0x40 => visitor.visit_i64_atomic_rmw32_xor_u(self.read_atomic_rmw_memarg(2)?),
+            0x41 => visitor.visit_i32_atomic_rmw_xchg(self.read_atomic_rmw_memarg(2)?),
+            0x42 => visitor.visit_i64_atomic_rmw_xchg(self.read_atomic_rmw_memarg(3)?),
+            0x43 => visitor.visit_i32_atomic_rmw8_xchg_u(self.read_atomic_rmw_memarg(0)?),
+            0x44 => visitor.visit_i32_atomic_rmw16_xchg_u(self.read_atomic_rmw_memarg(1)?),
+            0x45 => visitor.visit_i64_atomic_rmw8_xchg_u(self.read_atomic_rmw_memarg(0)?),
+            0x46 => visitor.visit_i64_atomic_rmw16_xchg_u(self.read_atomic_rmw_memarg(1)?),
+            0x47 => visitor.visit_i64_atomic_rmw32_xchg_u(self.read_atomic_rmw_memarg(2)?),
+            0x48 => visitor.visit_i32_atomic_rmw_cmpxchg(self.read_atomic_rmw_memarg(2)?),
+            0x49 => visitor.visit_i64_atomic_rmw_cmpxchg(self.read_atomic_rmw_memarg(3)?),
+            0x4a => visitor.visit_i32_atomic_rmw8_cmpxchg_u(self.read_atomic_rmw_memarg(0)?),
+            0x4b => visitor.visit_i32_atomic_rmw16_cmpxchg_u(self.read_atomic_rmw_memarg(1)?),
+            0x4c => visitor.visit_i64_atomic_rmw8_cmpxchg_u(self.read_atomic_rmw_memarg(0)?),
+            0x4d => visitor.visit_i64_atomic_rmw16_cmpxchg_u(self.read_atomic_rmw_memarg(1)?),
+            0x4e => visitor.visit_i64_atomic_rmw32_cmpxchg_u(self.read_atomic_rmw_memarg(2)?),
 
             // Decode shared-everything-threads proposal.
             0x4f => visitor.visit_global_atomic_get(self.read_ordering()?, self.read_var_u32()?),
@@ -2061,23 +1998,102 @@ impl<'a> BinaryReader<'a> {
     }
 
     fn read_memarg(&mut self, max_align: u8) -> Result<MemArg> {
-        let flags_pos = self.original_position();
-        let mut flags = self.read_var_u32()?;
+        self.read_memarg_with_ordering(max_align, MemArgKind::Plain)
+    }
 
-        let memory = if self.multi_memory() && flags & (1 << 6) != 0 {
+    fn read_atomic_memarg(&mut self, max_align: u8) -> Result<MemArg> {
+        self.read_memarg_with_ordering(max_align, MemArgKind::Op)
+    }
+
+    fn read_atomic_rmw_memarg(&mut self, max_align: u8) -> Result<MemArg> {
+        self.read_memarg_with_ordering(max_align, MemArgKind::Rmw)
+    }
+
+    fn read_memarg_with_ordering(&mut self, max_align: u8, kind: MemArgKind) -> Result<MemArg> {
+        let flags_pos = self.original_position();
+
+        // The interpretation of the `flags_and_align` 32-bit leb read here is
+        // a bit messy as it's got some history to it. Originally this was just
+        // the log_2(alignment) for this memarg, but large values are rejected
+        // by validation. Later the multi-memory proposal came and took bit 6 as
+        // "there's a memory index to decode". Later the acquire-release-atomics
+        // proposal took bit 4 for a memory ordering immediate, and later the
+        // multibyte-array-access proposal took bit 5 for "there's a type index
+        // to decode".
+        //
+        // To add to complications wasmparser is trying to pass spec tests for
+        // all these currently in-flight proposals. Namely the official spec
+        // test suite only has multi-memory merged in, so bits 4 & 5 are
+        // considered validation errors if set.
+        //
+        // The goal of this is to read a 32-bit leb here, mask out the
+        // alignment, and then process any bits in the flags that are read.  Any
+        // flags remaining after processing are considered a parse error.  To
+        // pass spec tests this dynamically changes the mask used to get the
+        // alignment from `flags_and_align` depending on the proposals enabled.
+        // Once everything is default-enabled and merged to the spec upstream
+        // this should be cleaned up to just take the lower 4 bits for
+        // alignment.
+        let flags_and_align = self.read_var_u32()?;
+        let mut align_mask = 0b11_1111;
+        if self.acquire_release_atomics() {
+            align_mask &= !(1 << 4);
+        }
+        if self.multibyte_array_access() {
+            align_mask &= !(1 << 5);
+        }
+        let align = (flags_and_align & align_mask) as u8;
+        let mut flags = flags_and_align & !align_mask;
+
+        // Bit 6 of `flags` indicates a memory index is present (the
+        // multi-memory proposal.
+        //
+        // Bit 5 of `flags` indicates a type index is present, but
+        // multibyte-array-access isn't implemented here yet.
+        //
+        // Both flags can't be specified at the same time.
+        if flags & 0b110_0000 == 0b110_0000 {
+            bail!(flags_pos, "cannot specify both memory and array index");
+        }
+        let target = if self.multi_memory() && flags & (1 << 6) != 0 {
             flags ^= 1 << 6;
-            self.read_var_u32()?
+            MemArgTarget::Memory(self.read_var_u32()?)
+        } else if self.multibyte_array_access() && flags & (1 << 5) != 0 {
+            flags ^= 1 << 5;
+            MemArgTarget::Array(self.read_var_u32()?)
         } else {
-            0
+            MemArgTarget::Memory(0)
         };
-        let max_flag_bits = if self.multi_memory() { 6 } else { 5 };
-        if flags >= (1 << max_flag_bits) {
-            return Err(BinaryReaderError::new(
-                "malformed memop alignment: alignment too large",
+
+        // Bit 4 of `flags` indicates that a memory ordering immediate is
+        // present, encoded after any index.
+        let ordering = if !self.acquire_release_atomics() || flags & (1 << 4) == 0 {
+            None
+        } else if kind == MemArgKind::Plain {
+            bail!(
+                flags_pos,
+                "cannot specify atomic ordering on non-atomic instruction"
+            )
+        } else {
+            flags ^= 1 << 4;
+            let pos = self.original_position();
+            Some(match (kind, self.read_u8()?) {
+                (MemArgKind::Op, 0x00) => MemArgOrdering::Op(Ordering::SeqCst),
+                (MemArgKind::Op, 0x01) => MemArgOrdering::Op(Ordering::AcqRel),
+                (MemArgKind::Rmw, 0x00) => MemArgOrdering::Rmw(Ordering::SeqCst),
+                (MemArgKind::Rmw, 0x11) => MemArgOrdering::Rmw(Ordering::AcqRel),
+                (_, byte) => bail!(pos, "invalid atomic consistency ordering 0x{byte:x}"),
+            })
+        };
+
+        // Unprocessed flags at this point are an error.
+        if flags != 0 {
+            return Err(Error::new(
+                "malformed memop: reserved flags bits set",
                 flags_pos,
             ));
         }
-        let align = flags as u8;
+
         let offset = if self.memory64() {
             self.read_var_u64()?
         } else {
@@ -2087,17 +2103,18 @@ impl<'a> BinaryReader<'a> {
             align,
             max_align,
             offset,
-            memory,
+            target,
+            ordering,
         })
     }
 
     fn read_ordering(&mut self) -> Result<Ordering> {
-        let byte = self.read_var_u32()?;
+        let byte = self.read_u8()?;
         match byte {
             0 => Ok(Ordering::SeqCst),
             1 => Ok(Ordering::AcqRel),
-            x => Err(BinaryReaderError::new(
-                &format!("invalid atomic consistency ordering {x}"),
+            x => Err(Error::new(
+                format!("invalid atomic consistency ordering {x}"),
                 self.original_position() - 1,
             )),
         }
@@ -2158,5 +2175,55 @@ impl<'a> BinaryReader<'a> {
             0 => Ok(0),
             _ => bail!(self.original_position() - 1, "zero byte expected"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    macro_rules! assert_matches {
+        ($a:expr, $b:pat $(,)?) => {
+            match $a {
+                $b => {}
+                a => panic!("`{:?}` doesn't match `{}`", a, stringify!($b)),
+            }
+        };
+    }
+
+    #[test]
+    #[should_panic = "too large"]
+    fn panic_on_large_offsets() {
+        assert!(
+            BinaryReader::max_data_len(u64::MAX) == 0,
+            "must not accept data at offset 0x{:x}",
+            u64::MAX
+        );
+        let _rdr = BinaryReader::new(&[10], u64::MAX);
+    }
+
+    #[test]
+    fn can_parse_on_large_offset() {
+        let large_offset = u64::from(u32::MAX) + 1;
+        assert!(BinaryReader::max_data_len(large_offset) > 1);
+        let mut rdr = BinaryReader::new(&[10], large_offset);
+        assert_matches!(rdr.read_u8(), Ok(10));
+    }
+
+    #[test]
+    fn read_var_s33() {
+        let s33 = |bytes: &[u8]| {
+            let mut rdr = BinaryReader::new(bytes, 0);
+            let ret = rdr.read_var_s33().unwrap();
+            assert!(rdr.eof());
+            ret
+        };
+        assert_eq!(s33(&[0x00]), 0);
+        assert_eq!(s33(&[0x7f]), -1);
+        assert_eq!(s33(&[0xc0, 0xff, 0xff, 0x7f]), -64);
+        assert_eq!(s33(&[0xff, 0xff, 0xff, 0xff, 0x7f]), -1);
+        assert_eq!(s33(&[0xff, 0xff, 0xff, 0xff, 0x0f]), (1 << 32) - 1);
+        assert_eq!(s33(&[0x80, 0x80, 0x80, 0x80, 0x70]), -(1 << 32));
+        assert_eq!(s33(&[0x80, 0x80, 0x80, 0x80, 0x00]), 0);
     }
 }

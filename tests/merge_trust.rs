@@ -164,12 +164,12 @@ fn physical_pair(old: &[u8], new: &[u8]) {
     }
 }
 
-fn permissive_but_untrusted(bytes: &[u8]) -> AuditModule {
+fn invalid_or_unknown(bytes: &[u8]) -> AuditModule {
     assert!(Validator::new_with_features(WasmFeatures::all())
         .validate_all(bytes)
-        .is_ok());
+        .is_err());
     let module = audit::inspect(bytes).unwrap();
-    assert!(module.standard.validator_valid);
+    assert!(!module.standard.validator_valid);
     assert_eq!(module.validation, "failed_or_unsupported");
     assert_eq!(module.standard.validation, "invalid");
     module
@@ -226,14 +226,14 @@ fn clean(base: &[u8], ours: &[u8], theirs: &[u8], expected: &[u8]) -> MergeRepor
 }
 
 #[test]
-fn decoded_bare_global_type_cannot_survive_concurrent_instruction_synthesis() {
+fn rejected_bare_global_type_cannot_survive_concurrent_instruction_synthesis() {
     let types = function_types(1);
     let global = global(&[0], false);
     let fixture = |a, b| module(&types, Some(&global), &constants(a, b), [0x10, 0x20]);
     let (base, ours, theirs, combined) =
         (fixture(1, 2), fixture(3, 2), fixture(1, 4), fixture(3, 4));
     for bytes in [&base, &ours, &theirs, &combined] {
-        let audited = permissive_but_untrusted(bytes);
+        let audited = invalid_or_unknown(bytes);
         assert_eq!(
             audited
                 .sections
@@ -241,10 +241,11 @@ fn decoded_bare_global_type_cannot_survive_concurrent_instruction_synthesis() {
                 .find(|section| section.id == 6)
                 .unwrap()
                 .status,
-            "decoded"
+            "malformed"
         );
         assert!(audited.standard.evidence.iter().any(|evidence| {
-            evidence.path == "global[0]/entry[0]" && evidence.status == "invalid_encoding"
+            evidence.path == "global[0]/undecoded/global_error"
+                && evidence.status == "invalid_encoding"
         }));
     }
     for (left, right) in [(&ours, &theirs), (&theirs, &ours)] {
@@ -273,7 +274,7 @@ fn unchanged_untrusted_type_also_blocks_atomic_custom_section_synthesis() {
         fixture([0x30, 0x40]),
     );
     for bytes in [&base, &ours, &theirs, &combined] {
-        let audited = permissive_but_untrusted(bytes);
+        let audited = invalid_or_unknown(bytes);
         assert_eq!(audited.sections[0].status, "partially_decoded");
         assert!(audited.sections[0].regions.iter().any(|region| {
             region.path == "type[0]/undecoded"
@@ -299,7 +300,7 @@ fn complete_heap_index127_does_not_prove_an_unknown_global_constructor() {
     let (base, ours, theirs, combined) =
         (fixture(1, 2), fixture(3, 2), fixture(1, 4), fixture(3, 4));
     for bytes in [&base, &ours, &theirs, &combined] {
-        let audited = permissive_but_untrusted(bytes);
+        let audited = invalid_or_unknown(bytes);
         let global = audited
             .sections
             .iter()
@@ -352,8 +353,8 @@ fn whole_module_equality_choices_keep_every_invalid_or_unknown_input_byte() {
         ),
     ];
     for (a, b) in &fixtures {
-        permissive_but_untrusted(a);
-        permissive_but_untrusted(b);
+        invalid_or_unknown(a);
+        invalid_or_unknown(b);
         let (a, b) = (a.as_slice(), b.as_slice());
         // All eight fixed equality layouts; each expected source is explicit.
         for (base, ours, theirs, expected) in [

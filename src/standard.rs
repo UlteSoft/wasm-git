@@ -35,7 +35,7 @@ pub enum Standard {
 }
 
 impl Standard {
-    /// Core 3 excludes threads; wasmparser 0.249's draft preset includes it.
+    /// Core 3 excludes threads; wasmparser 0.263's draft preset includes it.
     pub fn features(self) -> WasmFeatures {
         match self {
             Self::Core1 => WasmFeatures::WASM1,
@@ -76,6 +76,8 @@ impl Standard {
             "wide_arithmetic" => WasmFeatures::WIDE_ARITHMETIC,
             "custom_descriptors" => WasmFeatures::CUSTOM_DESCRIPTORS,
             "compact_imports" => WasmFeatures::COMPACT_IMPORTS,
+            "acquire_release_atomics" => WasmFeatures::ACQUIRE_RELEASE_ATOMICS,
+            "multibyte_array_access" => WasmFeatures::MULTIBYTE_ARRAY_ACCESS,
             _ => return false,
         };
         self.features().contains(flags)
@@ -208,6 +210,7 @@ pub struct FeatureEvidence {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct StandardReport {
+    pub grammar: crate::grammar::GrammarContract,
     pub selected_standard: Standard,
     /// valid requires both the validator and every observed wire requirement.
     pub validation: String,
@@ -252,6 +255,7 @@ impl StandardReport {
 
     pub(crate) fn pending(selected_standard: Standard) -> Self {
         Self {
+            grammar: crate::grammar::CONTRACT,
             selected_standard,
             validation: "not_validated".into(),
             validator: "not_validated".into(),
@@ -400,7 +404,7 @@ pub(crate) fn classify(
             // declarations inferred by a permissive value-type fallback.
             let prefix = BinaryReader::new(
                 &bytes[section.payload_span.start..frontier.span.start],
-                section.payload_span.start,
+                section.payload_span.start.try_into().unwrap(),
             );
             let _ = collector.section(section, prefix);
             collector.declaration_prefix(section.id, frontier);
@@ -414,7 +418,7 @@ pub(crate) fn classify(
                         &frontier.path,
                         Span {
                             start: frontier.span.start,
-                            end: header.original_position(),
+                            end: crate::input_offset(header.original_position()),
                         },
                         flags,
                     );
@@ -444,7 +448,7 @@ pub(crate) fn classify(
             // declarations after the unknown expression frontier.
             let prefix = BinaryReader::new(
                 &bytes[section.payload_span.start..recovered.span.start],
-                section.payload_span.start,
+                section.payload_span.start.try_into().unwrap(),
             );
             let _ = collector.section(section, prefix);
             collector.contexts.invalidate(section.id);
@@ -453,7 +457,7 @@ pub(crate) fn classify(
         }
         let reader = BinaryReader::new(
             &bytes[section.payload_span.start..section.payload_span.end],
-            section.payload_span.start,
+            section.payload_span.start.try_into().unwrap(),
         );
         if let Err(error) = collector.section(section, reader) {
             // The primary audit retains the completed prefix. Its opaque suffix
@@ -553,7 +557,7 @@ pub(crate) fn classify(
                 Some(validation_error_context(
                     bytes,
                     sections,
-                    error.offset(),
+                    crate::input_offset(error.offset()),
                     error.to_string(),
                 )),
             ),
@@ -583,9 +587,10 @@ pub(crate) fn classify(
         .iter()
         .all(|entry| entry.status == "supported");
     let report = StandardReport {
+        grammar: crate::grammar::CONTRACT,
         selected_standard: standard,
         validation: if validator_valid && compatible { "valid" } else { "invalid" }.into(),
-        validator: "wasmparser 0.249.0 with wasm-git local checked-bounds patch; feature validator on validator_input; independently checked oversized custom names use an offset-preserving reader projection; Core3=WASM3 minus THREADS; Core1 br_table label equality is supplemented for fully known MVP grammar; other historical typing is not reimplemented".into(),
+        validator: "wasmparser 0.263.0 with wasm-git memtag extension; feature validator on validator_input; independently checked oversized custom names use an offset-preserving reader projection; Core3=WASM3 minus THREADS; Core1 br_table label equality is supplemented for fully known MVP grammar; other historical typing is not reimplemented".into(),
         validator_input: reader_view.report.clone(),
         validator_valid,
         validator_error,
@@ -704,7 +709,8 @@ struct Core1FunctionType {
 
 impl Core1FunctionType {
     fn from_subtype(ty: &SubType, plain_wire: bool) -> Option<Self> {
-        if !plain_wire || !ty.is_final || ty.supertype_idx.is_some() || ty.composite_type.shared {
+        if !plain_wire || !ty.is_final || !ty.supertype_idxs.is_empty() || ty.composite_type.shared
+        {
             return None;
         }
         let CompositeInnerType::Func(function) = &ty.composite_type.inner else {
@@ -798,7 +804,7 @@ fn core1_br_table_issues(
         if labels.is_empty() {
             return None;
         }
-        let start = reader.original_position();
+        let start = crate::input_offset(reader.original_position());
         let operator = reader.read().ok()?;
         if !mvp_operator(&operator) {
             return None;
@@ -854,7 +860,7 @@ fn core1_br_table_issues(
                     };
                     issues.push(Core1SemanticIssue {
                         path: format!("{path}/operator[{ordinal}]"),
-                        span: Span { start, end: reader.original_position() },
+                        span: Span { start, end: crate::input_offset(reader.original_position()) },
                         reason: format!("Core1 br_table requires all target label types to equal the default label type: target depth={depth} has {}, default depth={default_depth} has {}; unreachable stack polymorphism does not relax this Core1 label equality rule", label_text(result), label_text(default)),
                     });
                 }
@@ -898,7 +904,7 @@ fn branch_cast_type_resources(bytes: &[u8], span: Span) -> Option<ValidatorResou
         .ok()?;
     let reader = wasmparser::TypeSectionReader::new(BinaryReader::new(
         &bytes[span.start..span.end],
-        span.start,
+        span.start.try_into().unwrap(),
     ))
     .ok()?;
     validator.type_section(&reader).ok()?;
@@ -1041,7 +1047,7 @@ impl<'a> Collector<'a> {
         let mut entries = SectionLimited::<T>::new(reader)?.into_iter();
         let mut index = 0;
         loop {
-            let start = entries.original_position();
+            let start = crate::input_offset(entries.original_position());
             let Some(entry) = entries.next() else {
                 break;
             };
@@ -1051,7 +1057,7 @@ impl<'a> Collector<'a> {
                 index,
                 Span {
                     start,
-                    end: entries.original_position(),
+                    end: crate::input_offset(entries.original_position()),
                 },
                 entry,
             )?;
@@ -1073,7 +1079,7 @@ impl<'a> Collector<'a> {
                     let group_path = format!("{path}/group[{index}]");
                     let explicit = group.is_explicit_rec_group();
                     if explicit { this.record(&group_path, span, "gc", "structure", "explicit recursive type group encoding", None); }
-                    let types = group.into_types_and_offsets().collect::<Vec<_>>();
+                    let types = group.into_types_and_offsets().map(|(offset, ty)| (crate::input_offset(offset), ty)).collect::<Vec<_>>();
                     for (i, (start, ty)) in types.iter().enumerate() {
                         let ty_span = Span { start: *start, end: types.get(i + 1).map_or(span.end, |(offset, _)| *offset) };
                         let ty_path = format!("{path}/type[{type_index}]");
@@ -1092,7 +1098,7 @@ impl<'a> Collector<'a> {
                 // Compact readers initially skip name strings without checking
                 // UTF-8. Prove the complete group before publishing its shared
                 // type evidence or any declaration/index side effects.
-                let expanded = imports.clone().into_iter().collect::<wasmparser::Result<Vec<_>>>()?;
+                let expanded = imports.clone().into_iter().map(|entry| entry.map(|(offset, import)| (crate::input_offset(offset), import))).collect::<wasmparser::Result<Vec<_>>>()?;
                 if !matches!(&imports, Imports::Single(..)) { this.record(&group_path, span, "compact_imports", "structure", "compact import group encoding", None); }
                 let shared_type = this.scan_import_group(&group_path, span, &imports)?;
                 for (i, (start, import)) in expanded.iter().enumerate() {
@@ -1158,9 +1164,9 @@ impl<'a> Collector<'a> {
                 Ok(())
             }),
             8 => {
-                let start = reader.original_position();
+                let start = crate::input_offset(reader.original_position());
                 let index = reader.read_var_u32()?;
-                self.function_operand_role(&format!("{path}/value"), Span { start, end: reader.original_position() }, index, "structure", "start function index");
+                self.function_operand_role(&format!("{path}/value"), Span { start, end: crate::input_offset(reader.original_position()) }, index, "structure", "start function index");
                 Ok(())
             }
             12 => Ok(()),
@@ -1169,7 +1175,7 @@ impl<'a> Collector<'a> {
                 let entry = format!("{path}/entry[{index}]");
                 let mut raw = this.reader(span);
                 let flags = raw.read_var_u32()?;
-                let flags_span = Span { start: span.start, end: raw.original_position() };
+                let flags_span = Span { start: span.start, end: crate::input_offset(raw.original_position()) };
                 this.element_flags(&entry, flags_span, flags);
                 if flags & 1 == 0 {
                     if flags & 2 != 0 { raw.read_var_u32()?; }
@@ -1185,9 +1191,9 @@ impl<'a> Collector<'a> {
                         let mut items = items.into_iter();
                         let mut index = 0;
                         loop {
-                            let start = items.original_position();
+                            let start = crate::input_offset(items.original_position());
                             let Some(function) = items.next() else { break };
-                            this.function_operand_role(&format!("{entry}/item[{index}]"), Span { start, end: items.original_position() }, function?, "structure", "element function index");
+                            this.function_operand_role(&format!("{entry}/item[{index}]"), Span { start, end: crate::input_offset(items.original_position()) }, function?, "structure", "element function index");
                             index += 1;
                         }
                     }
@@ -1202,41 +1208,41 @@ impl<'a> Collector<'a> {
                 let entry = format!("{path}/function[{index}]");
                 let evidence_start = this.evidence.len();
                 match this.defined_function_types.get(index).copied() {
-                    Some(type_index) => this.type_operand(&entry, Span { start: body.range().start, end: body.range().end }, type_index, "structure"),
-                    None if !this.contexts.defined_functions => this.record(&entry, Span { start: body.range().start, end: body.range().end }, "unknown", "structure", "function signature lies beyond the complete defined-function declaration prefix; body framing and known operators remain independently readable", None),
+                    Some(type_index) => this.type_operand(&entry, Span { start: crate::input_range(body.range()).start, end: crate::input_range(body.range()).end }, type_index, "structure"),
+                    None if !this.contexts.defined_functions => this.record(&entry, Span { start: crate::input_range(body.range()).start, end: crate::input_range(body.range()).end }, "unknown", "structure", "function signature lies beyond the complete defined-function declaration prefix; body framing and known operators remain independently readable", None),
                     _ => {},
                 }
-                let mut opaque_start = body.range().start;
+                let mut opaque_start = crate::input_range(body.range()).start;
                 let mut opaque_is_group = false;
                 let decoded = (|| -> wasmparser::Result<()> {
                     let mut locals = body.get_locals_reader()?;
-                    opaque_start = locals.original_position();
+                    opaque_start = crate::input_offset(locals.original_position());
                     let mut total_count = 0u32;
                     for i in 0..locals.get_count() {
-                        let start = locals.original_position();
+                        let start = crate::input_offset(locals.original_position());
                         opaque_start = start;
                         opaque_is_group = true;
-                        let mut value = this.reader(Span { start, end: body.range().end });
+                        let mut value = this.reader(Span { start, end: crate::input_range(body.range()).end });
                         // Admit the cumulative count before probing a type.
                         if value.read_var_u32().ok().and_then(|count| total_count.checked_add(count)).is_some() && !crate::decode_error::value_prefix_known(&value) {
                             let invalid = crate::decode_error::forbidden_bare_index(&value);
-                            this.record(&format!("{entry}/opaque"), Span { start, end: body.range().end }, if invalid { "reference_type_encoding" } else { "unknown" }, "opaque", if invalid { "a bare positive type index is not a value-type shorthand; remaining locals and body are not decoded" } else { "unknown local value-type prefix; remaining locals and body are not decoded" }, None);
+                            this.record(&format!("{entry}/opaque"), Span { start, end: crate::input_range(body.range()).end }, if invalid { "reference_type_encoding" } else { "unknown" }, "opaque", if invalid { "a bare positive type index is not a value-type shorthand; remaining locals and body are not decoded" } else { "unknown local value-type prefix; remaining locals and body are not decoded" }, None);
                             return Ok(());
                         }
                         let (count, ty) = locals.read()?;
                         total_count += count;
-                        let span = Span { start, end: locals.original_position() };
+                        let span = Span { start, end: crate::input_offset(locals.original_position()) };
                         let local_path = format!("{entry}/local_group[{i}]");
                         this.value(&local_path, span, ty, false, "structure");
                         let mut raw = this.reader(span); raw.read_var_u32()?;
                         this.scan_value(&mut raw, &local_path, false)?;
                     }
-                    this.operators(OperatorsReader::new(locals.get_binary_reader()), body.range().end, &entry, false);
+                    this.operators(OperatorsReader::new(locals.get_binary_reader()), crate::input_range(body.range()).end, &entry, false);
                     Ok(())
                 })();
                 if let Err(error) = decoded {
-                    let invalid = crate::decode_error::locals_failure(&error, this.reader(Span { start: opaque_start, end: body.range().end }), opaque_is_group);
-                    this.record(&format!("{entry}/opaque"), Span { start: opaque_start, end: body.range().end }, if invalid.is_some() { "section_structure" } else { "unknown" }, "opaque", &format!("{}: {error}; locals and remaining body are not decoded; the framed next body remains independently readable", invalid.unwrap_or("unrecognized or unclassified locals grammar")), None);
+                    let invalid = crate::decode_error::locals_failure(&error, this.reader(Span { start: opaque_start, end: crate::input_range(body.range()).end }), opaque_is_group);
+                    this.record(&format!("{entry}/opaque"), Span { start: opaque_start, end: crate::input_range(body.range()).end }, if invalid.is_some() { "section_structure" } else { "unknown" }, "opaque", &format!("{}: {error}; locals and remaining body are not decoded; the framed next body remains independently readable", invalid.unwrap_or("unrecognized or unclassified locals grammar")), None);
                 } else if this.standard == Standard::Core1 && this.evidence[evidence_start..].iter().all(|entry| entry.status == "supported") {
                     let signature = this.defined_function_types.get(index).and_then(|type_index| this.core1_function_types.get(*type_index as usize)).copied().flatten();
                     if let Some(issues) = signature.and_then(|signature| core1_br_table_issues(&body, &entry, signature)) { this.core1_semantics.extend(issues); }
@@ -1247,7 +1253,7 @@ impl<'a> Collector<'a> {
                 let entry = format!("{path}/entry[{index}]");
                 let mut raw = this.reader(span);
                 let flags = raw.read_var_u32()?;
-                let flags_span = Span { start: span.start, end: raw.original_position() };
+                let flags_span = Span { start: span.start, end: crate::input_offset(raw.original_position()) };
                 if flags != 0 { this.record(&entry, flags_span, "bulk_memory", "structure", "non-MVP data segment wire form", None); }
                 match data.kind {
                     DataKind::Passive => {},
@@ -1260,7 +1266,10 @@ impl<'a> Collector<'a> {
     }
 
     fn reader(&self, span: Span) -> BinaryReader<'a> {
-        BinaryReader::new(&self.bytes[span.start..span.end], span.start)
+        BinaryReader::new(
+            &self.bytes[span.start..span.end],
+            span.start.try_into().unwrap(),
+        )
     }
 
     fn declaration_prefix(&mut self, section: u8, region: &Region) {
@@ -1405,7 +1414,7 @@ impl<'a> Collector<'a> {
                             &region.path,
                             Span {
                                 start: region.span.start,
-                                end: raw.original_position(),
+                                end: crate::input_offset(raw.original_position()),
                             },
                             "shared_everything_threads",
                             "structure",
@@ -1421,7 +1430,7 @@ impl<'a> Collector<'a> {
                     let table: TableType = raw.read()?;
                     let span = Span {
                         start: region.span.start,
-                        end: raw.original_position(),
+                        end: crate::input_offset(raw.original_position()),
                     };
                     self.record(
                         &region.path,
@@ -1462,7 +1471,7 @@ impl<'a> Collector<'a> {
                     let memory = if flags == 2 { raw.read_var_u32()? } else { 0 };
                     let span = Span {
                         start: region.span.start,
-                        end: raw.original_position(),
+                        end: crate::input_offset(raw.original_position()),
                     };
                     if flags != 0 {
                         self.record(
@@ -1480,7 +1489,7 @@ impl<'a> Collector<'a> {
                     let flags = raw.read_var_u32()?;
                     let span = Span {
                         start: region.span.start,
-                        end: raw.original_position(),
+                        end: crate::input_offset(raw.original_position()),
                     };
                     self.element_flags(&region.path, span, flags);
                     if flags & 1 == 0 {
@@ -1641,13 +1650,13 @@ impl<'a> Collector<'a> {
             Imports::Compact2 { ty, names, .. } => {
                 reader.read_u8()?;
                 // The type appears once on the wire and is shared by all names.
-                let start = reader.original_position();
+                let start = crate::input_offset(reader.original_position());
                 let shared_path = format!("{path}/shared_type");
                 let pending_start = self.pending_type_uses.len();
                 self.scan_import_type(&mut reader, &shared_path)?;
                 let shared_span = Span {
                     start,
-                    end: reader.original_position(),
+                    end: crate::input_offset(reader.original_position()),
                 };
                 let used = names.count() != 0;
                 self.shared_import_type(&shared_path, shared_span, *ty, used);
@@ -1862,8 +1871,12 @@ impl<'a> Collector<'a> {
     }
 
     fn subtype(&mut self, path: &str, span: Span, ty: &SubType) -> wasmparser::Result<()> {
+        for index in &ty.supertype_idxs {
+            if let Some(index) = index.as_module_index() {
+                self.type_operand_role(path, span, index, "structure", "supertype index");
+            }
+        }
         for (index, role) in [
-            (ty.supertype_idx, "supertype index"),
             (ty.composite_type.descriptor_idx, "descriptor type index"),
             (ty.composite_type.describes_idx, "described type index"),
         ] {
@@ -1880,7 +1893,7 @@ impl<'a> Collector<'a> {
             None,
         );
         if !ty.is_final
-            || ty.supertype_idx.is_some()
+            || !ty.supertype_idxs.is_empty()
             || matches!(self.bytes[span.start], 0x4f | 0x50)
         {
             self.record(
@@ -2019,7 +2032,10 @@ impl<'a> Collector<'a> {
         Ok(())
     }
     fn scan_field(&mut self, reader: &mut BinaryReader<'_>, path: &str) -> wasmparser::Result<()> {
-        if matches!(self.bytes[reader.original_position()], 0x77 | 0x78) {
+        if matches!(
+            self.bytes[crate::input_offset(reader.original_position())],
+            0x77 | 0x78
+        ) {
             reader.read_u8()?;
         } else {
             self.scan_value(reader, path, false)?;
@@ -2033,11 +2049,11 @@ impl<'a> Collector<'a> {
             if role == "maximum" && flags & 1 == 0 {
                 break;
             }
-            let start = reader.original_position();
+            let start = crate::input_offset(reader.original_position());
             let value = reader.read_var_u64()?;
             let span = Span {
                 start,
-                end: reader.original_position(),
+                end: crate::input_offset(reader.original_position()),
             };
             if value > u32::MAX as u64 || span.end - span.start > 5 {
                 self.record(path, span, "memory64", "structure", &format!("{role} limit uses the Core3 u64 wire grammar, including padded small values beyond five bytes"), None);
@@ -2051,11 +2067,11 @@ impl<'a> Collector<'a> {
         path: &str,
         table: bool,
     ) -> wasmparser::Result<()> {
-        let start = reader.original_position();
+        let start = crate::input_offset(reader.original_position());
         let ty: ValType = reader.read()?;
         let span = Span {
             start,
-            end: reader.original_position(),
+            end: crate::input_offset(reader.original_position()),
         };
         self.value(path, span, ty, table, "structure");
         self.value_encoding(path, span, "structure");
@@ -2169,7 +2185,7 @@ impl<'a> Collector<'a> {
     }
 
     fn expression(&mut self, expression: ConstExpr<'_>, path: &str) {
-        let end = expression.get_binary_reader().range().end;
+        let end = crate::input_range(expression.get_binary_reader().range()).end;
         self.operators(expression.get_operators_reader(), end, path, true);
     }
     fn operators(
@@ -2181,7 +2197,7 @@ impl<'a> Collector<'a> {
     ) {
         let mut index = 0;
         while !reader.eof() {
-            let start = reader.original_position();
+            let start = crate::input_offset(reader.original_position());
             if reader.current_frame().is_none() {
                 self.record(&format!("{path}/trailing_bytes"), Span { start, end }, "expression_structure", "structure", "bytes after the terminating End are outside the expression grammar; no later instruction boundaries inferred", None);
                 return;
@@ -2196,7 +2212,7 @@ impl<'a> Collector<'a> {
                 Ok(operator) => {
                     let span = Span {
                         start,
-                        end: reader.original_position(),
+                        end: crate::input_offset(reader.original_position()),
                     };
                     self.operator(
                         &format!("{path}/operator[{index}]"),
@@ -2220,7 +2236,7 @@ impl<'a> Collector<'a> {
             self.record(
                 &format!("{path}/expression_structure"),
                 Span {
-                    start: reader.original_position(),
+                    start: crate::input_offset(reader.original_position()),
                     end,
                 },
                 "expression_structure",
@@ -2291,14 +2307,26 @@ impl<'a> Collector<'a> {
             }
         }
         match operator {
+            Operator::AtomicFence {
+                ordering: wasmparser::Ordering::AcqRel,
+            } => {
+                self.record(
+                    path,
+                    span,
+                    "acquire_release_atomics",
+                    "instruction",
+                    "atomic fence uses acquire-release ordering",
+                    None,
+                );
+            }
             Operator::CallIndirect { .. } | Operator::ReturnCallIndirect { .. } => {
                 let mut raw = self.reader(span);
                 let encoding = (|| -> wasmparser::Result<(u32, usize)> {
                     raw.read_u8()?;
                     raw.read_var_u32()?;
-                    let start = raw.original_position();
+                    let start = crate::input_offset(raw.original_position());
                     let index = raw.read_var_u32()?;
-                    Ok((index, raw.original_position() - start))
+                    Ok((index, crate::input_offset(raw.original_position()) - start))
                 })();
                 if let Ok((index, len)) = encoding {
                     if index != 0 || len != 1 {
@@ -2348,11 +2376,11 @@ impl<'a> Collector<'a> {
                         raw.read_var_u32()?;
                     }
                     for role in roles {
-                        let start = raw.original_position();
+                        let start = crate::input_offset(raw.original_position());
                         let index = raw.read_var_u32()?;
                         let immediate = Span {
                             start,
-                            end: raw.original_position(),
+                            end: crate::input_offset(raw.original_position()),
                         };
                         if index != 0 || immediate.end - start != 1 {
                             self.record(path, immediate, "multi_memory", "instruction", &format!("{operation} {role} {index} is not the Core2 literal reserved zero byte; this uses the newer memory-index wire grammar"), None);
@@ -2408,8 +2436,12 @@ impl<'a> Collector<'a> {
                 .as_ref()
                 .and_then(Option::as_ref)
                 .and_then(|resources| {
-                    resources.check_ref_type(&mut from, span.start).ok()?;
-                    resources.check_ref_type(&mut to, span.start).ok()?;
+                    resources
+                        .check_ref_type(&mut from, span.start.try_into().unwrap())
+                        .ok()?;
+                    resources
+                        .check_ref_type(&mut to, span.start.try_into().unwrap())
+                        .ok()?;
                     Some((
                         resources.top_type(&from.heap_type()),
                         resources.top_type(&to.heap_type()),
@@ -2666,8 +2698,41 @@ impl Operand for u32 {
 }
 impl Operand for MemArg {
     fn requirements(&self, collector: &mut Collector<'_>, path: &str, span: Span, _: &str) {
-        collector.memory_operand(path, span, self.memory, "instruction");
-        if self.offset > u32::MAX as u64 {
+        match self.target {
+            wasmparser::MemArgTarget::Memory(memory) => {
+                collector.memory_operand(path, span, memory, "instruction")
+            }
+            wasmparser::MemArgTarget::Array(index) => {
+                collector.type_operand_role(
+                    path,
+                    span,
+                    index,
+                    "instruction",
+                    "memarg array type index",
+                );
+                collector.record(
+                    path,
+                    span,
+                    "multibyte_array_access",
+                    "instruction",
+                    "memory instruction targets a GC array payload",
+                    None,
+                );
+            }
+        }
+        if self.ordering.is_some() {
+            collector.record(
+                path,
+                span,
+                "acquire_release_atomics",
+                "instruction",
+                "explicit atomic memory ordering in memarg",
+                None,
+            );
+        }
+        if matches!(self.target, wasmparser::MemArgTarget::Memory(_))
+            && self.offset > u32::MAX as u64
+        {
             collector.record(
                 path,
                 span,
@@ -2683,13 +2748,20 @@ impl Operand for MemArg {
             if matches!(prefix, 0xfb..=0xfe) {
                 raw.read_var_u32()?;
             }
-            let explicit = raw.read_var_u32()? & 0x40 != 0;
-            if explicit {
+            let flags = raw.read_var_u32()?;
+            let explicit = flags & 0x40 != 0;
+            if flags & 0x60 != 0 {
                 raw.read_var_u32()?;
             }
-            let start = raw.original_position();
+            if flags & 0x10 != 0 {
+                raw.read_u8()?;
+            }
+            let start = crate::input_offset(raw.original_position());
             raw.read_var_u64()?;
-            Ok((explicit, raw.original_position() - start))
+            Ok((
+                explicit,
+                crate::input_offset(raw.original_position()) - start,
+            ))
         })();
         if let Ok((explicit, offset_len)) = encoding {
             if explicit {
@@ -2921,7 +2993,7 @@ mod tests {
             if let wasmparser::Payload::CodeSectionEntry(body) = payload.unwrap() {
                 let mut operators = body.get_operators_reader().unwrap();
                 while !operators.eof() {
-                    let offset = operators.original_position();
+                    let offset = crate::input_offset(operators.original_position());
                     if matches!(operators.read().unwrap(), wasmparser::Operator::Nop) {
                         nop_offset = Some(offset);
                     }

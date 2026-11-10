@@ -1,6 +1,6 @@
 //! Fixed literal modules distinguish GC constant global reads from extended-const arithmetic.
 //!
-//! Source oracle: wasmparser 0.249.0, src/validator/core.rs. add_global
+//! Source oracle: wasmparser 0.263.0, src/validator/core.rs. add_global
 //! validates the initializer before inserting the current global (lines 61-70).
 //! validate_global checks GC for module-defined globals and independently
 //! rejects mutable globals (lines 278-294). Only the six integer arithmetic

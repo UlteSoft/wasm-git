@@ -34,6 +34,8 @@ pub const CORE_FEATURES: &[(&str, F)] = &[
     ("stack-switching", F::STACK_SWITCHING),
     ("custom-descriptors", F::CUSTOM_DESCRIPTORS),
     ("compact-imports", F::COMPACT_IMPORTS),
+    ("acquire-release-atomics", F::ACQUIRE_RELEASE_ATOMICS),
+    ("multibyte-array-access", F::MULTIBYTE_ARRAY_ACCESS),
 ];
 
 pub fn exact(names: &[String]) -> Result<F, String> {

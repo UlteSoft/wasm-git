@@ -27,9 +27,10 @@ def source_digest(repo):
 
 def main(args):
     repo = Path(__file__).resolve().parents[1]
+    scratch = Path(os.environ.get('WASM_FUZZER_TEST_ROOT', repo / '.tmp')).resolve()
     output = Path(args.output).absolute()
-    if output.exists() or not output.resolve().is_relative_to(repo / '.tmp'):
-        raise ValueError('--output must be a fresh directory under project .tmp/')
+    if output.exists() or not output.resolve().is_relative_to(scratch):
+        raise ValueError('--output must be a fresh directory under qualification scratch storage')
     relative = next(line[3:] for line in Path('/proc/self/cgroup').read_text().splitlines() if line.startswith('0::'))
     group = Path('/sys/fs/cgroup') / relative.lstrip('/')
     assert (group / 'memory.max').read_text().strip() == '68719476736'
@@ -54,7 +55,7 @@ def main(args):
                        LLVM_PROFILE_FILE=str(output / f'worker-{worker}-%p.profraw'))
             child = subprocess.Popen(['taskset', '-c', str(cpu), str(binary), '--ignored', '--exact',
                                       'timed_language_debug_fuzz', '--nocapture', '--test-threads=1'],
-                                     cwd=repo, env=env, stdout=log, stderr=subprocess.STDOUT)
+                                     cwd=scratch, env=env, stdout=log, stderr=subprocess.STDOUT)
             workers.append((child, log))
         last = 0
         while any(child.poll() is None for child, _ in workers):

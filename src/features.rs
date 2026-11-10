@@ -120,6 +120,8 @@ static RETAINED: &[Retained] = &[
     retained!("memory_control", "memory-control", TypedCore, MEMORY_CONTROL),
     retained!("legacy_exceptions", "legacy_exceptions", TypedCore, LEGACY_EXCEPTIONS),
     retained!("memtag_extension", "memtag_extension", TypedCore, MEMTAG_EXTENSION),
+    retained!("acquire_release_atomics", "acquire-release-atomics", TypedCore, ACQUIRE_RELEASE_ATOMICS),
+    retained!("multibyte_array_access", "multibyte-array-access", TypedCore, MULTIBYTE_ARRAY_ACCESS),
 ];
 
 #[derive(Debug, Serialize)]
@@ -258,8 +260,9 @@ pub(crate) fn run(args: &[String]) -> Result<String, String> {
     if args.json {
         return serde_json::to_string_pretty(&serde_json::json!({
             "upstream_revision": UPSTREAM_REVISION, "upstream_sha256": UPSTREAM_SHA256,
-            "source": "https://github.com/WebAssembly/proposals", "decoder": "wasmparser 0.249.0 + wasm-git patches",
+            "source": "https://github.com/WebAssembly/proposals", "decoder": "wasmparser 0.263.0 + wasm-git patches",
             "selected_standard": args.standard, "retention_policy": policy, "features": entries,
+            "grammar": crate::grammar::CONTRACT,
             "core_validation_switches": crate::feature_set::CORE_FEATURES.iter().map(|(name, _)| name).collect::<Vec<_>>(),
         })).map_err(|error| error.to_string());
     }
@@ -334,6 +337,8 @@ mod tests {
                     | "wide_arithmetic"
                     | "legacy_exceptions"
                     | "memtag_extension"
+                    | "acquire_release_atomics"
+                    | "multibyte_array_access"
             ) {
                 assert_eq!(
                     feature.selected_standard_allows,
@@ -345,7 +350,7 @@ mod tests {
         }
         assert_eq!(
             RETAINED.len(),
-            26,
+            28,
             "update the permanent decoder regression inventory when adding features"
         );
     }

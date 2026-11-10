@@ -131,7 +131,7 @@ impl<T: WasmModuleResources> FuncValidator<T> {
                 self.validator.begin_try_op();
                 let _ = self.op(reader.original_position(), &op);
                 self.validator.rollback();
-                self.validator.pop_push_log.clear();
+                self.validator.pop_push_count = (0, 0);
                 assert!(self.validator == snapshot);
             }
 
@@ -153,21 +153,8 @@ impl<T: WasmModuleResources> FuncValidator<T> {
                     "could not calculate operator arity"
                 ))?;
 
-                // Analyze the log to determine the actual, externally visible
-                // pop/push count. This allows us to hide the fact that we might
-                // push and then pop a temporary while validating an
-                // instruction, which shouldn't be visible from the outside.
-                let mut pop_count = 0;
-                let mut push_count = 0;
-                for op in self.validator.pop_push_log.drain(..) {
-                    match op {
-                        true => push_count += 1,
-                        false if push_count > 0 => push_count -= 1,
-                        false => pop_count += 1,
-                    }
-                }
-
-                if pop_count != params || push_count != results {
+                let (pop_count, push_count) = self.validator.pop_push_count;
+                if pop_count != params.into() || push_count != results.into() {
                     panic!(
                         "\
 arity mismatch in validation
@@ -177,6 +164,7 @@ arity mismatch in validation
                         ops_before.peek_operator(&self.visitor(ops_before.original_position()))?,
                     );
                 }
+                self.validator.pop_push_count = (0, 0);
             }
         }
         reader.finish_expression(&self.visitor(reader.original_position()))
@@ -201,7 +189,7 @@ arity mismatch in validation
     ///
     /// This should be used if the application is already reading local
     /// definitions and there's no need to re-parse the function again.
-    pub fn define_locals(&mut self, offset: usize, count: u32, ty: ValType) -> Result<()> {
+    pub fn define_locals(&mut self, offset: u64, count: u32, ty: ValType) -> Result<()> {
         self.validator
             .define_locals(offset, count, ty, &self.resources)
     }
@@ -213,7 +201,7 @@ arity mismatch in validation
     /// the operator itself are passed to this function to provide more useful
     /// error messages. On error, the validator may be left in an undefined
     /// state and should not be reused.
-    pub fn op(&mut self, offset: usize, operator: &Operator<'_>) -> Result<()> {
+    pub fn op(&mut self, offset: u64, operator: &Operator<'_>) -> Result<()> {
         self.visitor(offset).visit_operator(operator)
     }
 
@@ -221,7 +209,7 @@ arity mismatch in validation
     /// to its previous state if this is unsuccessful. The validator may be reused
     /// even after an error.
     #[cfg(feature = "try-op")]
-    pub fn try_op(&mut self, offset: usize, operator: &Operator<'_>) -> Result<()> {
+    pub fn try_op(&mut self, offset: u64, operator: &Operator<'_>) -> Result<()> {
         self.validator.begin_try_op();
         let res = self.op(offset, operator);
         if res.is_ok() {
@@ -253,7 +241,7 @@ arity mismatch in validation
     /// ```
     pub fn visitor<'this, 'a: 'this>(
         &'this mut self,
-        offset: usize,
+        offset: u64,
     ) -> impl VisitOperator<'a, Output = Result<()>> + ModuleArity + FrameStack + 'this {
         self.validator.with_resources(&self.resources, offset)
     }
@@ -264,7 +252,7 @@ arity mismatch in validation
     #[cfg(feature = "simd")]
     pub fn simd_visitor<'this, 'a: 'this>(
         &'this mut self,
-        offset: usize,
+        offset: u64,
     ) -> impl crate::VisitSimdOperator<'a, Output = Result<()>> + ModuleArity + 'this {
         self.validator.with_resources_simd(&self.resources, offset)
     }
@@ -360,7 +348,7 @@ mod tests {
     impl Default for EmptyResources {
         fn default() -> Self {
             EmptyResources(crate::SubType {
-                supertype_idx: None,
+                supertype_idxs: Vec::new(),
                 is_final: true,
                 composite_type: crate::CompositeType {
                     inner: crate::CompositeInnerType::Func(crate::FuncType::new([], [])),
@@ -397,7 +385,7 @@ mod tests {
         fn type_index_of_function(&self, _at: u32) -> Option<u32> {
             todo!()
         }
-        fn check_heap_type(&self, _t: &mut HeapType, _offset: usize) -> Result<()> {
+        fn check_heap_type(&self, _t: &mut HeapType, _offset: u64) -> Result<()> {
             Ok(())
         }
         fn top_type(&self, _heap_type: &HeapType) -> HeapType {
@@ -485,7 +473,7 @@ mod tests {
                             op.operator_arity(&func_validator)
                                 .expect("valid operators should have arity"),
                         );
-                        func_validator.op(usize::MAX, &op).expect("should be valid");
+                        func_validator.op(u64::MAX, &op).expect("should be valid");
                     }
                     actual.push(arity);
                 }

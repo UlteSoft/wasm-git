@@ -26,15 +26,22 @@ fn body(wasm: &[u8]) -> (usize, usize, usize, Vec<usize>) {
     let mut base = 0;
     for p in wasmparser::Parser::new(0).parse_all(wasm) {
         match p.unwrap() {
-            wasmparser::Payload::CodeSectionStart { range, .. } => base = range.start,
+            wasmparser::Payload::CodeSectionStart {
+                unchecked_range, ..
+            } => base = unchecked_range.start as usize,
             wasmparser::Payload::CodeSectionEntry(body) => {
                 let mut ops = body.get_operators_reader().unwrap();
                 let mut offsets = vec![];
                 while !ops.eof() {
-                    offsets.push(ops.original_position());
+                    offsets.push(ops.original_position() as usize);
                     ops.read().unwrap();
                 }
-                return (base, body.range().start, body.range().end, offsets);
+                return (
+                    base,
+                    body.range().start as usize,
+                    body.range().end as usize,
+                    offsets,
+                );
             }
             _ => {}
         }
@@ -629,8 +636,9 @@ fn timed_language_debug_fuzz() {
         .unwrap();
     assert!((1..=600).contains(&seconds));
     let output = std::path::PathBuf::from(std::env::var_os("WASM_GIT_DEBUG_OUTPUT").unwrap());
-    let allowed = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join(".tmp")
+    let allowed = std::env::var_os("WASM_FUZZER_TEST_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".tmp"))
         .canonicalize()
         .unwrap();
     assert!(output.canonicalize().unwrap().starts_with(allowed));
@@ -744,7 +752,7 @@ fn timed_language_debug_fuzz() {
                             s.into_iter()
                                 .map(|d| {
                                     let d = d.unwrap();
-                                    d.range.end - d.data.len()..d.range.end
+                                    d.range.end as usize - d.data.len()..d.range.end as usize
                                 })
                                 .collect::<Vec<_>>(),
                         ),

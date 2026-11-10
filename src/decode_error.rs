@@ -1,6 +1,6 @@
 //! Conservative recognition of definite failures in the pinned reader.
 //!
-//! Error kinds are private in wasmparser 0.249.0. Match only its explicit
+//! Error kinds are private in wasmparser 0.263.0. Match only its explicit
 //! integer, truncation, and frame errors, never every non-"unknown" message:
 //! unknown type constructors and implementation limits also fail decoding.
 //! Linkage names/kinds additionally require an independent guarded field walk.
@@ -30,7 +30,7 @@ fn linkage_name(reader: &mut BinaryReader<'_>, field: &str) -> LinkageScan<bool>
             // Re-read only this proven, completely bounded name. The pinned
             // error offset points at its last byte, not the invalid sequence.
             let size = linkage_checked(source.read_var_u32())? as usize;
-            let start = source.original_position();
+            let start = crate::input_offset(source.original_position());
             let bytes = linkage_checked(source.read_bytes(size))?;
             let error = std::str::from_utf8(bytes).err().ok_or(None)?;
             let invalid = start + error.valid_up_to();
@@ -85,11 +85,11 @@ pub(crate) fn linkage_failure(id: u8, mut reader: BinaryReader<'_>) -> Option<Li
             }
             7 => {
                 linkage_name(&mut reader, "name")?;
-                let start = reader.original_position();
+                let start = crate::input_offset(reader.original_position());
                 if linkage_checked(reader.read::<ExternalKind>())? == ExternalKind::FuncExact {
                     return Err(Some(LinkageFailure {
                         field: "external_kind".into(),
-                        span: start..reader.original_position(),
+                        span: start..crate::input_offset(reader.original_position()),
                         reason: "known exact-function kind is forbidden in an export descriptor by the pinned grammar",
                     }));
                 }
@@ -131,9 +131,9 @@ pub(crate) fn invalid_encoding(error: &BinaryReaderError) -> Option<&'static str
     None
 }
 
-/// The pinned value-type reader falls back to `s33` heap indices for any
-/// unrecognized leading byte. Do not let that permissive fallback consume a
-/// future constructor and lend credibility to an error in following bytes.
+/// Independently guard known value constructors before following their fields.
+/// Earlier upstream readers accepted bare heap indices here; current upstream
+/// rejects them. Neither behavior authorizes consuming a future constructor.
 /// An absent byte still proves truncation at the caller's trusted boundary.
 pub(crate) fn value_prefix_known(reader: &BinaryReader<'_>) -> bool {
     let mut reader = reader.clone();
@@ -258,22 +258,25 @@ fn cast_flags_known(mut reader: BinaryReader<'_>) -> bool {
 /// unknown flag bits. Only these typed layouts start with a memarg; adjacent
 /// SIMD constants, fences and ordering operands must retain their own grammar.
 fn memarg_flags_known(mut reader: BinaryReader<'_>) -> bool {
-    let memarg = match reader.read_u8() {
-        Ok(0x28..=0x3e) => true,
-        Ok(0xfd) => matches!(reader.read_var_u32(), Ok(0x00..=0x0b | 0x54..=0x5d)),
-        Ok(0xfe) => matches!(reader.read_var_u32(), Ok(0x00..=0x02 | 0x10..=0x4e)),
-        _ => false,
+    let Some(kind) = crate::grammar::MemargKind::read(&mut reader) else {
+        return true;
     };
-    if !memarg {
+    let Ok(flags) = reader.read_var_u32() else {
+        return true;
+    };
+    let Some(layout) = kind.flags(flags) else {
+        return false;
+    };
+    if layout.index.is_some() && reader.read_var_u32().is_err() {
         return true;
     }
-    // Audit readers decode all known grammar before profile validation: low
-    // six bits are alignment, bit6 is the explicit memory-index flag. This
-    // does not impose the instruction's semantic natural-alignment limit.
-    match reader.read_var_u32() {
-        Ok(flags) => flags < 128,
-        Err(_) => true, // The flags field's own EOF/integer failure is known.
+    if layout.ordering {
+        return match reader.read_u8() {
+            Ok(byte) => layout.ordering_known(byte),
+            Err(_) => true,
+        };
     }
+    true
 }
 
 /// `reader` starts at the failed instruction, before any of its bytes have
@@ -330,6 +333,15 @@ pub(crate) fn section_failure(
         }
         if let Some(failure) = crate::value_guard::reference_slot_failure(id, error, reader.clone())
         {
+            return Some(failure.reason);
+        }
+        let declaration = match id {
+            1 => crate::value_guard::type_failure(error, reader.clone()),
+            2 => crate::value_guard::import_failure(error, reader.clone()),
+            4 | 5 | 6 | 13 => crate::value_guard::header_failure(id, error, reader.clone()),
+            _ => None,
+        };
+        if let Some(failure) = declaration {
             return Some(failure.reason);
         }
     }

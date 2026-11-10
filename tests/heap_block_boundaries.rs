@@ -64,12 +64,12 @@ fn a_complete_heap_index_space_cannot_validate_an_unknown_value_type_constructor
     section(&mut bytes, 10, &[1, 5, 0, 0x41, 42, 0x1a, 0x0b]);
     assert!(Validator::new_with_features(Standard::AllKnown.features())
         .validate_all(&bytes)
-        .is_ok());
+        .is_err());
     check(&bytes, |standard, module| {
         assert_eq!(module.validation, "failed_or_unsupported");
         assert_eq!(module.standard.validation, "invalid");
         if matches!(standard, Standard::Core3 | Standard::AllKnown) {
-            assert!(module.standard.validator_valid);
+            assert!(!module.standard.validator_valid);
         }
         assert_eq!(
             region(module, "global[0]/undecoded").feature.as_deref(),

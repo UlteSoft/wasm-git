@@ -77,8 +77,11 @@ fn threads_keep_memory_index_offset_and_block_structure() {
     let r = compare(a, &a.replace("offset=16", "offset=20"), "threads", false);
     let op = &r["changes"][0]["function"]["operators"][0];
     assert_eq!(op["old"]["opcode"], "I32AtomicLoad");
-    assert!(op["new"]["text"].as_str().unwrap().contains("memory: 1"));
-    assert!(op["new"]["text"].as_str().unwrap().contains("offset: 20"));
+    assert!(op["new"]["text"]
+        .as_str()
+        .unwrap()
+        .contains("target:Memory(1)"));
+    assert!(op["new"]["text"].as_str().unwrap().contains("offset:20"));
 }
 #[test]
 fn wait_notify_and_compare_exchange_remain_local_instruction_edits() {
@@ -106,7 +109,7 @@ fn simd_arithmetic_lane_and_memory_updates_keep_block_alignment() {
     assert!(r["changes"][0]["function"]["operators"][0]["new"]["text"]
         .as_str()
         .unwrap()
-        .contains("memory: 1"));
+        .contains("target:Memory(1)"));
 }
 #[test]
 fn core3_gc_array_types_and_nullable_casts_have_complete_typed_operands() {
@@ -126,10 +129,10 @@ fn core3_gc_array_types_and_nullable_casts_have_complete_typed_operands() {
 }
 #[test]
 fn shared_global_atomic_order_is_part_of_the_diff() {
-    let a="(module (global (shared mut i32) (i32.const 0)) (func (export \"f\") global.atomic.get seq_cst 0 drop))";
+    let a="(module (global (shared mut i32) (i32.const 0)) (func (export \"f\") global.atomic.get seqcst 0 drop))";
     let r = compare(
         a,
-        &a.replace("seq_cst", "acq_rel"),
+        &a.replace("seqcst", "acqrel"),
         "shared_everything_threads",
         false,
     );

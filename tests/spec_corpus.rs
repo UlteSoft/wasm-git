@@ -597,7 +597,7 @@ impl Runner {
                 file: file.path.clone(), file_sha256: file.sha256.clone(),
                 module_sha256: evidence.sha256.clone().unwrap(), location: evidence.location.clone(),
                 original_expectation: "assert_invalid: type mismatch",
-                actual: "accepted by wasmparser 0.249.0 WASM1 feature flags; the auditor separately requires strict Core1 label equality and must reject it",
+                actual: "accepted by wasmparser 0.263.0 WASM1 feature flags; the auditor separately requires strict Core1 label equality and must reject it",
                 reason: "The pinned historical Core1 corpus requires equal br_table label types even after unreachable; the dependency uses the modern polymorphic matching algorithm. This is retained as a dependency discrepancy, while the audit's selected Core1 requirements independently reject the branch without a sample-hash exception in production code.",
             });
         }
@@ -1414,9 +1414,9 @@ fn official_core_wast_corpus_audit() {
         generated_mutations: 0,
         scope: "all recursive regular core .wast files, symlinks excluded and listed; nested thread and execute modules extracted; runtime assertions and instantiation are explicitly not executed",
         runtime_conformance_tested: false, corpus_root: root.to_string_lossy().into_owned(),
-        baseline_profile: format!("wasmparser 0.249.0 WasmFeatures::WASM{version} (Core3 excludes threads); feature profiles do not restore historical typing algorithms; not normative certification"),
-        audit_profile: "wasmparser 0.249.0 WasmFeatures::all; known future extensions remain auditable",
-        wast_version: "249.0.0", source_manifest_sha256: String::new(), excluded_symlinks,
+        baseline_profile: format!("wasmparser 0.263.0 WasmFeatures::WASM{version} (Core3 excludes threads); feature profiles do not restore historical typing algorithms; not normative certification"),
+        audit_profile: "wasmparser 0.263.0 WasmFeatures::all; known future extensions remain auditable",
+        wast_version: "263.0.0", source_manifest_sha256: String::new(), excluded_symlinks,
         directive_counts: Counts::new(), encoding_counts: Counts::new(), module_category_counts: Counts::new(),
         outcome_counts: Counts::new(), runtime_actions_not_executed: Counts::new(), files: Vec::new(), failures: Vec::new(), known_profile_limitations: Vec::new(),
     };

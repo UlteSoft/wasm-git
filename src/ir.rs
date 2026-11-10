@@ -718,6 +718,7 @@ pub enum Opcode {
     RefCastDescEqNullable,
     BrOnCastDescEq,
     BrOnCastDescEqFail,
+    Pause,
 }
 
 impl Opcode {
@@ -1275,6 +1276,7 @@ impl Opcode {
             Opcode::MemoryAtomicWait32 => "MemoryAtomicWait32",
             Opcode::MemoryAtomicWait64 => "MemoryAtomicWait64",
             Opcode::AtomicFence => "AtomicFence",
+            Opcode::Pause => "Pause",
             Opcode::I32AtomicLoad => "I32AtomicLoad",
             Opcode::I64AtomicLoad => "I64AtomicLoad",
             Opcode::I32AtomicLoad8U => "I32AtomicLoad8U",
@@ -1498,17 +1500,6 @@ pub enum Immediate {
     Global(u32),
     /// br / br_if: relative label depth
     Branch(u32),
-    /// memory load/store: alignment + offset
-    MemArg {
-        align: u32,
-        offset: u64,
-    },
-    /// Complete memory immediate, including the multi-memory index.
-    MemoryArg {
-        align: u32,
-        offset: u64,
-        memory: u32,
-    },
     /// memory.size / memory.grow: memory index
     MemoryIndex(u32),
     /// memory.copy: destination + source memory indices
@@ -1549,18 +1540,6 @@ pub enum Immediate {
     RefFunc(u32),
     /// SIMD lane index
     Lane(u8),
-    /// SIMD memory lane: memarg + lane index (for v128.loadN_lane / v128.storeN_lane)
-    SimdMemLane {
-        align: u32,
-        offset: u64,
-        lane: u8,
-    },
-    SimdMemoryLane {
-        align: u32,
-        offset: u64,
-        memory: u32,
-        lane: u8,
-    },
     /// i8x16.shuffle: 16-byte lane permutation
     Shuffle([u8; 16]),
     /// v128.const: raw bytes
@@ -1635,7 +1614,7 @@ pub enum Immediate {
     /// Any unrecognized immediate, stored as the wasmparser Debug text
     /// for display and hashing compatibility.
     Unrecognized(String),
-    /// Typed continuation operands; variant placement preserves prior indices.
+    /// Typed continuation operands.
     ContinuationType(u32),
     ContinuationBind {
         argument_index: u32,
@@ -1650,6 +1629,27 @@ pub enum Immediate {
         cont_type_index: u32,
         tag_index: u32,
     },
+    /// Canonical memory operand for scalar, SIMD, atomic, and array accesses.
+    MemoryOperand {
+        align: u32,
+        offset: u64,
+        target: MemoryTarget,
+        ordering: Option<MemoryOrdering>,
+        lane: Option<u8>,
+    },
+    AtomicFence(AtomicOrdering),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub enum MemoryTarget {
+    Memory(u32),
+    Array(u32),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub enum MemoryOrdering {
+    Op(AtomicOrdering),
+    Rmw(AtomicOrdering),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -1679,6 +1679,8 @@ impl Immediate {
     pub fn as_hash_text(&self) -> String {
         match self {
             Immediate::None => String::new(),
+            Immediate::MemoryOperand { align, offset, target, ordering, lane } => format!("align:{align},offset:{offset},target:{target:?},ordering:{ordering:?},lane:{lane:?}"),
+            Immediate::AtomicFence(ordering) => format!("ordering:{ordering:?}"),
             Immediate::BlockType(ty) => format!("blockty:{ty}"),
             Immediate::BrTable {
                 targets,
@@ -1700,12 +1702,8 @@ impl Immediate {
             Immediate::Local(idx) => format!("local_index:{idx}"),
             Immediate::Global(idx) => format!("global_index:{idx}"),
             Immediate::Branch(depth) => format!("relative_depth:{depth}"),
-            Immediate::MemArg { align, offset } => format!("align:{align},offset:{offset}"),
-            Immediate::MemoryArg {
-                align,
-                offset,
-                memory,
-            } => format!("align:{align},offset:{offset},memory:{memory}"),
+
+
             Immediate::MemoryIndex(idx) => format!("mem:{idx}"),
             Immediate::MemoryCopy {
                 dst_index,
@@ -1733,19 +1731,7 @@ impl Immediate {
             Immediate::RefNull(ht) => format!("hty:{ht}"),
             Immediate::RefFunc(idx) => format!("function_index:{idx}"),
             Immediate::Lane(idx) => format!("lane:{idx}"),
-            Immediate::SimdMemLane {
-                align,
-                offset,
-                lane,
-            } => {
-                format!("align:{align},offset:{offset},lane:{lane}")
-            }
-            Immediate::SimdMemoryLane {
-                align,
-                offset,
-                memory,
-                lane,
-            } => format!("align:{align},offset:{offset},memory:{memory},lane:{lane}"),
+
             Immediate::Shuffle(lanes) => {
                 let lanes_str = lanes
                     .iter()
@@ -1882,19 +1868,22 @@ impl ParsedOperator {
             Immediate::Local(idx) => format!("{kind} {{ local_index: {idx} }}"),
             Immediate::Global(idx) => format!("{kind} {{ global_index: {idx} }}"),
             Immediate::Branch(depth) => format!("{kind} {{ relative_depth: {depth} }}"),
-            Immediate::MemArg { align, offset } => {
-                format!("{kind} {{ memarg: MemArg {{ align: {align}, max_align: 0, offset: {offset}, memory: 0 }} }}")
-            }
-            Immediate::MemoryArg { align, offset, memory } => format!("{kind} {{ memarg: {{ align: {align}, offset: {offset}, memory: {memory} }} }}"),
+
             Immediate::MemoryIndex(mem) => format!("{kind} {{ mem: {mem} }}"),
             Immediate::MemoryCopy {
                 dst_index,
                 src_index,
             } => format!("{kind} {{ dst_mem: {dst_index}, src_mem: {src_index} }}"),
             Immediate::DataIndex(idx) => format!("{kind} {{ data_index: {idx} }}"),
-            Immediate::MemoryInit { data_index, memory_index } => format!("{kind} {{ data_index: {data_index}, mem: {memory_index} }}"),
+            Immediate::MemoryInit {
+                data_index,
+                memory_index,
+            } => format!("{kind} {{ data_index: {data_index}, mem: {memory_index} }}"),
             Immediate::ElemIndex(idx) => format!("{kind} {{ elem_index: {idx} }}"),
-            Immediate::TableInit { elem_index, table_index } => format!("{kind} {{ elem_index: {elem_index}, table: {table_index} }}"),
+            Immediate::TableInit {
+                elem_index,
+                table_index,
+            } => format!("{kind} {{ elem_index: {elem_index}, table: {table_index} }}"),
             Immediate::TableCopy {
                 dst_table,
                 src_table,
@@ -1913,14 +1902,7 @@ impl ParsedOperator {
             Immediate::RefNull(ht) => format!("{kind} {{ hty: {ht} }}"),
             Immediate::RefFunc(idx) => format!("{kind} {{ function_index: {idx} }}"),
             Immediate::Lane(idx) => format!("{kind} {{ lane: {idx} }}"),
-            Immediate::SimdMemLane {
-                align,
-                offset,
-                lane,
-            } => {
-                format!("{kind} {{ memarg: MemArg {{ align: {align}, max_align: 0, offset: {offset}, memory: 0 }}, lane: {lane} }}")
-            }
-            Immediate::SimdMemoryLane { align, offset, memory, lane } => format!("{kind} {{ memarg: {{ align: {align}, offset: {offset}, memory: {memory} }}, lane: {lane} }}"),
+
             Immediate::Shuffle(lanes) => {
                 format!("{kind} {{ lanes: {lanes:?} }}")
             }
@@ -1965,12 +1947,23 @@ impl ParsedOperator {
             Immediate::TryTable(tags) => {
                 format!("{kind} {{ tags: {tags:?} }}")
             }
-            Immediate::TryTableFull { block_type, catches } => format!("{kind} {{ blockty: {block_type}, catches: {catches:?} }}"),
+            Immediate::TryTableFull {
+                block_type,
+                catches,
+            } => format!("{kind} {{ blockty: {block_type}, catches: {catches:?} }}"),
             Immediate::TagIndex(idx) => format!("{kind} {{ tag_index: {idx} }}"),
-            Immediate::ArrayCopy {..} | Immediate::HeapType(_) | Immediate::AtomicGlobal {..}
-            | Immediate::AtomicTable {..} | Immediate::AtomicArray {..} | Immediate::AtomicStruct {..}
-            | Immediate::ContinuationType(_) | Immediate::ContinuationBind {..} | Immediate::Resume {..} | Immediate::Switch {..}
-                => format!("{kind} {{ {} }}", self.immediate.as_hash_text()),
+            Immediate::ArrayCopy { .. }
+            | Immediate::HeapType(_)
+            | Immediate::AtomicGlobal { .. }
+            | Immediate::MemoryOperand { .. }
+            | Immediate::AtomicFence(_)
+            | Immediate::AtomicTable { .. }
+            | Immediate::AtomicArray { .. }
+            | Immediate::AtomicStruct { .. }
+            | Immediate::ContinuationType(_)
+            | Immediate::ContinuationBind { .. }
+            | Immediate::Resume { .. }
+            | Immediate::Switch { .. } => format!("{kind} {{ {} }}", self.immediate.as_hash_text()),
             Immediate::Unrecognized(s) => s.clone(),
         }
     }
@@ -2206,7 +2199,7 @@ pub struct TypeDefinitionIr {
     pub offset: u64,
     pub recursion_group_index: u32,
     pub is_final: bool,
-    pub supertype: Option<String>,
+    pub supertypes: Vec<String>,
     pub shared: bool,
     pub descriptor: Option<String>,
     pub describes: Option<String>,

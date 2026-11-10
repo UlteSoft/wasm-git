@@ -21,15 +21,22 @@ fn body(module: &[u8]) -> (usize, usize, usize, Vec<usize>) {
     let mut base = 0;
     for p in wasmparser::Parser::new(0).parse_all(module) {
         match p.unwrap() {
-            wasmparser::Payload::CodeSectionStart { range, .. } => base = range.start,
+            wasmparser::Payload::CodeSectionStart {
+                unchecked_range, ..
+            } => base = unchecked_range.start as usize,
             wasmparser::Payload::CodeSectionEntry(body) => {
                 let mut r = body.get_operators_reader().unwrap();
                 let mut offsets = Vec::new();
                 while !r.eof() {
-                    offsets.push(r.original_position());
+                    offsets.push(r.original_position() as usize);
                     r.read().unwrap();
                 }
-                return (base, body.range().start, body.range().end, offsets);
+                return (
+                    base,
+                    body.range().start as usize,
+                    body.range().end as usize,
+                    offsets,
+                );
             }
             _ => {}
         }
@@ -281,7 +288,7 @@ fn custom_span(wasm: &[u8], name: &str) -> std::ops::Range<usize> {
         .parse_all(wasm)
         .find_map(|p| match p.unwrap() {
             wasmparser::Payload::CustomSection(s) if s.name() == name => {
-                Some(s.data_offset()..s.data_offset() + s.data().len())
+                Some(s.data_offset() as usize..s.data_offset() as usize + s.data().len())
             }
             _ => None,
         })

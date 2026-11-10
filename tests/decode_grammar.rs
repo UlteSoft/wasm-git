@@ -257,7 +257,7 @@ fn future_opcodes_types_and_unclassified_enum_errors_stay_unknown() {
         "02 7a",             // Unknown block/value type.
         "1f 40 01 04 00",    // Catch kind outside the pinned enum: conservative unknown.
         "fb 18 04 00 6e 6e", // Cast flags: outside the deliberately narrow classifier.
-        "fe 03 01",          // Fence flags: outside the deliberately narrow classifier.
+        "fe 03 02",          // Fence flags: outside the deliberately narrow classifier.
         "fe 4f 02 00",       // Shared-everything ordering: outside the classifier.
         "28 80 01 00",       // Unknown memarg flag bits: outside the classifier.
     ] {

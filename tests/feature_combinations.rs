@@ -17,10 +17,12 @@ fn experimental_operands_and_types_have_exact_physical_fields() {
         "(module (type $f (func)) (type $c (cont $f)) (func ref.null $f cont.new $c cont.bind $c $c resume $c))",
         "(module (tag $t) (func try i32.const 7 drop throw $t catch $t nop end))",
         "(module (rec (type $s (descriptor $d) (struct)) (type $d (describes $s) (struct))) (func struct.new_default $d struct.new_desc $s ref.get_desc $s drop))",
-        "(module (global $g (shared mut i32) (i32.const 0)) (func global.atomic.get seq_cst $g drop))",
+        "(module (global $g (shared mut i32) (i32.const 0)) (func global.atomic.get seqcst $g drop))",
         "(module (memory i64 1 1) (func i64.const 0 i32.const 7 i32.store offset=4294967296))",
         "(module (tag $t) (func block try_table (catch $t 0) throw $t end end))",
         "(module (func block i32.const 0 br_table 0 0 0 end))",
+        "(module (memory 1 1 shared) (func pause i32.const 0 i32.atomic.load acqrel drop atomic.fence acqrel i32.const 0 i32.const 1 i32.atomic.rmw.add acqrel drop))",
+        "(module (type $a (array (mut i16))) (func i32.const 8 array.new_default $a i32.const 0 i32.load (type $a) drop))",
     ] {
         let bytes = wat::parse_str(text).unwrap();
         let flags = feature_set::exact(&feature_set::CORE_FEATURES.iter().map(|(n, _)| (*n).into()).collect::<Vec<_>>()).unwrap();
@@ -83,5 +85,39 @@ fn exact_core_policy_is_distinct_from_maximal_recognition() {
         .iter()
         .any(|e| e.feature == "bulk_memory_opt"));
     assert!(feature_set::exact(&["not-a-feature".into()]).is_err());
-    assert_eq!(feature_set::CORE_FEATURES.len(), 29);
+    assert_eq!(feature_set::CORE_FEATURES.len(), 31);
+    let expected = wasmparser::WasmFeatures::all()
+        .iter_names()
+        .filter(|(name, _)| {
+            *name != "COMPONENT_MODEL" && !name.starts_with("CM_") && *name != "CM64"
+        })
+        .fold(wasmparser::WasmFeatures::empty(), |flags, (_, next)| {
+            flags | next
+        });
+    let configured = feature_set::exact(
+        &feature_set::CORE_FEATURES
+            .iter()
+            .map(|(name, _)| (*name).into())
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    assert_eq!(configured, expected);
+}
+
+#[test]
+fn new_memarg_features_are_typed_and_rejected_when_disabled() {
+    for (feature, text, field) in [
+        ("acquire-release-atomics", "(module (memory 1 1 shared) (func i32.const 0 i32.atomic.load acqrel drop))", "/memarg/ordering"),
+        ("multibyte-array-access", "(module (type $a (array (mut i8))) (func i32.const 8 array.new_default $a i32.const 0 i32.load (type $a) drop))", "/memarg/array_type_index"),
+    ] {
+        let bytes = wat::parse_str(text).unwrap();
+        let names = feature_set::CORE_FEATURES.iter().filter(|(name, _)| *name != feature).map(|(name, _)| (*name).into()).collect::<Vec<_>>();
+        assert!(feature_set::validate(&bytes, feature_set::exact(&names).unwrap()).is_err());
+        let parsed = parse::parse_module(&bytes).unwrap();
+        assert!(parsed.functions.iter().flat_map(|f| &f.operators).any(|op| matches!(op.immediate, Immediate::MemoryOperand { .. })));
+        let inspected = audit::inspect(&bytes).unwrap();
+        let mut all = Vec::new();
+        for section in &inspected.sections { regions(&section.regions, &mut all); }
+        assert!(all.iter().any(|region| region.path.ends_with(field) && region.feature.as_deref() == Some(feature.replace('-', "_").as_str())));
+    }
 }

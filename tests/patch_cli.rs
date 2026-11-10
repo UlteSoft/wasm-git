@@ -244,7 +244,7 @@ fn unknown_instructions_and_malformed_custom_conventions_preserve_exact_bytes() 
         if let Payload::CodeSectionEntry(body) = payload.unwrap() {
             let mut reader = body.get_operators_reader().unwrap();
             while !reader.eof() {
-                let position = reader.original_position();
+                let position = reader.original_position() as usize;
                 if matches!(reader.read().unwrap(), Operator::I32Const { .. }) {
                     instruction_offset = Some(position);
                 }

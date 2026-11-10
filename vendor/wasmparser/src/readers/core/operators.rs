@@ -15,7 +15,7 @@
 
 use crate::limits::{MAX_WASM_CATCHES, MAX_WASM_HANDLERS};
 use crate::prelude::*;
-use crate::{BinaryReader, BinaryReaderError, FromReader, Result, ValType};
+use crate::{BinaryReader, Error, FromReader, Result, ValType};
 use core::{fmt, mem};
 
 /// Represents a block type.
@@ -86,12 +86,38 @@ pub struct MemArg {
     /// memory immediates for 32-bit memories are guaranteed to be at most
     /// `u32::MAX` whereas 64-bit memories can use the full 64-bits.
     pub offset: u64,
-    /// The index of the memory this immediate points to.
-    ///
-    /// Note that this points within the module's own memory index space, and
-    /// is always zero unless the multi-memory proposal of WebAssembly is
-    /// enabled.
-    pub memory: u32,
+    /// What this instruction operates on: a linear memory or a GC array.
+    pub target: MemArgTarget,
+
+    /// The memory ordering specified for this operation, part of the
+    /// acquire-release-atomics proposal.
+    pub ordering: Option<MemArgOrdering>,
+}
+
+/// The ordering immediate of a [`MemArg`], part of the
+/// acquire-release-atomics proposal.
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum MemArgOrdering {
+    /// The ordering immediate of an atomic load or store.
+    Op(Ordering),
+    /// The ordering immediate of an atomic read-modify-write instruction.
+    Rmw(Ordering),
+}
+
+/// What a memory instruction's [`MemArg`] immediate operates on.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum MemArgTarget {
+    /// The instruction operates on the linear memory at this index.
+    Memory(u32),
+    /// The instruction operates on the payload of a GC array whose type is at
+    /// this index in the module's type index space.
+    Array(u32),
+}
+
+impl Default for MemArgTarget {
+    fn default() -> MemArgTarget {
+        MemArgTarget::Memory(0)
+    }
 }
 
 /// A br_table entries representation.
@@ -182,7 +208,7 @@ impl<'a> Iterator for BrTableTargets<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         if self.remaining == 0 {
             if !self.reader.eof() {
-                return Some(Err(BinaryReaderError::new(
+                return Some(Err(Error::new(
                     "trailing data in br_table",
                     self.reader.original_position(),
                 )));
@@ -475,7 +501,7 @@ impl<'a> OperatorsReader<'a> {
     }
 
     /// Gets the original position of the reader.
-    pub fn original_position(&self) -> usize {
+    pub fn original_position(&self) -> u64 {
         self.reader.original_position()
     }
 
@@ -532,7 +558,7 @@ impl<'a> OperatorsReader<'a> {
     /// }
     ///
     /// struct Dumper {
-    ///     offset: usize
+    ///     offset: u64
     /// }
     ///
     /// macro_rules! define_visit_operator {
@@ -562,7 +588,7 @@ impl<'a> OperatorsReader<'a> {
     }
 
     /// Reads an operator with its offset.
-    pub fn read_with_offset(&mut self) -> Result<(Operator<'a>, usize)> {
+    pub fn read_with_offset(&mut self) -> Result<(Operator<'a>, u64)> {
         let pos = self.reader.original_position();
         Ok((self.read()?, pos))
     }
@@ -578,16 +604,18 @@ impl<'a> OperatorsReader<'a> {
     pub(crate) fn skip_const_expr(&mut self) -> Result<()> {
         // TODO add skip_operator() method and/or validate ConstExpr operators.
         loop {
-            if let Operator::End = self.read()? {
-                if self.current_frame().is_some() {
-                    bail!(
-                        self.original_position(),
-                        "control frames remain at end of expression"
-                    );
-                }
-                return Ok(());
+            let is_end = self.visit_operator(&mut IsEndOperatorVisitor)?;
+            if is_end {
+                break;
             }
         }
+        if self.current_frame().is_some() {
+            bail!(
+                self.original_position(),
+                "control frames remain at end of expression"
+            );
+        }
+        Ok(())
     }
 
     /// Function that must be called after the last opcode has been processed.
@@ -680,7 +708,7 @@ impl<'a> OperatorsIteratorWithOffsets<'a> {
 }
 
 impl<'a> Iterator for OperatorsIteratorWithOffsets<'a> {
-    type Item = Result<(Operator<'a>, usize)>;
+    type Item = Result<(Operator<'a>, u64)>;
 
     /// Reads content of the code section with offsets.
     ///
@@ -694,7 +722,7 @@ impl<'a> Iterator for OperatorsIteratorWithOffsets<'a> {
     /// for body in code_reader {
     ///     let body = body.expect("function body");
     ///     let mut op_reader = body.get_operators_reader().expect("op reader");
-    ///     let ops = op_reader.into_iter_with_offsets().collect::<Result<Vec<(Operator, usize)>>>().expect("ops");
+    ///     let ops = op_reader.into_iter_with_offsets().collect::<Result<Vec<(Operator, u64)>>>().expect("ops");
     ///     assert!(
     ///         if let [(Operator::Nop, 23), (Operator::End, 24)] = ops.as_slice() { true } else { false },
     ///         "found {:?}",
@@ -1094,6 +1122,44 @@ impl<'a, T: VisitOperator<'a>> VisitOperator<'a> for SingleFrameAdapter<'_, T> {
     }
 
     crate::for_each_visit_operator!(define_passthrough_visit_operator);
+}
+
+/// Implements [`VisitOperator`] with [`bool`] output: `true` it's an [`Operator::End`]
+struct IsEndOperatorVisitor;
+
+macro_rules! define_visit_is_end_operator {
+    ($(@$proposal:ident $op:ident $({ $($arg:ident: $argty:ty),* })? => $visit:ident ($($ann:tt)*))*) => {
+        $(
+            #[allow(unused)]
+            fn $visit(&mut self $($(,$arg: $argty)*)?) -> bool {
+                define_visit_is_end_operator!(@visit self $visit $($($arg,)*)?)
+            }
+        )*
+    };
+
+    (@visit $self:ident visit_end $($rest:tt)*) => {
+	    true
+    };
+
+    (@visit $self:ident $visit:ident $($rest:tt)*) => {
+	    false
+    };
+}
+
+impl<'a> VisitOperator<'a> for IsEndOperatorVisitor {
+    type Output = bool;
+
+    #[cfg(feature = "simd")]
+    fn simd_visitor(&mut self) -> Option<&mut dyn VisitSimdOperator<'a, Output = Self::Output>> {
+        Some(self)
+    }
+
+    crate::for_each_visit_operator!(define_visit_is_end_operator);
+}
+
+#[cfg(feature = "simd")]
+impl<'a> VisitSimdOperator<'a> for IsEndOperatorVisitor {
+    crate::for_each_visit_simd_operator!(define_visit_is_end_operator);
 }
 
 impl<'a> BinaryReader<'a> {

@@ -283,6 +283,7 @@ def package(args):
     files = [Path(args.client).resolve(), ROOT / "LICENSE", ROOT / "README.md",
              ROOT / "documents" / "RELEASE.eu_US.md", ROOT / "documents" / "RELEASE.zh_CN.md",
              ROOT / "documents" / "FEATURE_COMBINATIONS.eu_US.md",
+             ROOT / "documents" / "SYNTAX_EVOLUTION.eu_US.md",
              ROOT / "documents" / "UWVM2_ROS_EXTENSIONS.eu_US.md",
              ROOT / "documents" / "UWVM2_ROS_EXTENSIONS.zh_CN.md"]
     if args.server:

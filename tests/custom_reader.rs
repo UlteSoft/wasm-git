@@ -404,8 +404,8 @@ fn core_errors_and_other_invalid_outer_names_keep_original_offsets_and_context()
         assert_eq!(module.standard.validation, "invalid");
         assert!(!module.standard.validator_valid);
         let error = module.standard.validator_error.as_ref().unwrap();
-        assert_eq!(error.offset, original_error.offset() + shift);
-        assert_eq!(error.offset, projected_error.offset());
+        assert_eq!(error.offset as u64, original_error.offset() + shift as u64);
+        assert_eq!(error.offset as u64, projected_error.offset());
         assert_eq!(error.message, projected_error.to_string());
         assert_eq!(
             error.byte_context.raw_hex,

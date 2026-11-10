@@ -79,7 +79,7 @@ fn analysis_completeness(module: &ModuleIr) -> AnalysisCompletenessIr {
     if module
         .type_definitions
         .iter()
-        .any(|ty| !ty.is_final || ty.supertype.is_some())
+        .any(|ty| !ty.is_final || !ty.supertypes.is_empty())
     {
         warn("gc_subtyping_unmodeled", "Nominal GC/function subtyping is present; indirect-call and call_ref target selection currently compares exact type identities.".to_owned(), None, None);
     }
@@ -1678,9 +1678,12 @@ mod tests {
             operators: vec![sample_operator(
                 0,
                 Opcode::I32Store,
-                Immediate::MemArg {
+                Immediate::MemoryOperand {
                     align: 2,
                     offset: 0,
+                    target: crate::ir::MemoryTarget::Memory(0),
+                    ordering: None,
+                    lane: None,
                 },
             )],
             direct_calls: vec![],

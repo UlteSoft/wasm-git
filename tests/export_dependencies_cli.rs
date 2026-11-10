@@ -234,7 +234,7 @@ fn physical_references(bytes: &[u8]) -> BTreeMap<(u64, usize), (u64, &'static st
                 let mut reader = body.get_operators_reader().unwrap();
                 let mut ordinal = 0;
                 while !reader.eof() {
-                    let offset = reader.original_position() as u64;
+                    let offset = reader.original_position();
                     let item = match reader.read().unwrap() {
                         Operator::Call { function_index } => Some(("Call", function_index)),
                         Operator::ReturnCall { function_index } => {
