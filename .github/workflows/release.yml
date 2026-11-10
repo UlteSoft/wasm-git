@@ -1,14 +1,24 @@
 name: Publish release
-
 on:
   push:
     tags: ['v*']
-
 permissions:
   contents: read
-
 jobs:
+  qualification:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      statuses: read
+    steps:
+      - name: Require the exact commit's local 30-minute qualification
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          state=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/status" --jq '[.statuses[] | select(.context == "qualification/cgroup-64gib")][0].state')
+          test "$state" = success
   verify:
+    needs: qualification
     uses: ./.github/workflows/rust.yml
   publish:
     needs: verify
@@ -25,13 +35,13 @@ jobs:
           pattern: release-*
           merge-multiple: true
           path: .tmp/dist
-      - name: Verify version and produce checksums
+      - name: Verify version and archive inventory
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          python -c 'import os,tomllib; v=tomllib.load(open("Cargo.toml","rb"))["package"]["version"]; assert os.environ["RELEASE_TAG"] == "v"+v, "tag must match Cargo version"'
+          python -c 'import os,tomllib; v=tomllib.load(open("Cargo.toml","rb"))["package"]["version"]; assert os.environ["RELEASE_TAG"] == "v"+v'
           python tools/release.py checksums
-      - name: Publish tested prerelease assets
+      - name: Publish all ten platforms
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}

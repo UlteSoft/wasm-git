@@ -225,8 +225,9 @@ threads、compact imports、wide arithmetic 列在提案中；
 - wide arithmetic、memory control：已知指令参与类型化函数/块对齐。
   compact imports、custom page sizes：已知节编码及特性边界保留，仍需验证具体输入。
 - stack switching、custom descriptors：当前解码器认识的语法和原始操作数可审计，
-  部分函数投影仍为未细分操作数；涉及这类未知结构的函数会明确标记结构对齐不完整。
-  不能据此宣称已经提供完整 continuation/descriptor 语义和控制流分析。
+  已补齐独立类型化 IR 及逐字段原字节范围，包括 handler 表、continuation/descriptor
+  索引和 descriptor cast 分支。该覆盖是固定语法的读取及验证；不能据此宣称已经
+  提供完整 continuation 执行语义、控制流分析或程序等价证明。
 - Component Model 支持原始存储、恢复和外层 section/custom 更新，不提供完整组件类型检查、嵌套 Core 的递归函数匹配或组件语义合并。FP16、flexible vectors、memory/control
   提案的新修订及其他解码器未知编码没有完整指令级支持；JS/ESM/C API、WAT 语法建议
   也不能等同于一个可由本工具实现的 Core opcode 集合。
@@ -243,3 +244,5 @@ threads、compact imports、wide arithmetic 列在提案中；
 恰好一处指令替换、零误报插入/删除、结构对齐完整、单线程/默认全线程报告一致和 patch
 逐字节重建。宏枚举检查固定依赖的 344 个 SIMD/threads/shared atomics/wide/memory-control
 操作码，升级依赖时漏映射会编译或测试失败。
+
+0.1.3 的精确 feature 校验与逐字段审计见 [Feature combinations](../documents/FEATURE_COMBINATIONS.eu_US.md)。

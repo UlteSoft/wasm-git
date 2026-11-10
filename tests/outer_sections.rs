@@ -410,10 +410,13 @@ fn duplicates_invalidate_index_maps_and_normative_tag_data_count_order_is_accept
                 .iter()
                 .any(|entry| entry.code == "section_duplicate"));
             if matches!(repeated, 2 | 3 | 10) {
-                for body in regions(&module)
-                    .into_iter()
-                    .filter(|region| region.description.starts_with("function_index="))
-                {
+                for body in regions(&module).into_iter().filter(|region| {
+                    region
+                        .path
+                        .rsplit('/')
+                        .next()
+                        .is_some_and(|leaf| leaf.starts_with("function["))
+                }) {
                     assert!(body.description.starts_with("function_index=unknown "));
                 }
             }

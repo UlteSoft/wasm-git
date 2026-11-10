@@ -17,6 +17,7 @@ mod describe_commands;
 mod diff;
 mod diff_plumbing;
 mod export_dependencies;
+pub mod feature_set;
 pub mod features;
 mod fingerprint;
 mod history_commands;
@@ -30,6 +31,7 @@ mod normalize;
 mod notes_commands;
 mod object_batch;
 mod operation_commands;
+mod operator_fields;
 mod output;
 pub mod parallel;
 pub mod parse;
@@ -420,6 +422,7 @@ pub fn client_main() {
         "version" if args.len() == 3 && args[2] == "--build-options" => serde_json::to_string_pretty(&json!({"version":env!("CARGO_PKG_VERSION"),"backend":"native_wasm_git","original_wasm_bytes":true,"pointer_width":usize::BITS,"object_hash":"sha256","client":cfg!(feature="client"),"server":cfg!(feature="server"),"host_os":if cfg!(target_os="wasi") { "wasi" } else { std::env::consts::OS },"host_arch":std::env::consts::ARCH,"host_threads":!cfg!(target_family="wasm"),"host_processes":!cfg!(target_family="wasm"),"host_network":!cfg!(target_family="wasm"),"directory_fsync":cfg!(unix)})).map_err(|error|error.to_string()),
         "pool" => remote::pool_cli(&args[1..]),
         "features" => features::run(&args[1..]),
+        "validate" => feature_set::run(&args[1..]),
         "pr" => remote::pull_cli(&args[2..]),
         "clone" | "fetch" if remote::selective_requested(&args[1..]) => remote::run_selective(&args[1..]),
         "promisor" | "hydrate" | "clone-status" => remote::run_selective(&args[1..]),
@@ -1187,6 +1190,7 @@ fn usage_text() -> String {
     line("usage: wasm-git <command> [<args>]\n");
     line("  version [--build-options]");
     line("  features [FEATURE] [--standard STANDARD] [--json]");
+    line("  validate FILE... [--features FEATURE,... | --config FUZZER_CONFIG] [--json]");
     line("  blame <DIR> <REV> [--file PATH] [--range START:END|--path REGION] [--first-parent]");
     line("  hash-object <DIR> [-w] [-t wasm|tree|commit] (--stdin|FILE) | mktree <DIR> [-z]");
     line("  write-tree <DIR> | read-tree <DIR> <REV|--empty> | commit-tree <DIR> <TREE> [-p PARENT]... -m MESSAGE");

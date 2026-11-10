@@ -1093,7 +1093,7 @@ fn operator_to_opcode_immediate<'a>(op: Operator<'a>) -> Result<(Opcode, Immedia
 
         // ── Legacy exceptions ──
         Try { blockty } => Ok((
-            Oc::Unrecognized("Try".to_owned()),
+            Oc::Try,
             Immediate::BlockType(format!("{blockty:?}")),
         ),),
         Catch { tag_index } => Ok((Oc::Catch, Immediate::TagIndex(tag_index)),),

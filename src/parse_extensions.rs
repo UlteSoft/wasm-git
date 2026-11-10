@@ -3,6 +3,18 @@
 //! drop it or fall back to an opaque Debug string.
 use super::*;
 use crate::ir::AtomicOrdering;
+use crate::ir::ResumeHandlerIr;
+
+fn handlers(table: wasmparser::ResumeTable) -> Vec<ResumeHandlerIr> {
+    table
+        .handlers
+        .into_iter()
+        .map(|h| match h {
+            wasmparser::Handle::OnLabel { tag, label } => ResumeHandlerIr::OnLabel { tag, label },
+            wasmparser::Handle::OnSwitch { tag } => ResumeHandlerIr::OnSwitch { tag },
+        })
+        .collect()
+}
 
 fn ordering(value: wasmparser::Ordering) -> AtomicOrdering {
     match value {
@@ -11,6 +23,54 @@ fn ordering(value: wasmparser::Ordering) -> AtomicOrdering {
     }
 }
 macro_rules! operands {
+    ($index:ident; cont_type_index) => {
+        Immediate::ContinuationType($index)
+    };
+    ($arg:ident,$result:ident; argument_index,result_index) => {
+        Immediate::ContinuationBind {
+            argument_index: $arg,
+            result_index: $result,
+        }
+    };
+    ($tag:ident; tag_index) => {
+        Immediate::TagIndex($tag)
+    };
+    ($cont:ident,$table:ident; cont_type_index,resume_table) => {
+        Immediate::Resume {
+            cont_type_index: $cont,
+            tag_index: None,
+            handlers: handlers($table),
+        }
+    };
+    ($cont:ident,$tag:ident,$table:ident; cont_type_index,tag_index,resume_table) => {
+        Immediate::Resume {
+            cont_type_index: $cont,
+            tag_index: Some($tag),
+            handlers: handlers($table),
+        }
+    };
+    ($cont:ident,$tag:ident; cont_type_index,tag_index) => {
+        Immediate::Switch {
+            cont_type_index: $cont,
+            tag_index: $tag,
+        }
+    };
+    ($index:ident; struct_type_index) => {
+        Immediate::StructType($index)
+    };
+    ($index:ident; type_index) => {
+        Immediate::StructType($index)
+    };
+    ($heap:ident; hty) => {
+        Immediate::HeapType(format!("{:?}", $heap))
+    };
+    ($depth:ident,$from:ident,$to:ident; relative_depth,from_ref_type,to_ref_type) => {
+        Immediate::BrOnCast {
+            label: $depth,
+            src_type: format!("{:?}", $from),
+            dst_type: format!("{:?}", $to),
+        }
+    };
     () => {
         Immediate::None
     };
@@ -68,6 +128,8 @@ macro_rules! group {
     (simd,$op:ident $(,$arg:ident)*) => {Some((Opcode::$op,group!(args $($arg),*)))};
     (threads,$op:ident $(,$arg:ident)*) => {Some((Opcode::$op,group!(args $($arg),*)))};
     (shared_everything_threads,$op:ident $(,$arg:ident)*) => {Some((Opcode::$op,group!(args $($arg),*)))};
+    (stack_switching,$op:ident $(,$arg:ident)*) => {Some((Opcode::$op,group!(args $($arg),*)))};
+    (custom_descriptors,$op:ident $(,$arg:ident)*) => {Some((Opcode::$op,group!(args $($arg),*)))};
     (wide_arithmetic,$op:ident) => {Some((Opcode::$op,Immediate::None))};
     (memory_control,$op:ident,$mem:ident) => {Some((Opcode::$op,Immediate::MemoryIndex($mem)))};
     (memtag_extension,$op:ident,$mem:ident) => {Some((Opcode::$op,Immediate::MemoryIndex($mem)))};
@@ -90,6 +152,23 @@ mod tests {
     #[test]
     fn every_simd_atomic_and_shared_atomic_has_a_typed_projection() {
         macro_rules! value {
+            (hty) => {
+                wasmparser::HeapType::FUNC
+            };
+            (from_ref_type) => {
+                wasmparser::RefType::ANYREF
+            };
+            (to_ref_type) => {
+                wasmparser::RefType::ANYREF
+            };
+            (resume_table) => {
+                wasmparser::ResumeTable {
+                    handlers: vec![
+                        wasmparser::Handle::OnLabel { tag: 2, label: 3 },
+                        wasmparser::Handle::OnSwitch { tag: 4 },
+                    ],
+                }
+            };
             (memarg) => {
                 wasmparser::MemArg {
                     align: 2,
@@ -119,6 +198,8 @@ mod tests {
             (simd,$op:ident $(,$arg:ident)*) => {check!(run,$op $(,$arg)*)};
             (threads,$op:ident $(,$arg:ident)*) => {check!(run,$op $(,$arg)*)};
             (shared_everything_threads,$op:ident $(,$arg:ident)*) => {check!(run,$op $(,$arg)*)};
+            (stack_switching,$op:ident $(,$arg:ident)*) => {check!(run,$op $(,$arg)*)};
+            (custom_descriptors,$op:ident $(,$arg:ident)*) => {check!(run,$op $(,$arg)*)};
             (wide_arithmetic,$op:ident $(,$arg:ident)*) => {check!(run,$op $(,$arg)*)};
             (memory_control,$op:ident $(,$arg:ident)*) => {check!(run,$op $(,$arg)*)};
             (run,$op:ident $(,$arg:ident)*) => {{
@@ -137,6 +218,6 @@ mod tests {
             }
         }
         wasmparser::for_each_operator!(checks);
-        assert_eq!(count, 344);
+        assert_eq!(count, 358);
     }
 }

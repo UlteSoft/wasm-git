@@ -48,7 +48,7 @@ class WebGUI(unittest.TestCase):
     def setUpClass(cls):
         if not CLIENT.is_file() or not SERVER.is_file():
             raise RuntimeError("Set WASM_GIT_CLIENT and WASM_GIT_SERVER to built native executables.")
-        scratch = ROOT / ".tmp/webgui-tests"
+        scratch = Path(os.environ.get("WASM_FUZZER_TEST_ROOT", ROOT / ".tmp")) / "webgui-tests"
         scratch.mkdir(parents=True, exist_ok=True)
         cls.temp = tempfile.TemporaryDirectory(dir=scratch)
         cls.root = Path(cls.temp.name)

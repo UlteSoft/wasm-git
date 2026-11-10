@@ -58,12 +58,8 @@ jobs:
           cache-workspaces: . -> .tmp/target
           cache-key: ${{ matrix.target }}
           target: ${{ matrix.target }}
-      - name: Native regression tests
-        run: cargo test --locked --all-features --lib --test build_modes --test cli --test server_cli --test memtag_extension --test memtag_fuzz
       - name: Build both executables
         run: cargo build --locked --release --features server --target ${{ matrix.target }}
-      - name: Audit, restore, GC and HTTP server smoke
-        run: python tools/release.py smoke --label ${{ matrix.target }} --client .tmp/target/${{ matrix.target }}/release/wasm-git${{ matrix.suffix }} --server .tmp/target/${{ matrix.target }}/release/wasm-git-server${{ matrix.suffix }}
       - name: Package only release inputs
         run: python tools/release.py package --label ${{ matrix.target }} --client .tmp/target/${{ matrix.target }}/release/wasm-git${{ matrix.suffix }} --server .tmp/target/${{ matrix.target }}/release/wasm-git-server${{ matrix.suffix }}
       - uses: actions/upload-artifact@v4
@@ -74,7 +70,7 @@ jobs:
           retention-days: 7
 
   linux:
-    name: Linux QEMU ${{ matrix.target }}
+    name: Linux ${{ matrix.target }}
     strategy:
       fail-fast: false
       matrix:
@@ -103,16 +99,12 @@ jobs:
           cache-workspaces: . -> .tmp/target
           cache-key: ${{ matrix.target }}
           target: ${{ matrix.target }}
-      - name: Cross compiler and emulator
+      - name: Cross compiler
         run: |
           python -m venv .tmp/cross-tools
           .tmp/cross-tools/bin/pip install ziglang==0.15.2 cargo-zigbuild==0.24.1
           echo "$PWD/.tmp/cross-tools/bin" >> "$GITHUB_PATH"
-          sudo apt-get update
-          sudo apt-get install -y qemu-user
       - run: cargo zigbuild --locked --release --features server --target ${{ matrix.target }}
-      - name: Emulated audit, restore, GC and HTTP server
-        run: python tools/release.py smoke --label ${{ matrix.target }} --runner-arg=${{ matrix.qemu }} --client .tmp/target/${{ matrix.target }}/release/wasm-git --server .tmp/target/${{ matrix.target }}/release/wasm-git-server
       - run: python tools/release.py package --label ${{ matrix.target }} --client .tmp/target/${{ matrix.target }}/release/wasm-git --server .tmp/target/${{ matrix.target }}/release/wasm-git-server
       - uses: actions/upload-artifact@v4
         with:
@@ -142,8 +134,8 @@ jobs:
           cache-key: wasi-${{ matrix.profile }}
           target: wasm32-wasip1
           components: rust-src
-      - name: Rebuild libc and std, validate whole module, execute smoke, package
-        run: python tools/build-wasi.py --profile ${{ matrix.profile }}
+      - name: Rebuild libc and std, package (qualification is local)
+        run: python tools/build-wasi.py --profile ${{ matrix.profile }} --build-only
       - uses: actions/upload-artifact@v4
         with:
           name: release-wasm32-wasip1-${{ matrix.profile }}

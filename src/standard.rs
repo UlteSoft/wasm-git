@@ -48,6 +48,10 @@ impl Standard {
         let flags = match feature {
             "mvp" | "core1" | "custom" => return true,
             "mutable_global" => WasmFeatures::MUTABLE_GLOBAL,
+            "floats" => WasmFeatures::FLOATS,
+            "gc_types" => WasmFeatures::GC_TYPES,
+            "bulk_memory_opt" => WasmFeatures::BULK_MEMORY_OPT,
+            "call_indirect_overlong" => WasmFeatures::CALL_INDIRECT_OVERLONG,
             "sign_extension" => WasmFeatures::SIGN_EXTENSION,
             "saturating_float_to_int" => WasmFeatures::SATURATING_FLOAT_TO_INT,
             "reference_types" => WasmFeatures::REFERENCE_TYPES,
@@ -2231,7 +2235,8 @@ impl<'a> Collector<'a> {
             ($( @$proposal:ident $op:ident $({ $($arg:ident: $argty:ty),* })? => $visit:ident ($($ann:tt)*))*) => {
                 match operator {
                     $(Operator::$op $( { $($arg),* } )? => {
-                        self.record(path, span, stringify!($proposal), "instruction", "recognized opcode grammar", Some(stringify!($op).into()));
+                        let feature = if matches!(operator, Operator::MemoryCopy {..} | Operator::MemoryFill {..}) { "bulk_memory_opt" } else { stringify!($proposal) };
+                        self.record(path, span, feature, "instruction", "recognized opcode grammar", Some(stringify!($op).into()));
                         $($(self.argument(path, span, stringify!($arg), $arg);)*)?
                     },)*
                     _ => self.record(path, span, "unknown", "opaque", "operator not covered by the pinned feature map", None),
@@ -2295,15 +2300,17 @@ impl<'a> Collector<'a> {
                     let index = raw.read_var_u32()?;
                     Ok((index, raw.original_position() - start))
                 })();
-                if encoding.is_ok_and(|(index, len)| index != 0 || len != 1) {
-                    self.record(
+                if let Ok((index, len)) = encoding {
+                    if index != 0 || len != 1 {
+                        self.record(
                         path,
                         span,
-                        "reference_types",
+                        if index != 0 { "reference_types" } else { "call_indirect_overlong" },
                         "instruction",
                         "call_indirect table immediate is not the MVP literal reserved zero byte",
                         None,
                     );
+                    }
                 }
             }
             Operator::MemorySize { .. } | Operator::MemoryGrow { .. }

@@ -226,7 +226,13 @@ fn check_constant_tail(case: &Case, bytes: &[u8], module: &AuditModule) {
     let operators: Vec<_> = all_regions
         .iter()
         .copied()
-        .filter(|region| region.path.contains("/operator["))
+        .filter(|region| {
+            region
+                .path
+                .rsplit('/')
+                .next()
+                .is_some_and(|leaf| leaf.starts_with("operator["))
+        })
         .collect();
     let Some((wire, value)) = case.constant else {
         assert!(

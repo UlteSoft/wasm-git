@@ -14,10 +14,14 @@ tokens, and temporary signing keys are never package inputs.
 Native release targets are Linux x86_64, AArch64, ARMv7 hard-float and RISC-V
 RV64GC (static musl); Windows x86_64 and ARM64 (MSVC with a statically linked CRT); and macOS x86_64 and ARM64.
 WASI targets are `wasm32-wasip1-mvp` and `wasm32-wasip1-core2`.
-These are the tested release targets, not a claim that every CPU or OS version
+These are the declared release targets, not a claim that every CPU or OS version
 is supported. The Rust toolchain is pinned to 1.93.1. Linux cross compilation
 uses cargo-zigbuild 0.24.1 and Zig 0.15.2. Native Windows and macOS binaries are
-built and executed on their respective GitHub-hosted operating systems.
+built on their respective GitHub-hosted operating systems. Since 0.1.3, runtime
+qualification is performed locally in the existing 64 GiB zero-swap cgroup;
+hosted CI compiles and packages without running tests. Tag publication requires
+the exact commit's successful `qualification/cgroup-64gib` status. See
+[Feature qualification](FEATURE_COMBINATIONS.eu_US.md).
 
 Windows packages do not require a separate VC redistributable. Packaging reads
 the PE import tables of both executables and rejects dynamic CRT dependencies.
@@ -84,57 +88,41 @@ on the host filesystem. Native Unix directory sync errors still propagate.
 
 ## 3. Tests and local resource limits
 
-Every release build runs `tools/release.py smoke`. The fixture has 64 named
-functions, one nested-block constant edit, and a separate opaque custom-section
-edit exceeding 64 KiB. Checks require a single changed function, identical
-serial/default audit evidence, functioning section filters, byte-for-byte
-patch restoration, refusal to overwrite an existing export, stable commit IDs
-after GC, exact old/new history restoration, bundle import, and local clone.
-Native archives additionally exercise the standalone HTTP server and verify a
-clone of packed history through the client. Regression suites run separately;
-this smoke does not claim exhaustive instruction or operating-system coverage.
+For the 0.1.3 paired release, every runtime test runs in the existing 64 GiB,
+zero-swap cgroup through `wasm-fuzzer/tools/run-in-cgroup.sh`. All products,
+including wasm-git test executables, temporary repositories, validator builds,
+logs and downloaded archives, stay under `wasm-fuzzer/.tmp`. No new resource
+group or limit changes are required. Regression executables are built with
+`cargo test --no-run` and executed from that scratch directory.
 
-Linux release binaries are executed under QEMU user-mode emulation for all four
-listed architectures. This checks their CPU ABI and Linux syscall behavior; it
-does **not** boot Windows or macOS guests. Full-system QEMU testing of those
-systems requires supplied, bootable guest images and guest login/automation
-configuration. Native Windows/macOS CI execution is a separate verification
-result and must not be reported as local QEMU guest testing.
+`tools/release.py smoke` checks precise nested-block differences, opaque custom
+sections, original-byte patches, overwrite protection, history/GC, bundles and
+clones. Native clients also exercise the standalone HTTP server. Set
+`WASM_RELEASE_SCRATCH` to an absolute directory below wasm-fuzzer/.tmp when
+invoking this script from the paired qualification runner.
 
-On a systemd user-session Linux host, use the following wrapper to enforce
-64 GiB resident-memory accounting and zero cgroup swap allowance:
-
-```sh
-python3 tools/cgroup-run.py -- cargo test --locked --all-features
-python3 tools/cgroup-run.py -- python3 tools/release.py smoke \
-  --label aarch64-qemu --runner-arg=qemu-aarch64 \
-  --client .tmp/target/aarch64-unknown-linux-musl/release/wasm-git \
-  --server .tmp/target/aarch64-unknown-linux-musl/release/wasm-git-server
-```
-
-The wrapper checks the kernel's effective limits, records peak memory and OOM
-events, and stops only its own transient unit. Compilation, test scratch data,
-logs, caches, and downloaded toolchains belong under `.tmp/`; required regression
-source and intentional small fixtures remain tracked. The 64 GiB limit is a
-local test limit, not a claim about GitHub-hosted runner memory.
+After downloading a release, `wasm-fuzzer/tools/verify-releases.py` checks all
+10 archive hashes and binary architectures. It executes the four Linux targets
+through QEMU user-mode and the two WASIp1 targets through Wasmtime. It validates
+the complete WASI binary against the declared MVP/Core2 feature profile.
+Windows/macOS archives receive header and packaging checks on the Linux host;
+no native Windows/macOS execution is claimed by these local checks.
 
 ## 4. CI and publication gates
 
-The CI workflow performs formatting, feature-catalog validation, warning-free
-Clippy, the complete Linux regression suite, client-only/server-only build
-checks, and the cross-platform release matrix. Native Windows/macOS jobs run
-library and CLI/server regressions before their release smoke. The WASI jobs
-independently validate and execute both final modules using Wasmtime.
+Hosted CI checks formatting, warnings, source inventory and compilation of the
+regression harnesses (`--no-run`). It builds the ten release targets and packages
+only allowlisted files. It does not run runtime tests outside the existing local
+qualification cgroup.
 
-A pushed `vVERSION` tag invokes the same gates. Publication requires every job
-to succeed and the tag version to equal `Cargo.toml`. The publisher downloads
-only the ten release artifacts from that run, creates SHA-256 checksums, and
-publishes a GitHub **prerelease** with the checked-in release notes. PR builds
-have read-only permissions; only the final tag publication job can write releases.
-Before tagging, `tools/release.py inventory` checks tracked output paths and all
-reachable Git history for blobs at least 1 MiB. A large intentional source file
-requires an explicit review/update of this policy; generated products must be
-removed from history before publication.
+A `vVERSION` tag requires a successful `qualification/cgroup-64gib` commit status
+for the exact commit, published only after at least 30 minutes of paired
+wasm-fuzzer/wasm-git cross qualification. Every build job must succeed and the
+tag must match Cargo.toml. The publish job downloads only that run's artifacts,
+requires ten archives, creates SHA256SUMS and publishes a GitHub prerelease.
+Only the publish job has release write permission. Before tagging, run
+`tools/release.py inventory` to reject tracked intermediates and oversized
+historical blobs. Qualification reports remain in ignored local scratch space.
 
 ## 5. References
 

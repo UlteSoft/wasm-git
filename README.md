@@ -84,3 +84,5 @@ old JSON repositories and superseded pre-release binary formats are not migrated
 Builds, test output, profiles, downloaded corpora, and publication checks belong
 under the ignored project-local `.tmp/` directory. Regression source code and
 small, intentional fixtures remain versioned.
+
+Exact Core feature validation and fine-grained maximal-grammar auditing are documented in [Feature combinations](documents/FEATURE_COMBINATIONS.eu_US.md).

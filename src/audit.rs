@@ -71,7 +71,7 @@ pub struct Region {
 }
 
 impl Region {
-    fn new(path: impl Into<String>, span: Span, description: impl Into<String>) -> Self {
+    pub(crate) fn new(path: impl Into<String>, span: Span, description: impl Into<String>) -> Self {
         Self {
             path: path.into(),
             span,
@@ -81,7 +81,7 @@ impl Region {
             standard_support: StandardSupport::default(),
         }
     }
-    fn feature(mut self, feature: &str) -> Self {
+    pub(crate) fn feature(mut self, feature: &str) -> Self {
         self.feature = Some(feature.into());
         self
     }
@@ -728,6 +728,24 @@ fn locals_field_error(path: &str, failure: crate::value_guard::FieldFailure) -> 
     .feature("invalid_encoding")
 }
 
+fn declaration_fields(
+    source: BinaryReader<'_>,
+    region: &mut Region,
+    kind: u8,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    match crate::operator_fields::declaration(source, region.span, &region.path, kind) {
+        Ok(fields) => region.children.extend(fields),
+        Err(error) => issue(
+            diagnostics,
+            "warning",
+            "declaration_projection",
+            region.span.start,
+            error,
+        ),
+    }
+}
+
 fn core_section(
     section: &mut AuditSection,
     mut reader: BinaryReader<'_>,
@@ -761,14 +779,27 @@ fn core_section(
                             _ if !ty.is_final || ty.supertype_idx.is_some() => "gc",
                             _ => "core_types",
                         };
-                        region.children.push(
-                            Region::new(
-                                format!("{path}/type[{type_index}]"),
-                                Span::new(*start, end),
-                                format!("{ty:?}"),
-                            )
-                            .feature(feature),
-                        );
+                        let mut member = Region::new(
+                            format!("{path}/type[{type_index}]"),
+                            Span::new(*start, end),
+                            format!("{ty:?}"),
+                        )
+                        .feature(feature);
+                        let mut raw = source.clone();
+                        raw.read_bytes(*start - raw.original_position())?;
+                        match crate::operator_fields::subtype(
+                            raw,
+                            member.span,
+                            &member.path,
+                            feature,
+                            ty,
+                        ) {
+                            Ok(fields) => member.children = fields,
+                            Err(error) => {
+                                issue(diagnostics, "warning", "type_projection", *start, error)
+                            }
+                        }
+                        region.children.push(member);
                         type_index += 1;
                     }
                     Ok(region)
@@ -841,6 +872,7 @@ fn core_section(
             |index, span, table: Table<'_>| {
                 let entry_path = format!("{path}/entry[{index}]");
                 let mut region = Region::new(&entry_path, span, format!("{:?}", table.ty));
+                declaration_fields(source.clone(), &mut region, 4, diagnostics);
                 if let TableInit::Expr(expr) = table.init {
                     region.children.push(expression(
                         expr,
@@ -851,7 +883,21 @@ fn core_section(
                 Ok(region)
             },
         )?,
-        5 => simple_entries::<MemoryType>(&mut reader, section.id, &path, &mut section.regions)?,
+        5 => entries(
+            &mut reader,
+            section.id,
+            &path,
+            &mut section.regions,
+            |index, span, memory: MemoryType| {
+                let mut region = Region::new(
+                    format!("{path}/entry[{index}]"),
+                    span,
+                    format!("{memory:?}"),
+                );
+                declaration_fields(source.clone(), &mut region, 5, diagnostics);
+                Ok(region)
+            },
+        )?,
         6 => entries(
             &mut reader,
             section.id,
@@ -860,6 +906,7 @@ fn core_section(
             |index, span, global: Global<'_>| {
                 let entry_path = format!("{path}/entry[{index}]");
                 let mut region = Region::new(&entry_path, span, format!("{:?}", global.ty));
+                declaration_fields(source.clone(), &mut region, 6, diagnostics);
                 region.children.push(expression(
                     global.init_expr,
                     &format!("{entry_path}/init"),
@@ -1146,10 +1193,11 @@ fn core_section(
             &path,
             &mut section.regions,
             |index, span, tag: TagType| {
-                Ok(
+                let mut region =
                     Region::new(format!("{path}/entry[{index}]"), span, format!("{tag:?}"))
-                        .feature("exceptions"),
-                )
+                        .feature("exceptions");
+                declaration_fields(source.clone(), &mut region, 13, diagnostics);
+                Ok(region)
             },
         )?,
         id => {
@@ -1381,6 +1429,12 @@ fn expression(expr: ConstExpr<'_>, path: &str, diagnostics: &mut Vec<Diagnostic>
 }
 
 fn operator_feature(op: &Operator<'_>) -> &'static str {
+    if matches!(
+        op,
+        Operator::MemoryCopy { .. } | Operator::MemoryFill { .. }
+    ) {
+        return "bulk_memory_opt";
+    }
     macro_rules! feature {
         ($( @$proposal:ident $op:ident $({ $($arg:ident: $argty:ty),* })? => $visit:ident ($($ann:tt)*))*) => {
             match op {
@@ -1513,14 +1567,23 @@ fn decode_operators(
         }
         match reader.read() {
             Ok(op) => {
-                regions.push(
-                    Region::new(
-                        format!("{path}/operator[{index}]"),
-                        Span::new(start, reader.original_position()),
-                        format!("{op:?}"),
-                    )
-                    .feature(operator_feature(&op)),
-                );
+                let mut region = Region::new(
+                    format!("{path}/operator[{index}]"),
+                    Span::new(start, reader.original_position()),
+                    format!("{op:?}"),
+                )
+                .feature(operator_feature(&op));
+                match crate::operator_fields::decode(
+                    raw,
+                    region.span,
+                    &region.path,
+                    operator_feature(&op),
+                    &op,
+                ) {
+                    Ok(fields) => region.children = fields,
+                    Err(error) => issue(diagnostics, "warning", "operand_projection", start, error),
+                }
+                regions.push(region);
                 index += 1;
             }
             Err(error) => {
@@ -3418,7 +3481,7 @@ mod tests {
         assert!(diff.edits.iter().any(|edit| {
             edit.old_context
                 .iter()
-                .any(|context| context.path == "type[0]/type[0]")
+                .any(|context| context.path.starts_with("type[0]/type[0]/"))
         }));
     }
     #[test]

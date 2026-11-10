@@ -53,18 +53,19 @@ def main():
     parser.add_argument("--libc-source", type=Path)
     parser.add_argument("--wasm-tools", type=Path)
     parser.add_argument("--wasmtime", type=Path)
+    parser.add_argument("--build-only", action="store_true", help="compile/package in CI; qualification runs in the existing local cgroup")
     args = parser.parse_args()
-    root = ROOT / ".tmp" / "wasi"
+    root = Path(os.environ.get("WASM_RELEASE_SCRATCH", ROOT / ".tmp")).resolve() / "wasi"
     root.mkdir(parents=True, exist_ok=True)
     sdk = args.sdk.resolve() if args.sdk else fetch(root, SDK)
     libc = args.libc_source.resolve() if args.libc_source else fetch(root, LIBC)
-    validator = args.wasm_tools.resolve() if args.wasm_tools else fetch(root, TOOLS) / "wasm-tools"
-    runtime = args.wasmtime.resolve() if args.wasmtime else fetch(root, RUNTIME) / "wasmtime"
+    validator = None if args.build_only else (args.wasm_tools.resolve() if args.wasm_tools else fetch(root, TOOLS) / "wasm-tools")
+    runtime = None if args.build_only else (args.wasmtime.resolve() if args.wasmtime else fetch(root, RUNTIME) / "wasmtime")
     sysroot = root / "sysroot-mvp"
     # The upstream Makefile explicitly enables bulk-memory for memcpy/move/set.
     # Clearing this source override keeps musl's existing scalar implementations.
     # Rebuild the entire libc; disabling features only in Rust is insufficient.
-    run(["make", "-C", libc, f"-j{os.cpu_count() or 1}",
+    run(["make", "-C", libc, f"-j{min(8, os.cpu_count() or 1)}",
          f"CC={sdk}/bin/clang", f"AR={sdk}/bin/llvm-ar", f"NM={sdk}/bin/llvm-nm",
          "TARGET_TRIPLE=wasm32-wasip1", f"SYSROOT={sysroot}", f"OBJDIR={root}/libc-objects",
          "EXTRA_CFLAGS=-O2 -DNDEBUG -mcpu=mvp", "BULK_MEMORY_SOURCES=", "BUILD_LIBSETJMP=no"])
@@ -84,17 +85,18 @@ def main():
     run(["cargo", "build", "--locked", "--release", "--no-default-features", "--features", "client",
          "--target", "wasm32-wasip1", "-Zbuild-std=std,panic_abort"], cwd=ROOT, env=environment)
     binary = target / "wasm32-wasip1" / "release" / "wasm-git.wasm"
-    run([validator, "validate", f"--features={'mvp' if args.profile == 'mvp' else 'wasm2'}", binary])
-    # All imports must remain Preview 1; no Preview 2 component adapter or host
-    # networking extensions may silently become a release requirement.
-    imports = subprocess.check_output([validator, "print", "--skeleton", binary], text=True)
-    import re
-    modules = re.findall(r'\(import "([^"]+)"', imports)
-    if not modules or set(modules) != {"wasi_snapshot_preview1"}:
-        raise RuntimeError(f"unexpected import modules: {set(modules)}")
-    run([os.sys.executable, ROOT / "tools/release.py", "smoke", "--label", f"wasip1-{args.profile}",
-         "--client", binary, f"--runner-arg={runtime}", "--runner-arg=run",
-         "--runner-arg=-Ccache=y", "--runner-arg=--dir=.::/"])
+    if not args.build_only:
+        run([validator, "validate", f"--features={'mvp' if args.profile == 'mvp' else 'wasm2'}", binary])
+        # All imports must remain Preview 1; no Preview 2 component adapter or host
+        # networking extensions may silently become a release requirement.
+        imports = subprocess.check_output([validator, "print", "--skeleton", binary], text=True)
+        import re
+        modules = re.findall(r'\(import "([^"]+)"', imports)
+        if not modules or set(modules) != {"wasi_snapshot_preview1"}:
+            raise RuntimeError(f"unexpected import modules: {set(modules)}")
+        run([os.sys.executable, ROOT / "tools/release.py", "smoke", "--label", f"wasip1-{args.profile}",
+             "--client", binary, f"--runner-arg={runtime}", "--runner-arg=run",
+             "--runner-arg=-Ccache=y", "--runner-arg=--dir=.::/"])
     run([os.sys.executable, ROOT / "tools/release.py", "package", "--label",
          f"wasm32-wasip1-{args.profile}", "--client", binary])
 

@@ -113,9 +113,9 @@ static RETAINED: &[Retained] = &[
     retained!("threads", "threads", TypedCore, THREADS),
     retained!("compact_imports", "compact-import-section", TypedCore, COMPACT_IMPORTS),
     retained!("wide_arithmetic", "wide-arithmetic", TypedCore, WIDE_ARITHMETIC),
-    retained!("shared_everything_threads", "shared-everything-threads", PartialCore, SHARED_EVERYTHING_THREADS),
-    retained!("stack_switching", "stack-switching", PartialCore, STACK_SWITCHING),
-    retained!("custom_descriptors", "custom-descs", PartialCore, CUSTOM_DESCRIPTORS),
+    retained!("shared_everything_threads", "shared-everything-threads", TypedCore, SHARED_EVERYTHING_THREADS),
+    retained!("stack_switching", "stack-switching", TypedCore, STACK_SWITCHING),
+    retained!("custom_descriptors", "custom-descs", TypedCore, CUSTOM_DESCRIPTORS),
     retained!("custom_page_sizes", "custom-page-sizes", TypedCore, CUSTOM_PAGE_SIZES),
     retained!("memory_control", "memory-control", TypedCore, MEMORY_CONTROL),
     retained!("legacy_exceptions", "legacy_exceptions", TypedCore, LEGACY_EXCEPTIONS),
@@ -260,6 +260,7 @@ pub(crate) fn run(args: &[String]) -> Result<String, String> {
             "upstream_revision": UPSTREAM_REVISION, "upstream_sha256": UPSTREAM_SHA256,
             "source": "https://github.com/WebAssembly/proposals", "decoder": "wasmparser 0.249.0 + wasm-git patches",
             "selected_standard": args.standard, "retention_policy": policy, "features": entries,
+            "core_validation_switches": crate::feature_set::CORE_FEATURES.iter().map(|(name, _)| name).collect::<Vec<_>>(),
         })).map_err(|error| error.to_string());
     }
     let mut out = format!(

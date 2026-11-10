@@ -702,6 +702,22 @@ pub enum Opcode {
     MemtagHint,
     MemtagHintstore,
     MemtagHintstorez,
+    // Append-only: preserve existing serialized opcode discriminants.
+    Try,
+    ContNew,
+    ContBind,
+    Suspend,
+    Resume,
+    ResumeThrow,
+    ResumeThrowRef,
+    Switch,
+    StructNewDesc,
+    StructNewDefaultDesc,
+    RefGetDesc,
+    RefCastDescEqNonNull,
+    RefCastDescEqNullable,
+    BrOnCastDescEq,
+    BrOnCastDescEqFail,
 }
 
 impl Opcode {
@@ -1424,6 +1440,21 @@ impl Opcode {
             Opcode::MemtagHint => "MemtagHint",
             Opcode::MemtagHintstore => "MemtagHintstore",
             Opcode::MemtagHintstorez => "MemtagHintstorez",
+            Opcode::Try => "Try",
+            Opcode::ContNew => "ContNew",
+            Opcode::ContBind => "ContBind",
+            Opcode::Suspend => "Suspend",
+            Opcode::Resume => "Resume",
+            Opcode::ResumeThrow => "ResumeThrow",
+            Opcode::ResumeThrowRef => "ResumeThrowRef",
+            Opcode::Switch => "Switch",
+            Opcode::StructNewDesc => "StructNewDesc",
+            Opcode::StructNewDefaultDesc => "StructNewDefaultDesc",
+            Opcode::RefGetDesc => "RefGetDesc",
+            Opcode::RefCastDescEqNonNull => "RefCastDescEqNonNull",
+            Opcode::RefCastDescEqNullable => "RefCastDescEqNullable",
+            Opcode::BrOnCastDescEq => "BrOnCastDescEq",
+            Opcode::BrOnCastDescEqFail => "BrOnCastDescEqFail",
             // Unrecognized
             Opcode::Unrecognized(_) => "Unrecognized",
         }
@@ -1604,6 +1635,27 @@ pub enum Immediate {
     /// Any unrecognized immediate, stored as the wasmparser Debug text
     /// for display and hashing compatibility.
     Unrecognized(String),
+    /// Typed continuation operands; variant placement preserves prior indices.
+    ContinuationType(u32),
+    ContinuationBind {
+        argument_index: u32,
+        result_index: u32,
+    },
+    Resume {
+        cont_type_index: u32,
+        tag_index: Option<u32>,
+        handlers: Vec<ResumeHandlerIr>,
+    },
+    Switch {
+        cont_type_index: u32,
+        tag_index: u32,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub enum ResumeHandlerIr {
+    OnLabel { tag: u32, label: u32 },
+    OnSwitch { tag: u32 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -1766,6 +1818,22 @@ impl Immediate {
                 field_index,
             } => format!("ordering:{ordering:?},struct_type:{type_index},field:{field_index}"),
             Immediate::Unrecognized(s) => s.clone(),
+            Immediate::ContinuationType(index) => format!("cont_type_index:{index}"),
+            Immediate::ContinuationBind {
+                argument_index,
+                result_index,
+            } => format!("argument_index:{argument_index},result_index:{result_index}"),
+            Immediate::Resume {
+                cont_type_index,
+                tag_index,
+                handlers,
+            } => format!(
+                "cont_type_index:{cont_type_index},tag_index:{tag_index:?},handlers:{handlers:?}"
+            ),
+            Immediate::Switch {
+                cont_type_index,
+                tag_index,
+            } => format!("cont_type_index:{cont_type_index},tag_index:{tag_index}"),
         }
     }
 
@@ -1901,6 +1969,7 @@ impl ParsedOperator {
             Immediate::TagIndex(idx) => format!("{kind} {{ tag_index: {idx} }}"),
             Immediate::ArrayCopy {..} | Immediate::HeapType(_) | Immediate::AtomicGlobal {..}
             | Immediate::AtomicTable {..} | Immediate::AtomicArray {..} | Immediate::AtomicStruct {..}
+            | Immediate::ContinuationType(_) | Immediate::ContinuationBind {..} | Immediate::Resume {..} | Immediate::Switch {..}
                 => format!("{kind} {{ {} }}", self.immediate.as_hash_text()),
             Immediate::Unrecognized(s) => s.clone(),
         }

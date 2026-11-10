@@ -26,6 +26,7 @@ for (const [command, args] of [
 ]) recipe("History & recovery", command, args);
 for (const [command, args] of [
   ["inspect", ["HEAD", "--repo", "@repo", "--file", "FILE.wasm", "--json"]],
+  ["validate", ["FILE.wasm", "--config", "CONFIG.json", "--json"]],
   ["diff", ["HEAD^", "HEAD", "--repo", "@repo", "--format", "json"]],
   ["debug-map", ["HEAD", "--repo", "@repo", "--file", "FILE.wasm", "--json"]],
   ["patch", ["OLD.wasm", "NEW.wasm", "--output", "NEW_PATCH.wgp"]],

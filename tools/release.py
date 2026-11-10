@@ -16,6 +16,7 @@ import tomllib
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
+SCRATCH = Path(os.environ.get("WASM_RELEASE_SCRATCH", ROOT / ".tmp")).resolve()
 
 
 def run(args, **kwargs):
@@ -84,7 +85,7 @@ def memtag_module(edited, wide):
 
 
 def smoke(args):
-    parent = ROOT / ".tmp" / "release-smoke"
+    parent = SCRATCH / "release-smoke"
     parent.mkdir(parents=True, exist_ok=True)
     client = Path(args.client).resolve()
     prefix = args.runner_arg or []
@@ -276,11 +277,12 @@ def verify_windows_runtime(path):
 def package(args):
     version = tomllib.loads((ROOT / "Cargo.toml").read_text())["package"]["version"]
     name = f"wasm-git-{version}-{args.label}"
-    destination = ROOT / ".tmp" / "dist"
+    destination = SCRATCH / "dist"
     destination.mkdir(parents=True, exist_ok=True)
     # Explicit allowlist: no test data, build trees, credentials or profiles.
     files = [Path(args.client).resolve(), ROOT / "LICENSE", ROOT / "README.md",
              ROOT / "documents" / "RELEASE.eu_US.md", ROOT / "documents" / "RELEASE.zh_CN.md",
+             ROOT / "documents" / "FEATURE_COMBINATIONS.eu_US.md",
              ROOT / "documents" / "UWVM2_ROS_EXTENSIONS.eu_US.md",
              ROOT / "documents" / "UWVM2_ROS_EXTENSIONS.zh_CN.md"]
     if args.server:
@@ -323,7 +325,7 @@ def inventory(_args):
 
 
 def checksums(_args):
-    root = ROOT / ".tmp" / "dist"
+    root = SCRATCH / "dist"
     archives = sorted([*root.glob("*.tar.gz"), *root.glob("*.zip")])
     if len(archives) != 10:
         raise RuntimeError(f"expected exactly 10 release archives, found {len(archives)}")
