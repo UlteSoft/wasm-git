@@ -71,7 +71,7 @@ impl Server {
         let policy = compile(
             root,
             "policy",
-            json!({"version":1,"principals":[
+            json!({"version":3,"principals":[
                 {"name":"alice","token_sha256":format!("{:x}",Sha256::digest(b"alice")),"grants":[{"repository":"*","read":true,"write":["refs/heads/*"],"force":true,"create":true}]},
                 {"name":"bob","token_sha256":format!("{:x}",Sha256::digest(b"bob")),"grants":[{"repository":"project","read":true,"write":["refs/heads/*"],"force":true,"create":false}]},
                 {"name":"ci","token_sha256":format!("{:x}",Sha256::digest(b"ci")),"grants":[{"repository":"project","read":true,"write":["refs/heads/*"],"force":false,"create":false}]},
@@ -374,31 +374,20 @@ fn direct_atomic_and_partial_push_cannot_bypass_pr_protection() {
     .unwrap();
     assert!(!s.rpc("alice", Operation::PublishBatch {}, &bytes).0.ok);
     let upload_id = format!("{:x}", Sha256::digest(&bytes));
-    assert!(
-        s.rpc(
-            "alice",
-            Operation::UploadSlice {
-                transfer: upload_id.clone(),
-                total: bytes.len() as u64,
-                offset: 0
-            },
-            &bytes
-        )
-        .0
-        .ok
-    );
-    let uploaded = s
+    let binding = protocol::UploadBinding::for_payload(Operation::PublishBatch {}, &bytes).unwrap();
+    let upload = s
         .rpc(
             "alice",
-            Operation::ApplyUpload {
-                transfer: upload_id,
-                operation: Box::new(Operation::PublishBatch {}),
+            Operation::ScopedUploadSlice {
+                session: upload_id,
+                binding,
+                offset: 0,
             },
-            &[],
+            &bytes,
         )
         .0;
-    assert!(!uploaded.ok);
-    assert!(uploaded.error.unwrap().contains("protected"));
+    assert!(!upload.ok);
+    assert!(upload.error.unwrap().contains("protected"));
     let partial = binary::encode(&protocol::OptionsPublication {
         publication: binary::decode(&bytes).unwrap(),
         options: vec![],
@@ -413,6 +402,269 @@ fn direct_atomic_and_partial_push_cannot_bypass_pr_protection() {
     let report: protocol::PartialReceipt = binary::decode(&r.1).unwrap();
     assert!(report.rejections[0].as_ref().unwrap().contains("protected"));
     assert_eq!(repo.resolve("HEAD").unwrap(), base);
+}
+
+#[test]
+fn scoped_uploads_bind_authenticated_actor_and_recover_the_same_result() {
+    let t = Temp::new();
+    let (repo, fork, base, head) = fixture(&t);
+    let s = Server::start(&t.0, false, &[]);
+    let bytes = fork
+        .network_bundle(std::slice::from_ref(&head), std::slice::from_ref(&base))
+        .unwrap()
+        .1;
+    let operation = Operation::UpdateRef {
+        namespace: RefNamespace::Branch,
+        name: "topic".into(),
+        expected: None,
+        new: Some(head.clone()),
+        force: false,
+    };
+    let binding = protocol::UploadBinding::for_payload(operation.clone(), &bytes).unwrap();
+    let payload_file = t.0.join("upload-payload.bin");
+    fs::write(&payload_file, &bytes).unwrap();
+    let mut generator = Command::new(env!("CARGO_BIN_EXE_wasm-git"))
+        .args([
+            "--format",
+            "json",
+            "upload-binding",
+            payload_file.to_str().unwrap(),
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    generator
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(
+            &serde_json::to_vec(&protocol::UploadBindingRequest {
+                version: 1,
+                operation: Box::new(operation),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+    let generated: serde_json::Value =
+        serde_json::from_str(&success(generator.wait_with_output().unwrap())).unwrap();
+    let generated: protocol::UploadBinding =
+        serde_json::from_value(generated["result"]["value"].clone()).unwrap();
+    assert_eq!(
+        binary::encode(&generated).unwrap(),
+        binary::encode(&binding).unwrap()
+    );
+    let session = "a".repeat(64);
+    let chunk = || Operation::ScopedUploadSlice {
+        session: session.clone(),
+        binding: binding.clone(),
+        offset: 0,
+    };
+    let query = || Operation::QueryScopedUpload {
+        session: session.clone(),
+        binding: binding.clone(),
+    };
+    let apply = || Operation::ApplyScopedUpload {
+        session: session.clone(),
+        binding: binding.clone(),
+    };
+    let cancel = || Operation::CancelScopedUpload {
+        session: session.clone(),
+        binding: binding.clone(),
+    };
+    assert!(s.rpc("alice", chunk(), &bytes).0.ok);
+    assert!(!s.rpc("bob", chunk(), &bytes).0.ok);
+    assert!(!s.rpc("bob", query(), &[]).0.ok);
+    assert!(!s.rpc("bob", cancel(), &[]).0.ok);
+    assert!(!s.rpc("bob", apply(), &[]).0.ok);
+    let (first, _) = s.rpc("alice", apply(), &[]);
+    assert!(first.ok, "{first:?}");
+    assert_eq!(repo.resolve("topic").unwrap(), head);
+    let (again, _) = s.rpc("alice", apply(), &[]);
+    assert!(again.ok);
+    assert_eq!(again.tip, first.tip);
+    let (status, bytes) = s.rpc("alice", query(), &[]);
+    assert!(status.ok);
+    let status: protocol::ScopedUploadStatus = binary::decode(&bytes).unwrap();
+    match &status.state {
+        Some(protocol::ScopedUploadState::FinishedV4 { receipt }) => {
+            assert!(receipt.response.ok);
+            assert_eq!(receipt.scope.actor, "alice");
+            assert_eq!(receipt.scope.repository, "project");
+            assert_eq!(receipt.scope.session, session);
+            assert_eq!(receipt.updates[0].name, "topic");
+            assert_eq!(receipt.updates[0].new.as_deref(), Some(head.as_str()));
+            assert!(receipt.rejections[0].is_none());
+        }
+        _ => panic!("expected a v4 receipt"),
+    }
+    let mut client = Command::new(env!("CARGO_BIN_EXE_wasm-git"))
+        .args([
+            "--format",
+            "json",
+            "scoped-upload-rpc",
+            &format!("http://{}/project", s.address),
+        ])
+        .env("WASM_GIT_REMOTE_TOKEN", "alice")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let upload_request = protocol::ScopedUploadRequest {
+        version: 1,
+        command: protocol::ScopedUploadCommand::Query {
+            session: session.clone(),
+            binding: binding.clone(),
+        },
+    };
+    client
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(
+            &serde_json::to_vec(&upload_request).unwrap(),
+        )
+        .unwrap();
+    let raw = success(client.wait_with_output().unwrap());
+    let reply: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let reply: protocol::ScopedUploadReply =
+        serde_json::from_value(reply["result"]["value"].clone()).unwrap();
+    assert!(
+        matches!(reply, protocol::ScopedUploadReply::Status { status: protocol::ScopedUploadStatus { state: Some(protocol::ScopedUploadState::FinishedV4 { receipt }), .. }, .. } if receipt.response.ok)
+    );
+    let request = serde_json::to_string(&upload_request).unwrap();
+    let validation = format!(r#"{{"kind":"upload_cli_reply","repository":"project","request":{request},"process_exit":0,"response":{raw}}}"#);
+    let mut validator = Command::new(env!("CARGO_BIN_EXE_wasm-git")).args(["--format", "json", "integration-validate"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    validator.stdin.take().unwrap().write_all(validation.as_bytes()).unwrap();
+    assert!(validator.wait_with_output().unwrap().status.success());
+    assert!(!s.rpc("alice", cancel(), &[]).0.ok);
+}
+
+#[test]
+fn scoped_noop_rejections_and_dry_runs_are_durable_terminal_decisions() {
+    let t = Temp::new();
+    let (repo, fork, base, head) = fixture(&t);
+    repo.create_branch("topic", &base).unwrap();
+    let s = Server::start(&t.0, false, &[]);
+    let bundle = fork
+        .network_bundle(std::slice::from_ref(&head), std::slice::from_ref(&base))
+        .unwrap()
+        .1;
+    fn run(
+        s: &Server,
+        session: String,
+        operation: Operation,
+        bytes: &[u8],
+    ) -> (Response, Vec<u8>, protocol::ScopedUploadStatus) {
+        let binding = protocol::UploadBinding::for_payload(operation, bytes).unwrap();
+        assert!(
+            s.rpc(
+                "alice",
+                Operation::ScopedUploadSlice {
+                    session: session.clone(),
+                    binding: binding.clone(),
+                    offset: 0
+                },
+                bytes
+            )
+            .0
+            .ok
+        );
+        let (response, payload) = s.rpc(
+            "alice",
+            Operation::ApplyScopedUpload {
+                session: session.clone(),
+                binding: binding.clone(),
+            },
+            &[],
+        );
+        let (query, state) = s.rpc(
+            "alice",
+            Operation::QueryScopedUpload { session, binding },
+            &[],
+        );
+        assert!(query.ok, "{query:?}");
+        (response, payload, binary::decode(&state).unwrap())
+    }
+    let same = Operation::UpdateRef {
+        namespace: RefNamespace::Branch,
+        name: "topic".into(),
+        expected: Some(base.clone()),
+        new: Some(base.clone()),
+        force: false,
+    };
+    let (response, _, status) = run(&s, "1".repeat(64), same, &bundle);
+    assert!(response.ok, "{response:?}");
+    assert!(
+        matches!(status.state, Some(protocol::ScopedUploadState::FinishedV4 { receipt }) if receipt.response.ok && receipt.updates[0].expected == receipt.updates[0].new)
+    );
+    let update = |expected: String| RefUpdate {
+        namespace: RefNamespace::Branch,
+        name: "topic".into(),
+        expected: Some(expected),
+        new: Some(head.clone()),
+        force: false,
+    };
+    let payload = |expected: String| {
+        binary::encode(&protocol::OptionsPublication {
+            publication: BatchPublication {
+                updates: vec![update(expected)],
+                bundle: bundle.clone(),
+            },
+            options: vec![],
+        })
+        .unwrap()
+    };
+    let (response, bytes, status) = run(
+        &s,
+        "2".repeat(64),
+        Operation::PublishPartial { dry_run: false },
+        &payload("f".repeat(64)),
+    );
+    assert!(response.ok, "{response:?}");
+    assert!(binary::decode::<protocol::PartialReceipt>(&bytes)
+        .unwrap()
+        .rejections[0]
+        .is_some());
+    assert!(
+        matches!(status.state, Some(protocol::ScopedUploadState::FinishedV4 { receipt }) if receipt.response.ok && receipt.rejections[0].is_some())
+    );
+    let (response, _, status) = run(
+        &s,
+        "3".repeat(64),
+        Operation::PublishPartial { dry_run: true },
+        &payload(base.clone()),
+    );
+    assert!(response.ok, "{response:?}");
+    assert!(
+        matches!(status.state, Some(protocol::ScopedUploadState::FinishedV4 { receipt }) if receipt.response.ok && receipt.dry_run)
+    );
+    assert_eq!(repo.resolve("topic").unwrap(), base);
+    let (response, _, status) = run(
+        &s,
+        "4".repeat(64),
+        Operation::CheckBatch {},
+        &payload(base.clone()),
+    );
+    assert!(response.ok, "{response:?}");
+    assert!(
+        matches!(status.state, Some(protocol::ScopedUploadState::FinishedV4 { receipt }) if receipt.response.ok)
+    );
+    let (response, _, status) = run(
+        &s,
+        "5".repeat(64),
+        Operation::Push {
+            branch: "topic".into(),
+            expected: Some(base.clone()),
+            force: false,
+        },
+        b"invalid bundle",
+    );
+    assert!(!response.ok && !response.publication_unknown);
+    assert!(
+        matches!(status.state, Some(protocol::ScopedUploadState::FinishedV4 { receipt }) if !receipt.response.ok && !receipt.response.publication_unknown)
+    );
+    assert_eq!(repo.resolve("topic").unwrap(), base);
 }
 
 #[test]
