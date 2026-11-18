@@ -277,7 +277,7 @@ def verify_windows_runtime(path):
 def package(args):
     version = tomllib.loads((ROOT / "Cargo.toml").read_text())["package"]["version"]
     name = f"wasm-git-{version}-{args.label}"
-    destination = SCRATCH / "dist"
+    destination = Path(args.destination).resolve() if args.destination else SCRATCH / "dist"
     destination.mkdir(parents=True, exist_ok=True)
     # Explicit allowlist: no test data, build trees, credentials or profiles.
     files = [Path(args.client).resolve(), ROOT / "LICENSE", ROOT / "README.md",
@@ -288,6 +288,26 @@ def package(args):
              ROOT / "documents" / "UWVM2_ROS_EXTENSIONS.zh_CN.md"]
     if args.server:
         files.append(Path(args.server).resolve())
+    temporary = None
+    if args.include_contract:
+        if not args.server:
+            raise RuntimeError("integration package requires both native client and server")
+        SCRATCH.mkdir(parents=True, exist_ok=True)
+        temporary = tempfile.TemporaryDirectory(dir=SCRATCH, prefix="package-contract-")
+        scratch = Path(temporary.name)
+        capability_bytes = subprocess.check_output([str(files[0]), "--format", "json", "integration-capabilities"])
+        capability_record = json.loads(capability_bytes)
+        validation = json.dumps({"kind": "capabilities_cli_reply", "process_exit": 0, "response": capability_record}).encode()
+        subprocess.run([str(files[0]), "--format", "json", "integration-validate"], input=validation, stdout=subprocess.DEVNULL, check=True)
+        capabilities = scratch / "integration-capabilities.json"
+        capabilities.write_bytes(capability_bytes)
+        sums = scratch / "BINARY-SHA256SUMS"
+        sums.write_text("".join(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n" for path in (files[0], Path(args.server).resolve())))
+        files.extend([ROOT / "src" / "protocol.rs", ROOT / "src" / "binary.rs", capabilities, sums])
+        if args.source_manifest:
+            files.append(Path(args.source_manifest).resolve())
+    elif args.source_manifest:
+        raise RuntimeError("--source-manifest requires --include-contract")
     if args.label.endswith("windows-msvc"):
         verify_windows_runtime(Path(args.client).resolve())
         if args.server:
@@ -297,15 +317,17 @@ def package(args):
             raise RuntimeError(f"missing or symlinked release input: {path}")
     if args.label.endswith("windows-msvc") or args.label.endswith("windows-gnu"):
         archive = destination / (name + ".zip")
-        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as output:
+        with zipfile.ZipFile(archive, "x", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as output:
             for path in files:
                 output.write(path, f"{name}/{path.name}")
     else:
         archive = destination / (name + ".tar.gz")
-        with tarfile.open(archive, "w:gz") as output:
+        with tarfile.open(archive, "x:gz") as output:
             for path in files:
                 output.add(path, arcname=f"{name}/{path.name}", recursive=False)
     print(archive)
+    if temporary:
+        temporary.cleanup()
 
 
 def inventory(_args):
@@ -344,6 +366,10 @@ def main():
         child.add_argument("--label", required=True)
         if name == "smoke":
             child.add_argument("--runner-arg", action="append", default=[])
+        else:
+            child.add_argument("--destination")
+            child.add_argument("--include-contract", action="store_true")
+            child.add_argument("--source-manifest")
     commands.add_parser("inventory")
     commands.add_parser("checksums")
     args = parser.parse_args()
