@@ -55,7 +55,8 @@ wasm-git commit ./peer restored.wasm -m 'apply reviewed byte patch'
 记录实际不可变提交 ID。`diff --repo` 使用同一批读取方式，`HEAD HEAD` 不会因两次读取之间的提交而变成不同输入。
 `inspect --repo` 和 `apply --repo` 也返回实际输入提交 ID。
 释放锁后的计算始终使用已复制的字节；后续引用变化不改变本次输入。
-`--check --repo` 仍会短暂创建和删除 `.wasm-git/write.lock`，需要仓库可写且没有其他持锁操作；
+`--check --repo` 仍需取得仓库 writer 锁；原生平台保留稳定锁文件并持有内核锁，WASIp1 使用独占创建的锁文件，
+需要仓库可写且没有其他持锁操作；
 不创建输出文件不等于零文件系统写入。
 
 补丁中的摘要属于完整原始文件，与包含类型和长度 envelope 的仓库对象 ID 不同。
