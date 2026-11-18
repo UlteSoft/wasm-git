@@ -85,7 +85,7 @@ wasm-git-server --root /srv/wasm-git --policy policy.bin --allow-write
 
 ```json
 {
-  "version": 1,
+  "version": 3,
   "principals": [
     {
       "name": "release-bot",
@@ -113,8 +113,36 @@ wasm-git-server --root /srv/wasm-git --policy policy.bin --allow-write
 `create` 仅授予预期的服务端 fork 目标。强推还需服务端 `--allow-force` 与客户端精确 lease。
 HTTP 写开关仍需显式启用；编译策略与 `--token-file` 互斥。
 
-策略替换应作为配置发布管理，重启实例加载新策略，不假设热更新。
+编译文件只用于服务根首次初始化；后续用 `policy-set` 条件更新，通过 `policy-query` 按原操作
+恢复回执。同一服务根的 HTTP 和 stdio 实例共用授权屏障。部署、文件系统、身份及自然过期的
+限制见[服务器授权](../docs/server.md#多用户权限与原子发布)。
 不得允许不可信客户端自行选择 SSH principal 或服务根目录。
+
+需要绑定原操作有效期时，使用原生 `operation-credential-issue` / `operation-credential-query`
+及 HTTP `--require-operation-credentials`。首次发放原子升级授权数据库，旧程序和普通认证入口随后拒绝访问；
+精确请求、不可续期动作身份、查询恢复及部署边界见[严格操作凭据](../docs/server.md#严格操作凭据)。
+严格分片使用 `scoped-upload-rpc` 的原操作 Chunk 与 QueryChunk 契约；普通 Slice 不可用于严格入口。
+接受回执独立于暂存数据清理，查询与重放的含义见[分片决定与清理](../docs/server.md#分片决定与清理)。
+
+Linux 本地管理员可用 `wasm-git-server --format json operation-context`、`operation-recover`、
+`audit-query` 和 `capacity-query` 查询原操作、受限恢复、审计及仓库容量。原主体撤权后，
+恢复只允许以严格匹配的原发放请求检查或关闭上传/保留范围；不续期、上传、读取正文或作出新的发布、转正决定。
+它使用服务根的独占授权屏障，保留已提交结果。身份和路径要求、JSON 请求文件用法、审计证据及
+旧凭据处理见[本地运维与受限恢复](../docs/server.md#本地运维与受限恢复)。
+
+`release_retention` 仅授予实际负责发布决定的受信服务主体，并同时要求仓库读取权限；
+单 token 模式不能使用发布保留接口。持有方为原操作持久记录准备、转正和关闭，
+先关闭后到达的准备被拒绝；已转正引用不能通过关闭释放。转正或关闭只接受协调方对其
+权威提交或终止决定的通知，不由仓库作发布决定。固定读取只返回该操作所选提交和文件。
+准备时所选文件必须已在本地，GC 和 pool 驱逐均保留受保护内容。
+保留和上传会话的版本化类型见 `src/protocol.rs`；跨语言调用使用客户端的
+`--format json retention-rpc`、`upload-binding`、`upload-recovery` 和 `scoped-upload-rpc`，并核对进程状态。
+这些命令通过标准输入接收原生类型的 JSON，凭据仍由 `WASM_GIT_REMOTE_TOKEN` 提供。
+`--format json integration-capabilities` 报告本机工具及契约版本和授权边界；
+`--format json integration-validate` 使用 `src/protocol.rs` 中的 `IntegrationValidation` 类型校验
+请求、响应及实际进程退出码。Node 调用方应将未解析的原始 JSON 字节嵌入校验请求，
+校验成功后才用 `JSON.parse`；该入口拒绝浮点数与超过 JavaScript 安全整数范围的数值。
+原生二进制协议的 `u64` 宽度不受此限制。
 
 ## 5. SSH 传输
 
@@ -182,6 +210,8 @@ Pre-receive 失败阻止发布；post-receive 失败不会撤销已经接受的�
 rejected/unknown/post-hook-failed 等结果。Post-receive 失败后仍尝试 post-update。
 发布后的完成审计本身也可能写失败，因此需保留 stderr，并查询
 实际引用核对结果。仅显式渲染审计时输出 JSON。
+`receive-audit.bin` 用于普通或历史接收的辅助核对；严格操作应结合服务根审计索引和原生回执。
+`Unknown`、`Unobserved` 或未完成的审计观察都不能证明原操作未执行。
 
 ## 7. 作者签名策略
 
@@ -266,6 +296,21 @@ CPU/内存限制，并允许服务根和必要 hook 数据访问。
 
 当前限制包括单 RPC packet 64 MiB、metadata 64 KiB、传输 chunk 1 MiB、bundle 4 GiB，
 每仓库最多 32 个 pending upload、8 GiB staging 预留预算，上传 24 小时过期。
+网络上传绑定已认证主体、仓库、目标、会话与内容摘要；旧无作用域上传 RPC 被拒绝。
+超时清理分片后，同一开放会话可重新上传；取消留下墓碑。v4 接收决定与引用事务同存 journal，
+恢复完成后按原会话查询实际引用结果；显式关闭时，没有持久决定且已排除在途处理的 v4 操作记为中断，
+不得重放同一会话。旧版 `Applying` 缺少该依据，继续保持未知并人工核对。
+旧版程序不能恢复 v4 journal；同一仓库的服务和本地维护命令须使用支持该 journal 的版本。
+Scoped 上传会话和发布保留分别以 4,096 条、64 MiB 活跃记录为新建水位；墓碑及完成、转正等
+终态保留且不占活跃水位。`capacity-query` 可查各自活跃与累计记录数量及编码字节数；累计值不含
+仓库对象或分片正文。存储故障后先恢复存储，再按原 ID 查询或重试。
+旧账本向单条记录存储迁移前须备份，并在维护窗口停止旧版写入者和维护程序，不得混用版本；
+首次 `capacity-query` 也可能触发迁移。迁移 marker 与新记录目录必须一起保留。
+详见[会话与保留容量](../docs/server.md#会话与保留容量)。
+普通客户端需分片上传时，调用方先提供唯一的 64 位十六进制 `WASM_GIT_UPLOAD_SESSION` 和
+已有私有目录 `WASM_GIT_UPLOAD_RECOVERY_DIR`。客户端在发送前将该会话的绑定及完整待传数据
+持久写入目录；`upload-recovery` 校验恢复记录及数据，再用同一身份查询或续传。处理完结果后
+由调用方清理这些恢复文件，不得与其他会话共用标识。
 每个 HTTP 连接有 15 秒累计 I/O 预算，完整请求缓存后的处理时间不计入其中，
 避免慢主机完成校验和持久化发布后无法发送回执；零碎读取不会重置预算。
 服务端处理受请求大小和并发数约束，不会因固定墙钟期限而取消；hook 组的独立期限见前文。
@@ -280,19 +325,24 @@ CPU/内存限制，并允许服务根和必要 hook 数据访问。
 
 一致性文件系统备份应停止写入者，或通过协调快照同时捕获对象、pack、ref、恢复控制记录和
 linked-worktree 元数据。需要节省空间时保留硬链接。
+备份还须包含服务根授权 SQLite 数据库及其恢复所需 journal、审计索引，以及保留与上传会话的
+marker 和单条记录；恢复前协调原发布决定、已发生的引用写入和允许的重放范围，
+不得以旧备份覆盖新墓碑或将未知结果当作未发生。
 服务策略、作者信任与私钥凭据应按权限单独备份。
 可移植 bundle 覆盖其选定历史，不代表全部运行配置和未保存工作区。
 
 Partial 或 pool-evicted 仓库并非自包含备份：导出前先 hydrate，或整体备份所需 pool 副本、
 pin 与拥有者状态。将备份还原到新目录，运行 fsck，再导出历史模块逐字节比较。
 
-中断后保留 journal、不完整审计尾和服务诊断；通过正常引擎重新打开，让持久事务恢复运行。
+中断后保留 journal、不完整审计尾和服务诊断；严格操作通过 `operation-recover` 按精确原请求恢复，
+普通严格读取与容量查询遇到待恢复的引用 journal 时拒绝。其他本地引擎流程仍按既有方式恢复事务。
 不确定 push 先查 ref。不要手动删除 pack、promise 或 pin 来消除报错。
-移除持久 writer/index 锁前必须确认无写入者；进程持有的 pool 锁有不同生命周期。
 
 使用 `gc DIR -n` 审阅计划。正常 GC 压缩且不 prune；`--prune=now` 明确回收保留根之外对象。
 真正删除的无引用历史需其他保留副本或备份恢复。
 审计轮换应按完整记录并与写入者协调；截断尾需要调查时保留原文件。
+原生 writer、index、传输锁的文件持续保留。Unix 操作正常结束时显式解锁；异常退出后须等仍持锁的继承描述符关闭，不得删除版本化 inode。
+旧格式或 WASIp1 的独占创建锁须在停止全部使用者并确认没有活动操作后受控处理，运行中不混用锁后端。
 
 ## 13. 运维验收
 

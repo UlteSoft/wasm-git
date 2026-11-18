@@ -71,6 +71,10 @@ is not a fuzz campaign or an AddressSanitizer run. Tests marked `ignored` remain
 unexecuted unless their required external tools/corpora are supplied and they are
 explicitly selected. Report pass, failure, ignored, and filtered counts separately.
 
+The Linux HTTPS and recovery cases in `server_chunk_receipts` require `python3`
+with its `ssl` module, `openssl`, and `curl`. Their temporary service roots and
+ancestors must meet the [local recovery path requirements](../docs/server.md#本地运维与受限恢复).
+
 The Git reference integration tests require an independent Git executable with
 `update-ref --batch-updates` support (Git 2.50 or newer). They normalize hash width
 and absent-OID output spelling, and probe the dangling-symref protection fixed
