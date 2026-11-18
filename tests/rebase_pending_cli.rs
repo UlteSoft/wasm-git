@@ -675,11 +675,12 @@ fn pending_controls_locks_partial_status_and_history_guards_are_consistent() {
     t.stage("a.wasm", UNKNOWN);
     ok(&["reset", t.root(), "--", "a.wasm"]);
     ok(&["restore", t.root(), "--", "a.wasm"]);
-    fs::write(t.path(".wasm-git/index.lock"), b"external index owner").unwrap();
+    let held = fs::OpenOptions::new().read(true).write(true).open(t.path(".wasm-git/index.lock")).unwrap();
+    held.try_lock().unwrap();
     rejected(&t, &["rebase", t.root(), "--skip"]);
     rejected(&t, &["rebase", t.root(), "--abort"]);
     rejected(&t, &["rebase", t.root(), "--quit"]);
-    fs::remove_file(t.path(".wasm-git/index.lock")).unwrap();
+    drop(held);
     fs::write(t.path(".wasm-git/index"), b"corrupt").unwrap();
     let partial = value(&["status", t.root()]);
     assert_eq!(partial["index_available"], false);

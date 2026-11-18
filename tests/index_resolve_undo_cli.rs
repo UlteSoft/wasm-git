@@ -487,10 +487,11 @@ fn malformed_batches_dry_runs_locks_and_clear_controls_preserve_all_other_state(
         &["update-index", t.root(), "--unresolve", "--stdin", "-z"],
         Some(b"a.wasm\0../bad\0"),
     );
-    fs::write(t.path(".wasm-git/index.lock"), b"other writer").unwrap();
+    let held = fs::OpenOptions::new().read(true).write(true).open(t.path(".wasm-git/index.lock")).unwrap();
+    held.try_lock().unwrap();
     t.reject(&["update-index", t.root(), "--unresolve", "a.wasm"], None);
     t.reject(&["update-index", t.root(), "--clear-resolve-undo"], None);
-    fs::remove_file(t.path(".wasm-git/index.lock")).unwrap();
+    drop(held);
     let stages = ok(&["ls-files", t.root(), "--stage"], None);
     let work = fs::read(t.path("a.wasm")).unwrap();
     ok(&["update-index", t.root(), "--clear-resolve-undo"], None);
@@ -993,7 +994,8 @@ fn conflict_restore_rejects_invalid_combinations_intents_and_index_locks_before_
     t.write("intent.wasm", &wasm(4));
     ok(&["add", t.root(), "-N", "intent.wasm"], None);
     t.reject(&["restore", t.root(), "--merge", "--", "."], None);
-    fs::write(t.path(".wasm-git/index.lock"), b"another writer").unwrap();
+    let held = fs::OpenOptions::new().read(true).write(true).open(t.path(".wasm-git/index.lock")).unwrap();
+    held.try_lock().unwrap();
     t.reject(&["restore", t.root(), "--merge", "--", "a.wasm"], None);
 }
 

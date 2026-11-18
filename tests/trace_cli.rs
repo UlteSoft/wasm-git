@@ -1109,13 +1109,14 @@ fn locked_or_corrupt_history_is_rejected_without_cleaning_someone_elses_files() 
     let root = history.commit(&bytes, "root");
     let tip = history.commit(&bytes, "same bytes, later commit");
     let lock = Path::new(&history.repo).join(".wasm-git/write.lock");
-    std::fs::write(&lock, b"another writer\n").unwrap();
+    let held = std::fs::OpenOptions::new().read(true).write(true).open(&lock).unwrap();
+    held.try_lock().unwrap();
     let before = snapshot(&history.directory);
     let output = invoke(&["trace", &history.repo, &tip, "--range", "0:1"]);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("locked"));
     assert_eq!(snapshot(&history.directory), before);
-    std::fs::remove_file(lock).unwrap();
+    drop(held);
     // A valid tip must not hide corruption in an ancestor outside the range.
     let ancestor = Path::new(&history.repo)
         .join(".wasm-git/objects")

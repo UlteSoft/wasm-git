@@ -498,7 +498,8 @@ fn missing_invalid_or_locked_index_and_unborn_head_never_publish_a_resolution() 
     );
     for name in ["index.lock", "write.lock"] {
         let lock = t.path(&format!(".wasm-git/{name}"));
-        fs::write(&lock, b"held fixed lock").unwrap();
+        let held = fs::OpenOptions::new().read(true).write(true).open(&lock).unwrap();
+        held.try_lock().unwrap();
         unchanged(
             &t,
             &[
@@ -510,7 +511,7 @@ fn missing_invalid_or_locked_index_and_unborn_head_never_publish_a_resolution() 
                 &head,
             ],
         );
-        fs::remove_file(lock).unwrap();
+        drop(held);
     }
     let index = t.path(".wasm-git/index");
     let original = fs::read(&index).unwrap();

@@ -619,11 +619,12 @@ fn invalid_control_forms_help_and_locks_do_not_change_pending_or_tracked_bytes()
         rejected(&t, &args);
     }
     for lock in ["index.lock", "write.lock"] {
-        t.write(&format!(".wasm-git/{lock}"), b"occupied");
+        let held = fs::OpenOptions::new().read(true).write(true).open(t.path(&format!(".wasm-git/{lock}"))).unwrap();
+        held.try_lock().unwrap();
         rejected(&t, &["merge", t.root(), "--abort"]);
         rejected(&t, &["merge", t.root(), "--continue", "--resolved-index"]);
         rejected(&t, &["merge", t.root(), "--quit"]);
-        fs::remove_file(t.path(&format!(".wasm-git/{lock}"))).unwrap();
+        drop(held);
     }
     let before = snapshot(&t.repo);
     ok(&["merge", t.root(), "--continue", "--help"]);

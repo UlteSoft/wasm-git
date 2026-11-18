@@ -126,9 +126,10 @@ fn cleanup_ignored_only_exclusions_path_scopes_and_worktree_lock_are_exact() {
         fs::write(root.join(name), name).unwrap();
     }
     let before = snapshot(root);
-    fs::write(root.join(".wasm-git/index.lock"), b"held").unwrap();
+    let held = fs::OpenOptions::new().read(true).write(true).open(root.join(".wasm-git/index.lock")).unwrap();
+    held.try_lock().unwrap();
     assert!(!execute(&["clean", path(root), "-f", "-x"]).status.success());
-    fs::remove_file(root.join(".wasm-git/index.lock")).unwrap();
+    drop(held);
     assert_eq!(snapshot(root), before);
     json(&["clean", path(root), "-f", "-X", "-e", "b.log"]);
     assert!(!root.join("a.log").exists());

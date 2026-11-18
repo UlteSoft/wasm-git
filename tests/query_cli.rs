@@ -1143,6 +1143,7 @@ fn explicit_branch_and_filtered_reference_queries_never_hide_repository_corrupti
         (".wasm-git/write.lock", b"other writer".as_slice()),
         (".wasm-git/upstreams.bin", b"{broken upstream".as_slice()),
     ] {
+        let original = fs::read(t.path(path)).ok();
         t.write(path, bytes);
         for command in ["branch", "for-each-ref"] {
             t.reject(&[
@@ -1153,7 +1154,11 @@ fn explicit_branch_and_filtered_reference_queries_never_hide_repository_corrupti
                 "no-match",
             ]);
         }
-        fs::remove_file(t.path(path)).unwrap();
+        if let Some(original) = original {
+            t.write(path, &original);
+        } else {
+            fs::remove_file(t.path(path)).unwrap();
+        }
     }
     t.write(
         &format!(".wasm-git/objects/{}", h.tip),

@@ -257,7 +257,8 @@ fn invalid_leases_branch_and_locks_never_publish_staged_bytes() {
     }
     for name in ["index.lock", "write.lock"] {
         let lock = t.path(&format!(".wasm-git/{name}"));
-        fs::write(&lock, b"held by test").unwrap();
+        let held = fs::OpenOptions::new().read(true).write(true).open(&lock).unwrap();
+        held.try_lock().unwrap();
         let locked = snapshot(&t.0);
         fail(&[
             "merge",
@@ -270,7 +271,7 @@ fn invalid_leases_branch_and_locks_never_publish_staged_bytes() {
             &ours,
         ]);
         assert_eq!(snapshot(&t.0), locked);
-        fs::remove_file(lock).unwrap();
+        drop(held);
     }
     assert_eq!(snapshot(&t.0), before);
     fail(&[

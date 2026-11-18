@@ -285,7 +285,7 @@ class WebGUI(unittest.TestCase):
             self.request("/api/jobs/cancel", {"id": job["id"]})
             self.wait_job(job, success=None)
 
-        policy = {"version": 1, "principals": [{"name": "alice", "token_sha256": hashlib.sha256(b"gui-test").hexdigest(),
+        policy = {"version": 2, "principals": [{"name": "alice", "token_sha256": hashlib.sha256(b"gui-test").hexdigest(),
                   "grants": [{"repository": "team/*", "read": True, "write": ["refs/heads/*"], "force": False, "create": True}]}]}
         protection = {"version": 1, "rules": [{"repository": "team/*", "branches": ["refs/heads/main"],
                                                "required_reviews": 0, "required_checks": []}]}

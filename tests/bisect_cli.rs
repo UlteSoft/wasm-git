@@ -527,11 +527,12 @@ fn verified_snapshot_and_writer_lock_are_required_but_reset_skips_object_decode(
     let t = Temp::new();
     let c = linear(&t);
     t.bisect(&["start", &c[6], &c[0]]);
-    t.write(".wasm-git/write.lock", b"existing external writer\n");
+    let held = fs::OpenOptions::new().read(true).write(true).open(t.path(".wasm-git/write.lock")).unwrap();
+    held.try_lock().unwrap();
     for action in ["status", "good", "reset"] {
         t.reject(&[action]);
     }
-    fs::remove_file(t.path(".wasm-git/write.lock")).unwrap();
+    drop(held);
     let object = t.path(&format!(".wasm-git/objects/{}", c[6]));
     let original = fs::read(&object).unwrap();
     fs::write(&object, b"corrupt committed object").unwrap();
