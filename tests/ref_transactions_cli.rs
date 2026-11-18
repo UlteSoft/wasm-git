@@ -41,8 +41,17 @@ fn execute(args: &[&str], input: &[u8]) -> Output {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all(input).unwrap();
-    child.wait_with_output().unwrap()
+    let write_result = child.stdin.take().unwrap().write_all(input);
+    let output = child.wait_with_output().unwrap();
+    if let Err(error) = write_result {
+        assert!(
+            error.kind() == std::io::ErrorKind::BrokenPipe && !output.status.success(),
+            "{args:?}: write stdin: {error}; exit: {}; stderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    output
 }
 fn ok(args: &[&str]) -> String {
     let output = execute(args, &[]);
@@ -320,7 +329,7 @@ fn prepare_acknowledgement_holds_writer_lock_until_commit_and_never_publishes_ea
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(!root.join(".wasm-git/write.lock").exists());
+    assert!(root.join(".wasm-git/write.lock").is_file());
     assert_eq!(ok(&["rev-parse", p(&root), "held"]), second);
 }
 
@@ -762,7 +771,7 @@ fn partial_prepare_holds_the_shared_lock_and_reports_rejections_only_after_commi
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        assert!(!root.join(".wasm-git/write.lock").exists());
+        assert!(root.join(".wasm-git/write.lock").is_file());
         assert!(!root.join(".wasm-git/ref-transaction.bin").exists());
         assert_eq!(
             root.join(".wasm-git/tags/accepted").exists(),
