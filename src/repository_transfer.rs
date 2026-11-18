@@ -1,5 +1,6 @@
 //! Bounded-frame transfer of a frozen, checksummed bundle. Chunks are immutable;
 //! no uploaded byte becomes an object or a reference until final verification.
+use super::scoped_transfer_storage::ScopedUploadError;
 use super::*;
 use crate::protocol::{MAX_BUNDLE_BYTES, TRANSFER_CHUNK};
 use std::io::{Seek, SeekFrom};
@@ -15,8 +16,74 @@ const MAX_UPLOADS: usize = 32;
 const MAX_STAGED_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const TRANSFER_TTL: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
 
+pub(crate) struct ServiceGuard {
+    _file: File,
+    pub(super) common_metadata: PathBuf,
+}
+
 impl Repository {
-    pub(crate) fn service_lock(&self, timeout: std::time::Duration) -> RepositoryResult<File> {
+    fn install_upload_metadata(&self, directory: &Path, total: u64) -> RepositoryResult<()> {
+        let temp = self
+            .common_metadata
+            .join("tmp")
+            .join(unique_name("upload-meta"));
+        write_new_file(
+            &temp,
+            &crate::binary::encode(&Upload { version: 1, total })?,
+        )?;
+        let result = fs::hard_link(&temp, directory.join("meta")).map_err(|e| e.to_string());
+        let _ = fs::remove_file(temp);
+        result?;
+        sync_directory(directory)
+    }
+
+    // A crash between creating the staging directory and publishing its
+    // metadata leaves an empty directory. Only a matching durable scoped
+    // ledger may invoke this recovery.
+    pub(super) fn repair_scoped_upload_directory(
+        &self,
+        id: &str,
+        total: u64,
+    ) -> RepositoryResult<()> {
+        require_id(id)?;
+        let _lock = self.lock_named("transfer.lock")?;
+        self.repair_scoped_upload_directory_locked(id, total)
+    }
+
+    pub(super) fn repair_scoped_upload_directory_locked(
+        &self,
+        id: &str,
+        total: u64,
+    ) -> RepositoryResult<()> {
+        let directory = self
+            .common_metadata
+            .join("tmp")
+            .join(format!("upload-{id}"));
+        match fs::symlink_metadata(&directory) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e.to_string()),
+            Ok(_) => require_directory(&directory)?,
+        }
+        match fs::symlink_metadata(directory.join("meta")) {
+            Ok(_) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if fs::read_dir(&directory)
+                    .map_err(|e| e.to_string())?
+                    .next()
+                    .is_some()
+                {
+                    return Err("incomplete upload directory contains unexpected files".into());
+                }
+                self.install_upload_metadata(&directory, total)
+            }
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    pub(crate) fn service_lock(
+        &self,
+        timeout: std::time::Duration,
+    ) -> RepositoryResult<ServiceGuard> {
         // Lock the immutable format inode: read-only service requests must not
         // create metadata or require a writable repository filesystem.
         let path = self.common_metadata.join("format");
@@ -24,7 +91,12 @@ impl Repository {
         let deadline = std::time::Instant::now() + timeout;
         loop {
             match crate::platform_fs::try_service_lock(&file) {
-                Ok(()) => return Ok(file),
+                Ok(()) => {
+                    return Ok(ServiceGuard {
+                        _file: file,
+                        common_metadata: self.common_metadata.clone(),
+                    })
+                }
                 Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
                     std::thread::sleep(std::time::Duration::from_millis(2))
                 }
@@ -33,7 +105,7 @@ impl Repository {
         }
     }
 
-    // Called under transfer.lock: reservation uses declared totals, so sparse
+    // Called under transfer-state.lock then transfer.lock: reservation uses declared totals, so sparse
     // uploads cannot overcommit the quota. Last successful chunk refreshes TTL.
     fn upload_reservations(&self) -> RepositoryResult<(usize, u64)> {
         let mut count = 0;
@@ -48,13 +120,51 @@ impl Repository {
                 continue;
             }
             require_directory(&entry.path())?;
+            if self.resume_scoped_cleanup_locked(id)? {
+                continue;
+            }
             let meta = entry.path().join("meta");
+            match fs::symlink_metadata(&meta) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    let record = self
+                        .scoped_record(id)?
+                        .ok_or("incomplete upload has no scoped owner")?;
+                    match &record.state {
+                        crate::protocol::ScopedUploadState::Open => {
+                            if fs::read_dir(entry.path())
+                                .map_err(|error| error.to_string())?
+                                .next()
+                                .is_some()
+                            {
+                                return Err(
+                                    "incomplete upload directory contains unexpected files".into(),
+                                );
+                            }
+                            self.install_upload_metadata(&entry.path(), record.binding.total)?;
+                        }
+                        crate::protocol::ScopedUploadState::Applying
+                        | crate::protocol::ScopedUploadState::ApplyingV4 { .. } => {
+                            return Err(
+                                "incomplete applying upload requires original operation recovery"
+                                    .into(),
+                            );
+                        }
+                        _ => {
+                            self.expire_scoped_upload_locked(id)?;
+                            continue;
+                        }
+                    }
+                }
+                Err(error) => return Err(io_error("inspect upload metadata", &meta, error)),
+                Ok(_) => (),
+            }
             let modified = fs::symlink_metadata(&meta)
                 .map_err(|e| e.to_string())?
                 .modified()
                 .map_err(|e| e.to_string())?;
-            if modified.elapsed().is_ok_and(|age| age > TRANSFER_TTL) {
-                self.remove_upload_locked(id)?;
+            if modified.elapsed().is_ok_and(|age| age > TRANSFER_TTL)
+                && self.expire_scoped_upload_locked(id)?
+            {
                 continue;
             }
             let upload: Upload = crate::binary::decode(&read_regular(&meta)?)?;
@@ -70,7 +180,9 @@ impl Repository {
     }
 
     pub(crate) fn expire_transfers(&self) -> RepositoryResult<()> {
+        let _state = self.lock_named("transfer-state.lock")?;
         let _lock = self.lock_named("transfer.lock")?;
+        self.resume_all_scoped_cleanups_locked()?;
         self.upload_reservations()?;
         for entry in fs::read_dir(self.common_metadata.join("tmp")).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
@@ -210,6 +322,7 @@ impl Repository {
         Ok((state, payload))
     }
 
+    #[cfg(test)]
     pub fn upload_slice(
         &self,
         id: &str,
@@ -217,6 +330,19 @@ impl Repository {
         offset: u64,
         bytes: &[u8],
     ) -> RepositoryResult<()> {
+        let _state = self.lock_named("transfer-state.lock")?;
+        self.upload_slice_checked(id, total, offset, bytes, &mut || Ok(()))
+            .map_err(|error| error.message)
+    }
+
+    pub(super) fn upload_slice_checked(
+        &self,
+        id: &str,
+        total: u64,
+        offset: u64,
+        bytes: &[u8],
+        before_publish: &mut impl FnMut() -> RepositoryResult<()>,
+    ) -> Result<(), ScopedUploadError> {
         require_id(id)?;
         if total == 0
             || total > MAX_BUNDLE_BYTES
@@ -227,7 +353,65 @@ impl Repository {
             return Err("invalid upload slice bounds".into());
         }
         let _lock = self.lock_named("transfer.lock")?;
+        let directory = self.prepare_upload_directory_locked(id, total)?;
+        let path = directory.join(offset.to_string());
+        match fs::symlink_metadata(&path) {
+            Ok(_) => {
+                if read_regular(&path)? == bytes {
+                    // The previous link may have succeeded while its parent
+                    // sync failed. Reconfirm durability without republishing.
+                    sync_directory(&directory).map_err(ScopedUploadError::unknown)?;
+                    return Ok(());
+                } else {
+                    return Err("upload retry contains different bytes".into());
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+            Err(e) => return Err(e.to_string().into()),
+        }
+        let temp = self.common_metadata.join("tmp").join(unique_name("upload"));
+        write_new_file(&temp, bytes)?;
+        if let Err(error) = before_publish() {
+            return Err(match fs::remove_file(&temp) {
+                Ok(()) => error,
+                Err(cleanup) => format!(
+                    "{error}; cannot remove staged upload {}: {cleanup}",
+                    temp.display()
+                ),
+            }
+            .into());
+        }
+        let result = fs::hard_link(&temp, &path);
+        let cleanup = fs::remove_file(&temp);
+        if let Err(error) = result {
+            return Err(match cleanup {
+                Ok(()) => error.to_string(),
+                Err(cleanup) => format!(
+                    "{error}; cannot remove staged upload {}: {cleanup}",
+                    temp.display()
+                ),
+            }
+            .into());
+        }
+        cleanup.map_err(|error| {
+            ScopedUploadError::unknown(format!(
+                "upload slice was published but staged upload {} could not be removed: {error}",
+                temp.display()
+            ))
+        })?;
+        self.finish_upload_link_locked(&directory)
+            .map_err(ScopedUploadError::unknown)
+    }
+
+    pub(super) fn prepare_upload_directory_locked(
+        &self,
+        id: &str,
+        total: u64,
+    ) -> RepositoryResult<PathBuf> {
+        self.require_live_scoped_chunks_locked(id)?;
+        self.repair_scoped_upload_directory_locked(id, total)?;
         let (count, reserved) = self.upload_reservations()?;
+        self.require_live_scoped_chunks_locked(id)?;
         let directory = self
             .common_metadata
             .join("tmp")
@@ -239,12 +423,7 @@ impl Repository {
                     return Err("staged upload quota exceeded; complete or cancel an upload".into());
                 }
                 fs::create_dir(&directory).map_err(|e| e.to_string())?;
-                write_new_file(
-                    &directory.join("meta"),
-                    &crate::binary::encode(&Upload { version: 1, total })
-                        .map_err(|e| e.to_string())?,
-                )?;
-                sync_directory(&directory)?;
+                self.install_upload_metadata(&directory, total)?;
             }
             Err(e) => return Err(e.to_string()),
         }
@@ -253,33 +432,50 @@ impl Repository {
         if meta.version != 1 || meta.total != total {
             return Err("upload metadata changed".into());
         }
-        let path = directory.join(offset.to_string());
-        match fs::symlink_metadata(&path) {
-            Ok(_) => {
-                if read_regular(&path)? == bytes {
-                    return Ok(());
-                } else {
-                    return Err("upload retry contains different bytes".into());
-                }
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
-            Err(e) => return Err(e.to_string()),
+        Ok(directory)
+    }
+
+    pub(super) fn existing_upload_directory_locked(
+        &self,
+        id: &str,
+        total: u64,
+    ) -> RepositoryResult<Option<PathBuf>> {
+        let directory = self
+            .common_metadata
+            .join("tmp")
+            .join(format!("upload-{id}"));
+        match fs::symlink_metadata(&directory) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(io_error("inspect upload directory", &directory, error)),
+            Ok(_) => require_directory(&directory)?,
         }
-        let temp = self.common_metadata.join("tmp").join(unique_name("upload"));
-        write_new_file(&temp, bytes)?;
-        let result = fs::hard_link(&temp, &path).map_err(|e| e.to_string());
-        let _ = fs::remove_file(temp);
-        result?;
+        self.repair_scoped_upload_directory_locked(id, total)?;
+        let meta: Upload = crate::binary::decode(&read_regular(&directory.join("meta"))?)?;
+        if meta.version != 1 || meta.total != total {
+            return Err("upload metadata changed".into());
+        }
+        Ok(Some(directory))
+    }
+
+    pub(super) fn finish_upload_link_locked(&self, directory: &Path) -> RepositoryResult<()> {
         File::options()
             .write(true)
             .open(directory.join("meta"))
             .map_err(|e| e.to_string())?
             .set_modified(std::time::SystemTime::now())
             .map_err(|e| e.to_string())?;
-        sync_directory(&directory)
+        sync_directory(directory)
     }
 
     pub fn read_upload(&self, id: &str) -> RepositoryResult<Vec<u8>> {
+        let result = self.read_upload_staged(id)?;
+        if object_id(&result) != id {
+            return Err("uploaded bundle checksum mismatch".into());
+        }
+        Ok(result)
+    }
+
+    pub(super) fn read_upload_staged(&self, id: &str) -> RepositoryResult<Vec<u8>> {
         require_id(id)?;
         let _lock = self.lock_named("transfer.lock")?;
         let directory = self
@@ -303,24 +499,33 @@ impl Repository {
             result.extend_from_slice(&bytes);
             offset += bytes.len() as u64;
         }
-        if object_id(&result) != id {
-            return Err("uploaded bundle checksum mismatch".into());
-        }
+        // An earlier chunk publication may have returned an unknown outcome.
+        // All source files were synced before linking; fence their names.
+        sync_directory(&directory)?;
         Ok(result)
     }
 
+    #[cfg(test)]
     pub fn remove_upload(&self, id: &str) -> RepositoryResult<()> {
         require_id(id)?;
+        let _state = self.lock_named("transfer-state.lock")?;
         let _lock = self.lock_named("transfer.lock")?;
-        self.remove_upload_locked(id)
+        self.cleanup_scoped_chunks_locked(id, crate::protocol::ScopedChunkCleanupReason::Expired)?;
+        Ok(())
     }
 
-    fn remove_upload_locked(&self, id: &str) -> RepositoryResult<()> {
+    pub(super) fn remove_upload_cache_locked(&self, id: &str) -> RepositoryResult<()> {
         let directory = self
             .common_metadata
             .join("tmp")
             .join(format!("upload-{id}"));
-        require_directory(&directory)?;
+        match fs::symlink_metadata(&directory) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return sync_directory(&self.common_metadata.join("tmp"));
+            }
+            Err(error) => return Err(io_error("inspect upload cache", &directory, error)),
+            Ok(_) => require_directory(&directory)?,
+        }
         // Delete only the metadata and precisely named regular chunks owned by
         // this transfer; an unexpected entry prevents recursive deletion.
         let mut paths = Vec::new();
@@ -427,6 +632,46 @@ mod tests {
             .join("tmp")
             .join(format!("upload-{live}"))
             .exists());
+    }
+
+    #[test]
+    fn slice_failure_after_hard_link_is_unknown_and_exact_retry_recovers() {
+        let temp = Temp::new();
+        let repo = Repository::init(&temp.0).unwrap();
+        let _state = repo.lock_named("transfer-state.lock").unwrap();
+        let bytes = b"frozen payload";
+        let id = object_id(bytes);
+        let directory = repo
+            .common_metadata
+            .join("tmp")
+            .join(format!("upload-{id}"));
+        let metadata = directory.join("meta");
+        let error = repo
+            .upload_slice_checked(&id, bytes.len() as u64, 0, bytes, &mut || {
+                assert!(metadata.is_file());
+                assert!(!directory.join("0").exists());
+                // Simulate an I/O obstruction after the decision is ready but
+                // before post-publication metadata refresh and directory sync.
+                fs::remove_file(&metadata).unwrap();
+                Ok(())
+            })
+            .unwrap_err();
+        assert!(error.outcome_unknown);
+        assert_eq!(fs::read(directory.join("0")).unwrap(), bytes);
+        write_new_file(
+            &metadata,
+            &crate::binary::encode(&Upload {
+                version: 1,
+                total: bytes.len() as u64,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        repo.upload_slice_checked(&id, bytes.len() as u64, 0, bytes, &mut || {
+            panic!("exact slice replay must not authorize a new decision")
+        })
+        .unwrap();
+        assert_eq!(repo.read_upload(&id).unwrap(), bytes);
     }
 
     #[test]
