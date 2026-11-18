@@ -144,15 +144,7 @@ struct State {
     metadata: PathBuf,
 }
 
-struct Lock(PathBuf, File);
-
-impl Drop for Lock {
-    fn drop(&mut self) {
-        // Keep the descriptor alive until cleanup finishes.
-        let _ = self.1.sync_all();
-        let _ = fs::remove_file(&self.0);
-    }
-}
+type Lock = crate::platform_fs::ResourceLock;
 
 fn error(action: &str, path: &Path, error: std::io::Error) -> String {
     format!("cannot {action} {}: {error}", path.display())
@@ -582,12 +574,7 @@ impl State {
     fn lock(&self) -> Result<Lock, String> {
         self.metadata_directories()?;
         let path = self.metadata.join("index.lock");
-        let file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .map_err(|e| error("lock worktree metadata", &path, e))?;
-        Ok(Lock(path, file))
+        crate::platform_fs::acquire_lock(&path, &self.metadata.join("tmp"))
     }
 
     fn index(&self) -> Result<Option<Index>, String> {
@@ -922,6 +909,10 @@ fn json_text(value: &impl Serialize) -> Result<String, String> {
 /// The first argument is the command name. Existing file-based commit and
 /// checkout remain in repository::run; this dispatcher handles staged commit.
 pub fn run(args: &[String]) -> Result<String, String> {
+    run_formatted(args, false)
+}
+
+pub(crate) fn run_formatted(args: &[String], machine: bool) -> Result<String, String> {
     if crate::command_args::help_requested(args) {
         return Ok(USAGE.into());
     }
@@ -934,7 +925,7 @@ pub fn run(args: &[String]) -> Result<String, String> {
     match args[0].as_str() {
         "add" if args.len() > 2 => add(&state, &args[2..]),
         "status" if args.len() == 2 => status(&state),
-        "commit" => commit(&state, args),
+        "commit" => commit(&state, args, machine),
         "rm" => remove(&state, args),
         "mv" => match path_operands(&args[2..]).as_slice() {
             [old, new] => move_tracked(&state, old, new),
@@ -1090,7 +1081,7 @@ pub fn move_linked_worktree(source: &str, target: &str, new_path: &str) -> Resul
     let result = source.move_linked_worktree(&state.repo.root, Path::new(new_path));
     if !state.repo.root.exists() {
         if let Ok(moved) = crate::platform_fs::canonicalize(new_path) {
-            lock.0 = moved.join(".wasm-git/index.lock");
+            lock.relocated(&moved.join(".wasm-git/index.lock"));
         }
     }
     json_text(&result?)
@@ -1534,7 +1525,7 @@ fn status(state: &State) -> Result<String, String> {
     }
     json_text(&report)
 }
-fn commit(state: &State, args: &[String]) -> Result<String, String> {
+fn commit(state: &State, args: &[String], machine: bool) -> Result<String, String> {
     let mut amend = false;
     let mut allow_empty = false;
     let mut message = None;
@@ -1637,7 +1628,18 @@ fn commit(state: &State, args: &[String]) -> Result<String, String> {
     state
         .save_index(&index)
         .map_err(|e| format!("commit {id} published, but index publication failed: {e}"))?;
-    Ok(format!("{} {id}", snapshot.head))
+    if machine {
+        let result = crate::protocol::TreeCommitResult {
+            version: 1,
+            head: snapshot.head.clone(),
+            previous: head.cloned(),
+            commit: id,
+        };
+        result.validate()?;
+        serde_json::to_string(&result).map_err(|e| e.to_string())
+    } else {
+        Ok(format!("{} {id}", snapshot.head))
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Change {
