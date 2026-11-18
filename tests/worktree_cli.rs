@@ -155,7 +155,7 @@ fn worktree_locks_moves_and_force_removal_preserve_shared_history() {
     json(&["worktree", p(&primary), "move", p(&linked), p(&moved)]);
     assert!(!linked.exists());
     assert_eq!(fs::read(moved.join("module.wasm")).unwrap(), b"dirty bytes");
-    assert!(!moved.join(".wasm-git/index.lock").exists());
+    assert!(moved.join(".wasm-git/index.lock").is_file());
     json(&["status", p(&moved)]);
     fail(&["worktree", p(&primary), "remove", p(&moved)]);
     json(&["worktree", p(&primary), "remove", p(&moved), "-f"]);

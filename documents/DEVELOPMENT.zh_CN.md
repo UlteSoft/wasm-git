@@ -57,6 +57,9 @@ cargo check --locked --manifest-path fuzz/Cargo.toml --bin raw_audit
 Fuzz 目标编译检查不是实际 fuzz 或 ASan 运行。Ignored 项只有在外部工具/语料齐备并明确
 选取时才执行；分别报告 passed、failed、ignored、filtered。
 
+Linux 下 `server_chunk_receipts` 的 HTTPS 与恢复用例需要带 `ssl` 模块的 `python3`、
+`openssl` 和 `curl`。临时服务根及其祖先须符合[本地恢复路径要求](../docs/server.md#本地运维与受限恢复)。
+
 Git 对照集成测试需要独立 Git 可执行文件支持 `update-ref --batch-updates`
 （Git 2.50 或更新版本）。测试统一摘要宽度和缺失 OID 的输出写法，并探测
 Git 2.52 修复的 dangling symref 保护。对于涉及该修复的两种情况，旧 Git

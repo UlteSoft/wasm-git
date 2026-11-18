@@ -26,7 +26,7 @@ struct TrustedAuthors {
     authors: BTreeMap<String, BTreeSet<[u8; 32]>>,
     external_keys: BTreeMap<[u8; 32], Vec<u8>>,
 }
-fn author(name: &str) -> RepositoryResult<()> {
+pub(crate) fn author(name: &str) -> RepositoryResult<()> {
     if name.is_empty() || name.len() > 1024 || name.chars().any(char::is_control) {
         Err("invalid author identity".into())
     } else {
@@ -188,15 +188,8 @@ fn edit_trust(
     let mut lock = path.as_os_str().to_owned();
     lock.push(".lock");
     let lock = PathBuf::from(lock);
-    let guard = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(&lock)
-        .map_err(|e| e.to_string())?;
-    let guard = WriteLock {
-        path: lock.clone(),
-        _file: guard,
-    };
+    let parent = lock.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let guard = crate::platform_fs::acquire_lock(&lock, parent)?;
     let mut trusted = match fs::symlink_metadata(path) {
         Ok(_) => crate::binary::decode::<TrustedAuthors>(&read_regular(path)?)?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => TrustedAuthors {
@@ -314,6 +307,15 @@ impl Repository {
         identity: &SigningIdentity,
         format: SignatureFormat,
     ) -> RepositoryResult<String> {
+        self.sign_head_result(expected, identity, format)
+            .map(|result| result.commit)
+    }
+    fn sign_head_result(
+        &self,
+        expected: &str,
+        identity: &SigningIdentity,
+        format: SignatureFormat,
+    ) -> RepositoryResult<crate::protocol::SignCommitResult> {
         let _lock = self.lock()?;
         let snapshot = self.snapshot()?;
         if snapshot.manifest.tip().map(String::as_str) != Some(expected) {
@@ -328,8 +330,16 @@ impl Repository {
         let mut commit = old.clone();
         sign(&mut commit, identity, format)?;
         let id = self.store_object(COMMIT_KIND, &encode_commit(&commit)?)?;
+        let result = crate::protocol::SignCommitResult {
+            version: 1,
+            head: snapshot.manifest.head.clone(),
+            previous: expected.into(),
+            commit: id.clone(),
+            author: identity.author.clone(),
+        };
+        result.validate()?;
         self.write_ref(&snapshot.manifest.head, &id)?;
-        Ok(id)
+        Ok(result)
     }
     pub fn verify_author(&self, revision: &str, trust: Option<&Path>) -> RepositoryResult<Value> {
         let info = self.read_commit(revision)?;
@@ -435,6 +445,10 @@ enum SigningCommand {
     },
 }
 pub fn cli(args: &[String]) -> RepositoryResult<String> {
+    cli_formatted(args, false)
+}
+
+pub(crate) fn cli_formatted(args: &[String], machine: bool) -> RepositoryResult<String> {
     use clap::Parser;
     let args = match Args::try_parse_from(
         std::iter::once("wasm-git".to_owned()).chain(args.iter().cloned()),
@@ -531,15 +545,22 @@ pub fn cli(args: &[String]) -> RepositoryResult<String> {
             key,
             timestamp,
             format,
-        } => Repository::open(repository)?.sign_head_format(
-            &expected,
-            &SigningIdentity {
-                author,
-                key,
-                timestamp: timestamp.map_or_else(now, Ok)?,
-            },
-            format,
-        ),
+        } => {
+            let result = Repository::open(repository)?.sign_head_result(
+                &expected,
+                &SigningIdentity {
+                    author,
+                    key,
+                    timestamp: timestamp.map_or_else(now, Ok)?,
+                },
+                format,
+            )?;
+            if machine {
+                serde_json::to_string(&result).map_err(|e| e.to_string())
+            } else {
+                Ok(result.commit)
+            }
+        }
         SigningCommand::VerifyCommit {
             repository,
             revision,

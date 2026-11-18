@@ -519,18 +519,34 @@ fn upstream_metadata_commands_obey_index_remote_and_writer_locks_without_partial
     fixture.fetch();
     for lock in ["index.lock", "remote.lock", "write.lock"] {
         let file = fixture.local.join(format!(".wasm-git/{lock}"));
-        fs::write(&file, b"fixed held lock").unwrap();
+        let held = if lock == "remote.lock" {
+            fs::write(&file, b"fixed held lock").unwrap();
+            None
+        } else {
+            let held = fs::OpenOptions::new().read(true).write(true).open(&file).unwrap();
+            held.try_lock().unwrap();
+            Some(held)
+        };
         fixture.reject(&["branch", fixture.repo(), "-u", "origin/main"]);
-        fs::remove_file(file).unwrap();
+        drop(held);
+        if lock == "remote.lock" { fs::remove_file(file).unwrap(); }
     }
     fixture.ok(&["branch", fixture.repo(), "-u", "origin/main"]);
     for lock in ["index.lock", "remote.lock", "write.lock"] {
         let file = fixture.local.join(format!(".wasm-git/{lock}"));
-        fs::write(&file, b"fixed held lock").unwrap();
+        let held = if lock == "remote.lock" {
+            fs::write(&file, b"fixed held lock").unwrap();
+            None
+        } else {
+            let held = fs::OpenOptions::new().read(true).write(true).open(&file).unwrap();
+            held.try_lock().unwrap();
+            Some(held)
+        };
         fixture.reject(&["branch", fixture.repo(), "--unset-upstream"]);
         fixture.reject(&["branch", fixture.repo(), "-vv"]);
         fixture.reject(&["rev-parse", fixture.repo(), "@{u}"]);
-        fs::remove_file(file).unwrap();
+        drop(held);
+        if lock == "remote.lock" { fs::remove_file(file).unwrap(); }
     }
     assert_eq!(fixture.head("@{u}"), fixture.head("origin/main"));
 }

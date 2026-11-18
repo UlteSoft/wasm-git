@@ -1,6 +1,7 @@
 //! Presentation/automation transport; deliberately separate from repository and
 //! network encodings. A machine response is one versioned record, even on error.
-use serde_json::{json, Value};
+use serde_json::Value;
+use crate::protocol::{CommandEnvelope, CommandError, CommandResult};
 use std::io::{IsTerminal, Write};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -66,21 +67,21 @@ impl Format {
             return;
         }
         let result = if let Some(value) = data {
-            json!({"kind":"data", "value":value})
+            CommandResult::Data { value }
         } else if output.is_empty() {
-            json!({"kind":"empty"})
+            CommandResult::Empty
         } else {
-            json!({"kind":"text", "text":output})
+            CommandResult::Text { text: output.to_owned() }
         };
-        let record = json!({"protocol":"wasm-git.command", "version":1,
-            "command":command, "ok":code == 0, "exit_code":code, "result":result,
-            "error":error.map(|message| json!({"code":"command_failed", "message":message}))});
+        let record = CommandEnvelope { protocol: "wasm-git.command".into(), version: 1,
+            command: command.into(), ok: code == 0, exit_code: code, result,
+            error: error.map(|message| CommandError { code: "command_failed".into(), message: message.into() }) };
         let bytes = if self == Self::Json {
             let mut bytes = serde_json::to_vec(&record).expect("serializable command response");
             bytes.push(b'\n');
             bytes
         } else {
-            binary(&record)
+            binary(&serde_json::to_value(&record).expect("serializable command response"))
         };
         let mut stdout = std::io::stdout().lock();
         if let Err(error) = stdout.write_all(&bytes).and_then(|()| stdout.flush()) {
@@ -208,6 +209,7 @@ fn binary(value: &Value) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn binary_v1_golden_bytes_are_host_independent() {

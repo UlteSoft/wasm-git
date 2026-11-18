@@ -228,14 +228,16 @@ fn index_lock_and_ref_lock_leave_whole_prefix_exchange_unchanged() {
     let t = Temp::new();
     t.history();
     ok(&["switch", t.root(), "before"]);
-    t.write(".wasm-git/index.lock", b"held index lock");
+    let held = fs::OpenOptions::new().read(true).write(true).open(t.0.join(".wasm-git/index.lock")).unwrap();
+    held.try_lock().unwrap();
     no_change(&t, &["switch", t.root(), "after"]);
     no_change(&t, &["reset", t.root(), "--hard", "after"]);
-    fs::remove_file(t.0.join(".wasm-git/index.lock")).unwrap();
-    t.write(".wasm-git/write.lock", b"held repository lock");
+    drop(held);
+    let held = fs::OpenOptions::new().read(true).write(true).open(t.0.join(".wasm-git/write.lock")).unwrap();
+    held.try_lock().unwrap();
     no_change(&t, &["switch", t.root(), "after"]);
     no_change(&t, &["reset", t.root(), "--hard", "after"]);
-    fs::remove_file(t.0.join(".wasm-git/write.lock")).unwrap();
+    drop(held);
     ok(&["switch", t.root(), "after"]);
     t.assert_after();
 }

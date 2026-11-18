@@ -26,6 +26,12 @@ fn audit(
     outcome: &str,
     options: &[String],
 ) -> Result<(), String> {
+    // Strict operations use the durable original-operation audit index and
+    // native scoped receipts. This legacy append log is not a second result
+    // source and cannot turn a completed strict decision into an unaudited one.
+    if settings.require_operation_credentials {
+        return Ok(());
+    }
     audit_with_rejections(settings, repo, updates, transaction, outcome, options, &[])
 }
 
@@ -240,6 +246,7 @@ pub(super) fn publish(
     bytes: &[u8],
     updates: &[RefUpdate],
     options: &[String],
+    scope: Option<&crate::repository::ScopedExecution>,
 ) -> Result<(), ReceiveError> {
     let transaction = format!(
         "{}-{}-{}",
@@ -256,41 +263,47 @@ pub(super) fn publish(
             publication_unknown: false,
         }
     })?;
-    let result = repo.receive_batch_checked(bytes, updates, |bundle| {
-        if let Some(path) = &settings.signed_authors {
-            repo.verify_receive_authors(bundle, updates, path)?;
-        }
-        if settings.pre_receive.is_some() || settings.update_hook.is_some() {
-            let input = HookInput::new(repo, updates, bundle)?;
-            let context = HookContext {
-                settings,
-                repo,
-                input: &input,
-                options,
-                transaction: &transaction,
-                deadline: Instant::now() + TIMEOUT,
-            };
-            if let Some(path) = &settings.pre_receive {
-                hook(path, &context, "pre-receive", &[])?;
+    let result = repo.receive_batch_checked_scoped(
+        bytes,
+        updates,
+        scope,
+        |bundle| {
+            if let Some(path) = &settings.signed_authors {
+                repo.verify_receive_authors(bundle, updates, path)?;
             }
-            if let Some(path) = &settings.update_hook {
-                let zero = "0".repeat(64);
-                for update in updates {
-                    hook(
-                        path,
-                        &context,
-                        "update",
-                        &[
-                            reference(update),
-                            update.expected.as_ref().unwrap_or(&zero).clone(),
-                            update.new.as_ref().unwrap_or(&zero).clone(),
-                        ],
-                    )?;
+            if settings.pre_receive.is_some() || settings.update_hook.is_some() {
+                let input = HookInput::new(repo, updates, bundle)?;
+                let context = HookContext {
+                    settings,
+                    repo,
+                    input: &input,
+                    options,
+                    transaction: &transaction,
+                    deadline: Instant::now() + TIMEOUT,
+                };
+                if let Some(path) = &settings.pre_receive {
+                    hook(path, &context, "pre-receive", &[])?;
+                }
+                if let Some(path) = &settings.update_hook {
+                    let zero = "0".repeat(64);
+                    for update in updates {
+                        hook(
+                            path,
+                            &context,
+                            "update",
+                            &[
+                                reference(update),
+                                update.expected.as_ref().unwrap_or(&zero).clone(),
+                                update.new.as_ref().unwrap_or(&zero).clone(),
+                            ],
+                        )?;
+                    }
                 }
             }
-        }
-        Ok(())
-    });
+            Ok(())
+        },
+        || authorize_updates(settings, name, updates, &vec![None; updates.len()]),
+    );
     let outcome = match &result {
         Ok(()) => "accepted",
         Err(e) if e.publication_unknown => "unknown",
@@ -368,6 +381,7 @@ pub(super) fn publish_selective(
     batch: &protocol::BatchPublication,
     options: &[String],
     dry_run: bool,
+    scope: Option<&crate::repository::ScopedExecution>,
 ) -> Result<Vec<Option<String>>, ReceiveError> {
     let transaction = format!(
         "receive-{}-{}-{}",
@@ -387,8 +401,12 @@ pub(super) fn publish_selective(
             }
         })?;
     }
-    let result =
-        repo.receive_batch_selective(&batch.bundle, updates, dry_run, |bundle, reasons| {
+    let result = repo.receive_batch_selective_scoped(
+        &batch.bundle,
+        updates,
+        dry_run,
+        scope,
+        |bundle, reasons| {
             let mut rejections = reasons.to_vec();
             for (update, rejection) in updates.iter().zip(&mut rejections) {
                 if rejection.is_none() {
@@ -451,7 +469,9 @@ pub(super) fn publish_selective(
                 }
             }
             Ok(rejections)
-        });
+        },
+        |rejections| authorize_updates(settings, name, updates, rejections),
+    );
     if !dry_run {
         let outcome = match &result {
             Ok(reasons) if reasons.iter().all(Option::is_none) => "accepted",
@@ -524,6 +544,14 @@ pub(super) fn fork(
         let _cleanup = Quarantine(staging.clone());
         let checkout = staging.join("repository");
         Repository::fork_local(source.root_path(), &checkout)?;
+        authorize(
+            settings,
+            source_name,
+            &Operation::Fork {
+                destination: destination.into(),
+            },
+            &[],
+        )?;
         // Reserve the name without replacing an existing repository. A client
         // cannot open this empty reservation before the atomic directory rename.
         fs::create_dir(&target).map_err(|e| e.to_string())?;

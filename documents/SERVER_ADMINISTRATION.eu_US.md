@@ -102,7 +102,7 @@ Example external input:
 
 ```json
 {
-  "version": 1,
+  "version": 3,
   "principals": [
     {
       "name": "release-bot",
@@ -137,9 +137,52 @@ namespace; principals and configured remote names remain single components.
 HTTP write enablement is
 still explicit. A compiled policy and `--token-file` are mutually exclusive.
 
-Treat policy replacement as a controlled configuration rollout. Restart instances
-to load the new policy; do not assume hot reload. Never let an untrusted client
-select an SSH principal or the server filesystem root.
+The compiled file bootstraps a root once. Subsequent policy updates use the
+root's `policy-set` CAS and durable operation receipt; `policy-query` recovers a
+particular update after a lost reply. HTTP and stdio instances sharing that root
+use the same authorization gate. The deployment, filesystem, identity and
+natural-expiry limits are specified in [server authorization](../docs/server.md#多用户权限与原子发布).
+Never let an untrusted client select an SSH principal or the server root.
+
+Use native `operation-credential-issue` / `operation-credential-query` with the
+HTTP `--require-operation-credentials` entry point to bind original operation
+deadlines. First issuance atomically upgrades the authorization database;
+older binaries and ordinary authentication entry points then reject that root.
+Exact request binding, immutable mutation identities, query recovery, and
+deployment constraints are specified in [strict operation credentials](../docs/server.md#严格操作凭据).
+Strict uploads use the original-operation Chunk and QueryChunk contracts of
+`scoped-upload-rpc`; ordinary Slice is not accepted by that entry point.
+Accepted decisions survive staged-data cleanup, as specified in
+[chunk decisions and cleanup](../docs/server.md#分片决定与清理).
+
+On Linux, a local administrator can use `wasm-git-server --format json`
+with `operation-context`, `operation-recover`, `audit-query`, and `capacity-query`
+to inspect original operations, perform restricted recovery, and query audit and
+repository capacity. After a principal is revoked, recovery accepts the exact
+original issuance request only to inspect or close the upload or retention scope.
+It does not renew authority, upload or read content, or make new publication or promotion decisions.
+Recovery takes the root's exclusive authorization gate and preserves committed
+results. See [local administration and restricted recovery](../docs/server.md#本地运维与受限恢复)
+for identity and path requirements, JSON request files, audit evidence, and legacy credentials.
+
+Grant `release_retention` only to the trusted principal responsible for release
+decisions; repository read permission is also required. Single-token mode cannot
+use release retention. The holder durably records prepare, promote, and close for
+the original operation. A close tombstone rejects a late prepare, and a promoted
+reference cannot be closed. Promotion and close convey the coordinator's
+authoritative decision; the repository does not decide the release. Fixed reads
+are limited to the selected commit and files, which must be local at preparation
+and are protected from GC and pool eviction. Versioned native types are defined in
+`src/protocol.rs`. Cross-language callers can use `--format json retention-rpc`,
+`upload-binding`, `upload-recovery`, and `scoped-upload-rpc`, checking the process status. These
+commands read native-type JSON on stdin and use `WASM_GIT_REMOTE_TOKEN` for credentials.
+`--format json integration-capabilities` reports the tool, contract versions, and
+authorization limits. `--format json integration-validate` validates requests,
+responses, and the actual process exit code using `IntegrationValidation` in
+`src/protocol.rs`. Node callers must embed the original, unparsed JSON bytes in
+the validation request and use `JSON.parse` only after validation succeeds. This
+entry rejects floats and integers outside JavaScript's safe range; native binary
+`u64` values retain their full width.
 
 ## 5. SSH transport
 
@@ -223,6 +266,9 @@ accepted, partial, rejected, unknown, per-reference reasons, and post-hook failu
 Post-update is still attempted when post-receive fails. A completion-audit write
 can itself fail after publication; retain service stderr and query actual refs
 when reconciling outcomes. Audit output is JSON only when explicitly rendered.
+`receive-audit.bin` is supplementary evidence for ordinary or historical receives;
+use the root audit index and native receipts for strict operations. `Unknown`,
+`Unobserved`, or an incomplete audit observation does not prove non-execution.
 
 ## 7. Author-signature policy
 
@@ -332,7 +378,33 @@ primarily useful for finite tests.
 
 Current bounds include 64 MiB per RPC packet, 64 KiB metadata, 1 MiB transfer
 chunks, 4 GiB per bundle, 32 pending uploads, and an 8 GiB staged-upload reservation
-budget per repository. Upload expiry is 24 hours. Each HTTP connection has a
+budget per repository. Upload expiry is 24 hours.
+Scoped uploads bind the authenticated principal, repository, target, session, and
+content digest. Legacy unscoped upload RPCs are rejected. Expired staging chunks
+may be uploaded again under an open session; cancellation leaves a tombstone.
+A v4 receive decision and its exact reference receipt share the native journal.
+Query the original session after recovery; an explicit close aborts a v4 operation
+only when it has no durable decision and no in-flight worker. It cannot be replayed. Legacy `Applying`
+records remain unknown and require reconciliation. Older programs cannot recover
+a v4 journal; service and local maintenance commands must support that version.
+Scoped upload sessions and release retentions each admit new records up to
+4,096 active records and 64 MiB of active encoded record data. Tombstones and
+completed or promoted terminal records remain but do not consume active capacity.
+`capacity-query` reports active and total counts and encoded bytes separately;
+totals exclude repository objects and chunk payloads. After a storage failure,
+restore storage before querying or retrying with the original ID.
+Before migrating old ledgers to per-record storage, take a consistent backup and
+stop old writers and maintenance programs during a maintenance window; do not mix
+versions. A first `capacity-query` can trigger migration. Preserve the migration
+marker together with the new record directory.
+See [session and retention capacity](../docs/server.md#会话与保留容量).
+For a chunked upload through the ordinary client, supply a unique 64-hex-digit
+`WASM_GIT_UPLOAD_SESSION` and an existing private `WASM_GIT_UPLOAD_RECOVERY_DIR`.
+Before sending, the client persists the binding and full payload there.
+`upload-recovery` validates both; use the same principal to query or resume.
+The caller removes these recovery files after reconciling the outcome.
+
+Each HTTP connection has a
 15-second cumulative I/O budget. Processing after a complete request is buffered
 does not consume that budget, so verification and durable storage on a slow host
 do not prevent an otherwise completed publication from returning its receipt.
@@ -357,6 +429,11 @@ linked-worktree metadata together. Preserve hard links if storage efficiency
 matters. Back up service policy, author trust, and private credentials separately
 with appropriate access control. A portable bundle covers its selected repository
 history, not all operational configuration or unsaved workspace state.
+Back up the root authorization SQLite database, its recovery journal and audit
+index, and the retention and scoped-upload markers and records together with the
+repository. Before restoring, reconcile release decisions, completed reference
+writes, and the replay horizon; do not overwrite newer tombstones with an old
+backup or treat unknown outcomes as absent.
 
 A partial or pool-evicted repository is not a self-contained backup. Either hydrate
 it before export or back up its required pool replicas, pins, and ownership state
@@ -364,11 +441,17 @@ as a coordinated set. Validate the backup by restoring into a new directory,
 running `fsck`, and exporting selected historic modules for byte comparison.
 
 After an interrupted operation, retain journals, incomplete audit tails, and
-service diagnostics. Reopen through the normal engine so durable transaction
-recovery can run. Query refs before retrying an uncertain push. Do not manually
+service diagnostics. For strict operations, recover with the exact original
+request through `operation-recover`; ordinary strict reads and capacity queries
+reject a pending reference journal. Other local engine workflows retain their
+normal transaction recovery. Query refs before retrying an uncertain push. Do not manually
 remove packs, promised-object markers, or pool pins to suppress an error.
-Persistent writer/index locks require confirmation that no writer remains before
-manual removal; process-held pool locks have different lifetime semantics.
+Native writer/index/transfer lock files remain in place. Unix operations explicitly
+unlock on normal completion; after a crash, every inherited descriptor still
+holding the lock must close. Never unlink the versioned inodes.
+Legacy and WASIp1 create-new locks require a controlled maintenance window and
+confirmation that no process remains before removal. Do not switch lock backends
+on a shared repository during operation.
 
 Use `gc DIR -n` to review a collection plan. Normal GC compresses without pruning;
 `--prune=now` explicitly requests reclamation outside retained roots. Recovering

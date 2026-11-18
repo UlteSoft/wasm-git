@@ -604,14 +604,15 @@ fn index_info_binary_framing_and_batch_errors_keep_index_and_work_bytes_unchange
     }
     ok(&["update-index", r, "--index-info"], Some(b"0 0\ta.wasm\n"));
     assert_eq!(ok(&["ls-files", r], None), "");
-    fs::write(root.join(".wasm-git/index.lock"), b"held").unwrap();
+    let held = fs::OpenOptions::new().read(true).write(true).open(root.join(".wasm-git/index.lock")).unwrap();
+    held.try_lock().unwrap();
     fail(
         &["update-index", r, "--index-info"],
         Some(format!("100644 {one}\ta.wasm\n").as_bytes()),
     );
     assert_eq!(
         fs::read(root.join(".wasm-git/index.lock")).unwrap(),
-        b"held"
+        b"WGTLCK\0\x02"
     );
 }
 
@@ -963,13 +964,14 @@ fn malformed_options_help_literal_messages_and_locks_have_no_side_effects() {
         serde_json::from_str(&ok(&["cat-file", path(root), "-p", &id], None)).unwrap();
     assert_eq!(value["message"], "--help");
     let before = files(root);
-    fs::write(root.join(".wasm-git/write.lock"), b"held").unwrap();
+    let held = fs::OpenOptions::new().read(true).write(true).open(root.join(".wasm-git/write.lock")).unwrap();
+    held.try_lock().unwrap();
     fail(
         &["hash-object", path(root), "-w", "--stdin"],
         Some(&wasm(9)),
     );
     assert_eq!(files(root), before);
-    fs::remove_file(root.join(".wasm-git/write.lock")).unwrap();
+    drop(held);
     fail(&["rev-list", path(root), "--invented"], None);
     fail(&["read-tree", path(root), "--empty", &tree], None);
     assert_eq!(files(root), before);

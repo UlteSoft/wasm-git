@@ -34,3 +34,6 @@ __pycache__/
 
 # Downloaded upstream metadata used by the review workflow.
 /.community-proposals/
+
+# Generated local development release artifacts.
+/releases/*-local-dev*

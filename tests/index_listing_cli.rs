@@ -499,10 +499,11 @@ fn unnamed_history_and_malformed_or_unmatched_queries_fail_before_emitting_any_r
     ] {
         t.reject(&args);
     }
-    fs::write(t.0.join(".wasm-git/index.lock"), b"held").unwrap();
+    let held = fs::OpenOptions::new().read(true).write(true).open(t.0.join(".wasm-git/index.lock")).unwrap();
+    held.try_lock().unwrap();
     t.reject(&["--eol"]);
     t.reject(&["--others", "--directory"]);
-    fs::remove_file(t.0.join(".wasm-git/index.lock")).unwrap();
+    drop(held);
 }
 
 #[test]

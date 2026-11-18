@@ -433,12 +433,19 @@ pub fn client_main() {
         "version" | "--version" | "-v" if args.len() == 2 => Ok(format!("wasm-git {}", env!("CARGO_PKG_VERSION"))),
         "version" if args.len() == 3 && args[2] == "--build-options" => serde_json::to_string_pretty(&json!({"version":env!("CARGO_PKG_VERSION"),"backend":"native_wasm_git","original_wasm_bytes":true,"pointer_width":usize::BITS,"object_hash":"sha256","client":cfg!(feature="client"),"server":cfg!(feature="server"),"host_os":if cfg!(target_os="wasi") { "wasi" } else { std::env::consts::OS },"host_arch":std::env::consts::ARCH,"host_threads":!cfg!(target_family="wasm"),"host_processes":!cfg!(target_family="wasm"),"host_network":!cfg!(target_family="wasm"),"directory_fsync":cfg!(unix)})).map_err(|error|error.to_string()),
         "pool" => remote::pool_cli(&args[1..]),
+        "retention-rpc" => remote::retention_cli(&args[2..]),
+        "integration-capabilities" if args.len() == 2 => serde_json::to_string(&protocol::IntegrationCapabilities::current()).map_err(|e| e.to_string()),
+        "integration-validate" => remote::integration_validate_cli(&args[2..]),
+        "upload-binding" => remote::upload_binding_cli(&args[2..]),
+        "upload-recovery" => remote::upload_recovery_cli(&args[2..]),
+        "scoped-upload-rpc" => remote::scoped_upload_cli(&args[2..]),
         "features" => features::run(&args[1..]),
         "validate" => feature_set::run(&args[1..]),
         "pr" => remote::pull_cli(&args[2..]),
         "clone" | "fetch" if remote::selective_requested(&args[1..]) => remote::run_selective(&args[1..]),
         "promisor" | "hydrate" | "clone-status" => remote::run_selective(&args[1..]),
-        "keygen" | "trust-author" | "untrust-author" | "commit-signed" | "sign-commit" | "verify-commit" => repository::signing_cli(&args[1..]),
+        "sign-commit" => repository::signing_cli_formatted(&args[1..], format.machine()),
+        "keygen" | "trust-author" | "untrust-author" | "commit-signed" | "verify-commit" => repository::signing_cli(&args[1..]),
         "inspect" => cmd_inspect(&args[2..]),
         "debug-map" => debug_cli::run(&args[2..]),
         "diff" => cmd_diff(&args[2..]),
@@ -482,7 +489,7 @@ pub fn client_main() {
         "status" | "add" | "rm" | "mv" | "restore" | "reset" | "stash" | "config" | "tag"
         | "reflog" | "rev-parse" | "cat-file" | "ls-files" => porcelain::run(&args[1..]),
         "commit" if args.get(3).is_some_and(|arg| arg.starts_with('-')) => {
-            porcelain::run(&args[1..])
+            porcelain::run_formatted(&args[1..], format.machine())
         }
         "branch" | "switch" => porcelain::run(&args[1..]),
         "commit" if args.len() >= 3 && !command_args::help_requested(&args[1..]) => {
@@ -492,7 +499,8 @@ pub fn client_main() {
         "merge" if args.len() >= 3 && !command_args::help_requested(&args[1..]) => {
             porcelain::with_clean_history(&args[2], |_| repository::run(&args[1..]))
         }
-        "init" | "commit" | "log" | "show" | "clone" | "fork" | "bundle" | "unbundle" | "fsck" | "merge" => repository::run(&args[1..]),
+        "bundle" => repository::run_formatted(&args[1..], format.machine()),
+        "init" | "commit" | "log" | "show" | "clone" | "fork" | "unbundle" | "fsck" | "merge" => repository::run(&args[1..]),
         "help" | "--help" | "-h" => Ok(usage_text()),
         other => Err(if format.machine() { format!("unknown command: {other}") } else { format!("unknown command: {other}\n{}", usage_text()) }),
     };
@@ -1327,7 +1335,21 @@ pub fn server_main() {
     if format.machine()
         && !matches!(
             command.as_str(),
-            "compile-policy" | "compile-protection" | "audit-log" | "--help" | "-h"
+            "compile-policy"
+                | "compile-protection"
+                | "audit-log"
+                | "policy-set"
+                | "policy-query"
+                | "policy-status"
+                | "policy-migrate"
+                | "operation-credential-issue"
+                | "operation-credential-query"
+                | "operation-recover"
+                | "operation-context"
+                | "audit-query"
+                | "capacity-query"
+                | "--help"
+                | "-h"
         )
     {
         format.emit("server", "", 1, Some("running servers require --format native; stdout carries readiness or the binary network protocol"), false);

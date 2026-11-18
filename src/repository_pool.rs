@@ -132,11 +132,15 @@ impl Repository {
         }
         let mut snapshot = self.snapshot()?;
         let reachable = reachable_from_roots(replicated.iter().cloned(), &snapshot.objects)?;
+        // A verified pool copy does not replace a release holder's local
+        // obligation to serve the selected immutable bytes.
+        let retained = self.release_retention_blobs()?;
         let blobs: BTreeSet<_> = snapshot
             .objects
             .iter()
             .filter_map(|(id, o)| {
-                (matches!(o, Object::Wasm(_)) && reachable.contains(id)).then_some(id.clone())
+                (matches!(o, Object::Wasm(_)) && reachable.contains(id) && !retained.contains(id))
+                    .then_some(id.clone())
             })
             .collect();
         let mut state = self.partial_state()?;

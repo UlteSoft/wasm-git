@@ -436,7 +436,7 @@ fn threshold_and_padded_short_names_stay_original_while_raw_transport_stays_exac
         assert_eq!(event["edit"]["old_hex"], hex(&old.bytes[a.start..a.end]));
         assert_eq!(event["edit"]["new_hex"], hex(&new.bytes[b.start..b.end]));
     }
-    assert!(!Path::new(&repo).join(".wasm-git/write.lock").exists());
+    assert!(Path::new(&repo).join(".wasm-git/write.lock").is_file());
     assert_eq!(std::fs::read(old_path).unwrap(), old.bytes);
     assert_eq!(std::fs::read(new_path).unwrap(), new.bytes);
 }

@@ -374,7 +374,8 @@ pub(super) fn run(
                 new: Some(prepared.merge.as_ref().unwrap().commit.clone()),
                 force: false,
             }];
-            if let Err(error) = receive::publish(settings, name, repo, &bundle, &updates, &[]) {
+            if let Err(error) = receive::publish(settings, name, repo, &bundle, &updates, &[], None)
+            {
                 if error.publication_unknown {
                     return Err(format!(
                         "pull merge publication outcome is unknown: {}; use pr recover",

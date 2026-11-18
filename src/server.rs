@@ -10,16 +10,20 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "server --root DIR [--listen 127.0.0.1:9419] [--token-file FILE | --policy FILE] [--allow-write | --read-only] [--allow-force] [--signed-authors BINARY_TRUST_FILE] [--protection BINARY_PROTECTION_FILE] [--merge-author NAME --merge-signing-key KEY --merge-signing-format native|ssh|openpgp] [--pre-receive PROGRAM] [--update PROGRAM] [--post-receive PROGRAM] [--post-update PROGRAM] [--max-connections N]; server --stdio --root DIR [--policy FILE --principal NAME] [--read-only] [--allow-force]; server compile-policy INPUT_JSON NEW_BINARY_FILE; server compile-protection INPUT_JSON NEW_BINARY_FILE; server audit-log BINARY_LOG";
+const USAGE: &str = "server --root DIR [--listen 127.0.0.1:9419] [--token-file FILE | --policy BOOTSTRAP_FILE] [--require-operation-credentials] [--allow-write | --read-only] [--allow-force] [--signed-authors BINARY_TRUST_FILE] [--protection BINARY_PROTECTION_FILE] [--merge-author NAME --merge-signing-key KEY --merge-signing-format native|ssh|openpgp] [--pre-receive PROGRAM] [--update PROGRAM] [--post-receive PROGRAM] [--post-update PROGRAM] [--max-connections N]; server --stdio --root DIR [--policy BOOTSTRAP_FILE --principal NAME] [--read-only] [--allow-force]; server policy-set ROOT REQUEST_JSON; server policy-query ROOT REQUEST_JSON; server policy-migrate ROOT REQUEST_JSON; server operation-credential-issue ROOT REQUEST_JSON; server operation-credential-query ROOT REQUEST_JSON; server policy-status ROOT; server compile-policy INPUT_JSON NEW_BINARY_FILE; server compile-protection INPUT_JSON NEW_BINARY_FILE; server audit-log BINARY_LOG; server operation-recover ROOT REQUEST_JSON; server operation-context ROOT REQUEST_JSON; server audit-query ROOT REQUEST_JSON; server capacity-query ROOT REQUEST_JSON";
 const MAX_HEADER: usize = 16 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(15);
 
+#[path = "server_admin_identity.rs"]
+mod admin_identity;
 #[path = "server_policy.rs"]
 mod policy;
 #[path = "server_pulls.rs"]
 mod pulls;
 #[path = "server_receive.rs"]
 mod receive;
+#[path = "server_recovery.rs"]
+mod recovery;
 
 #[derive(Clone)]
 struct Settings {
@@ -29,7 +33,10 @@ struct Settings {
     token: Option<Vec<u8>>,
     write: bool,
     force: bool,
-    policy: Option<Arc<policy::Policy>>,
+    policy_enabled: bool,
+    policy: Option<Arc<protocol::ServerPolicy>>,
+    require_operation_credentials: bool,
+    operation_credential: Option<protocol::OperationCredentialReceipt>,
     actor: String,
     pre_receive: Option<PathBuf>,
     update_hook: Option<PathBuf>,
@@ -73,8 +80,12 @@ fn repository_name(name: &str) -> Result<(), String> {
 // Namespace directories may contain repositories, but a repository's working
 // files must never become an alternative server root or a fork destination.
 fn repository_parent(settings: &Settings, name: &str, create: bool) -> Result<PathBuf, String> {
+    repository_parent_in(&settings.root, name, create)
+}
+
+fn repository_parent_in(root: &Path, name: &str, create: bool) -> Result<PathBuf, String> {
     repository_name(name)?;
-    let mut parent = settings.root.clone();
+    let mut parent = root.to_path_buf();
     let components: Vec<_> = name.split('/').collect();
     for component in &components[..components.len() - 1] {
         namespace_directory(&parent)?;
@@ -101,7 +112,11 @@ fn namespace_directory(path: &Path) -> Result<(), String> {
 }
 
 fn repository_path(settings: &Settings, name: &str) -> Result<PathBuf, String> {
-    let parent = repository_parent(settings, name, false)?;
+    repository_path_in(&settings.root, name)
+}
+
+fn repository_path_in(root: &Path, name: &str) -> Result<PathBuf, String> {
+    let parent = repository_parent_in(root, name, false)?;
     real_path(&parent.join(name.rsplit('/').next().unwrap()), true)
 }
 
@@ -111,7 +126,8 @@ fn authorize(
     operation: &Operation,
     payload: &[u8],
 ) -> Result<(), String> {
-    let check = |reference: Option<&str>, force: bool| -> Result<(), String> {
+    let mut limit = credential_limit(settings);
+    let mut check = |reference: Option<&str>, force: bool| -> Result<(), String> {
         if reference.is_some_and(|r| {
             settings
                 .protection
@@ -127,7 +143,13 @@ fn authorize(
             return Err("server does not allow forced updates".into());
         }
         if let Some(policy) = &settings.policy {
-            policy.authorize(&settings.actor, repository, reference, force, false)?;
+            limit = limit.intersect(policy.authorization_limit(
+                &settings.actor,
+                repository,
+                reference,
+                force,
+                false,
+            )?);
         }
         Ok(())
     };
@@ -184,35 +206,114 @@ fn authorize(
             // under the same repository lock as lease validation.
             Ok(())
         }
-        Operation::ApplyUpload { operation, .. } => {
-            check(Some("*"), false)?;
-            // Batch operands arrive in the verified upload. Reauthorize that
-            // exact payload before applying it in process_locked.
-            if matches!(
-                **operation,
-                Operation::PublishBatch {}
-                    | Operation::PublishOptions {}
-                    | Operation::CheckBatch {}
-                    | Operation::PublishPartial { .. }
-            ) {
-                Ok(())
-            } else {
-                authorize(settings, repository, operation, &[])
+        Operation::ApplyUpload { .. }
+        | Operation::UploadSlice { .. }
+        | Operation::CancelUpload { .. } => Err("legacy unscoped uploads are disabled".into()),
+        Operation::ScopedUploadSlice { binding, .. }
+        | Operation::ApplyScopedUpload { binding, .. }
+        | Operation::CancelScopedUpload { binding, .. } => {
+            binding.validate()?;
+            for target in &binding.targets {
+                check(Some(&target.reference), target.force)?;
             }
+            Ok(())
         }
-        Operation::UploadSlice { .. } | Operation::CancelUpload { .. } => check(Some("*"), false),
+        Operation::QueryScopedUpload { binding, .. } => binding.validate(),
+        Operation::QueryChunk { chunk } => chunk.validate_scope(repository, &settings.actor),
+        Operation::UploadChunk { chunk } => {
+            chunk.validate_scope(repository, &settings.actor)?;
+            for target in &chunk.scope.binding.targets {
+                check(Some(&target.reference), target.force)?;
+            }
+            Ok(())
+        }
+        Operation::ReleaseRetention { command } => {
+            if matches!(
+                command,
+                protocol::RetentionCommand::Prepare { .. }
+                    | protocol::RetentionCommand::Promote { .. }
+                    | protocol::RetentionCommand::Close { .. }
+            ) && !settings.write
+            {
+                return Err("server is read-only".into());
+            }
+            limit = limit.intersect(
+                settings
+                    .policy
+                    .as_ref()
+                    .ok_or("release retention requires an explicit principal policy")?
+                    .retention_limit(&settings.actor, repository)?,
+            );
+            Ok(())
+        }
         Operation::Fork { destination } => {
             if !settings.write {
                 return Err("server is read-only".into());
             }
             repository_name(destination)?;
             if let Some(policy) = &settings.policy {
-                policy.authorize(&settings.actor, destination, None, false, true)?;
+                limit = limit.intersect(policy.authorization_limit(
+                    &settings.actor,
+                    destination,
+                    None,
+                    false,
+                    true,
+                )?);
             }
             Ok(())
         }
         _ => Ok(()),
+    }?;
+    limit.require_current()
+}
+
+fn credential_limit(settings: &Settings) -> policy::AuthorizationLimit {
+    settings
+        .operation_credential
+        .as_ref()
+        .map_or_else(policy::AuthorizationLimit::unbounded, |receipt| {
+            policy::AuthorizationLimit::until(receipt.expires_at)
+        })
+}
+
+// Pull merges have already passed branch protection through their own review
+// path, so the final check here revalidates grants without rerouting protection.
+fn authorize_updates(
+    settings: &Settings,
+    repository: &str,
+    updates: &[protocol::RefUpdate],
+    reasons: &[Option<String>],
+) -> Result<(), String> {
+    if updates.len() != reasons.len() {
+        return Err("reference authorization decisions do not match updates".into());
     }
+    let mut limit = credential_limit(settings);
+    if let Some(policy) = &settings.policy {
+        limit = limit.intersect(policy.authorization_limit(
+            &settings.actor,
+            repository,
+            None,
+            false,
+            false,
+        )?);
+        for (update, rejection) in updates.iter().zip(reasons) {
+            if rejection.is_none() {
+                let namespace = if matches!(update.namespace, RefNamespace::Branch) {
+                    "heads"
+                } else {
+                    "tags"
+                };
+                limit = limit.intersect(policy.authorization_limit(
+                    &settings.actor,
+                    repository,
+                    Some(&format!("refs/{namespace}/{}", update.name)),
+                    update.force,
+                    false,
+                )?);
+            }
+        }
+    }
+    limit.require_current()
 }
 
 fn process(
@@ -220,28 +321,134 @@ fn process(
     request: Request,
     payload: &[u8],
 ) -> Result<(Response, Vec<u8>), String> {
+    if settings.require_operation_credentials && settings.operation_credential.is_none() {
+        return Err("operation credential required".into());
+    }
+    if settings.require_operation_credentials
+        && matches!(&request.operation, Operation::ScopedUploadSlice { .. })
+    {
+        return Err("strict uploads require an original-operation chunk request".into());
+    }
+    if let Some(credential) = &settings.operation_credential {
+        if credential.actor != settings.actor {
+            return Err("operation credential actor mismatch".into());
+        }
+        credential.validate_rpc(&request, payload)?;
+    }
+    if let Operation::UploadChunk { chunk } | Operation::QueryChunk { chunk } = &request.operation {
+        chunk.validate_scope(&request.repository, &settings.actor)?;
+        if settings.operation_credential.is_none() {
+            return Err("chunk operations require an operation credential".into());
+        }
+        if let Operation::UploadChunk { .. } = &request.operation {
+            chunk.validate_payload(payload)?;
+        } else if !payload.is_empty() {
+            return Err("chunk query requires an empty payload".into());
+        }
+    }
     repository_name(&request.repository)?;
     authorize(settings, &request.repository, &request.operation, payload)?;
-    let root = repository_path(settings, &request.repository)?;
-    let repository = Repository::open(root)?;
-    // OS-owned locks survive neither a crash nor an SSH process exit. Queue
-    // competing service operations instead of leaking local fail-fast locks to
-    // network readers. Local writer locks and ref leases remain authoritative.
-    let _gate = repository.service_lock(TIMEOUT)?;
-    process_locked(settings, request, payload)
+    if let Operation::UploadChunk { chunk } | Operation::QueryChunk { chunk } = &request.operation {
+        policy::validate_original_chunk(&settings.root, chunk)?;
+    }
+    let attempt = match (
+        &settings.operation_credential,
+        recovery::observation_scope(&request.operation),
+    ) {
+        (Some(credential), Some(scope)) if credential.effect_key.is_some() => Some((
+            credential.operation_id.clone(),
+            policy::audit_start(&settings.root, credential, &request, payload)?,
+            scope,
+        )),
+        _ => None,
+    };
+    let mut observed = protocol::AuditEvidenceObservation::Unknown;
+    let result = (|| {
+        let root = repository_path(settings, &request.repository)?;
+        let expected = if attempt.is_some() {
+            match &request.operation {
+                Operation::UploadChunk { chunk } => Some(chunk.scope.clone()),
+                Operation::ScopedUploadSlice {
+                    session, binding, ..
+                }
+                | Operation::ApplyScopedUpload { session, binding }
+                | Operation::CancelScopedUpload { session, binding } => {
+                    Some(protocol::ScopedExecution {
+                        actor: settings.actor.clone(),
+                        repository: request.repository.clone(),
+                        session: session.clone(),
+                        binding: binding.clone(),
+                    })
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let repository = if settings.require_operation_credentials {
+            Repository::open_for_recovery(root, expected.as_ref())?
+        } else {
+            Repository::open(root)?
+        };
+        // Root authorization gate -> service gate -> repository writer. An
+        // audit attempt precedes even journal recovery performed on open.
+        let gate = repository.service_lock(TIMEOUT)?;
+        authorize(settings, &request.repository, &request.operation, payload)?;
+        let original = request.clone();
+        let result = process_locked(settings, request, payload, &gate, None, &repository);
+        if attempt.is_some()
+            && result
+                .as_ref()
+                .is_ok_and(|(response, _)| response.ok && !response.publication_unknown)
+        {
+            match recovery::observe_native(&repository, &gate, &settings.actor, &original) {
+                Ok(evidence) => observed = evidence,
+                Err(cause) => {
+                    crate::cli_error(&format!("original operation result observation: {cause}"));
+                    return Ok((Response { version: 1, ok: false, publication_unknown: true,
+                        error: Some("native result observation is unavailable; query the original operation".into()), state: None, tip: None }, Vec::new()));
+                }
+            }
+        }
+        result
+    })();
+    if let Some((operation_id, attempt_id, scope)) = attempt {
+        // A rejected retry does not prove the original operation failed.
+        let observation = protocol::AuditObservation {
+            version: 1,
+            scope,
+            evidence: observed,
+        };
+        if let Err(cause) = policy::audit_observe(
+            &settings.root,
+            &protocol::AuditTarget::Operation {
+                operation_id,
+                attempt_id,
+            },
+            &observation,
+        ) {
+            crate::cli_error(&format!("original operation audit observation: {cause}"));
+            return Ok((Response { version: 1, ok: false, publication_unknown: true,
+                error: Some("operation observation is unconfirmed; query or recover the original operation".into()), state: None, tip: None }, Vec::new()));
+        }
+    }
+    result
 }
 
 fn process_locked(
     settings: &Settings,
     request: Request,
     payload: &[u8],
+    gate: &crate::repository::ServiceGuard,
+    scope: Option<&crate::repository::ScopedExecution>,
+    repository: &Repository,
 ) -> Result<(Response, Vec<u8>), String> {
     if request.version != 1 {
         return Err("unsupported RPC version".into());
     }
     repository_name(&request.repository)?;
-    let root = repository_path(settings, &request.repository)?;
-    let repository = Repository::open(root)?;
+    let original_operation = request.operation.clone();
+    let before_publish = || authorize(settings, &request.repository, &original_operation, payload);
     let mut response = Response {
         version: 1,
         ok: true,
@@ -251,10 +458,322 @@ fn process_locked(
         tip: None,
     };
     let bytes = match request.operation {
+        Operation::UploadChunk { chunk } | Operation::QueryChunk { chunk } => {
+            let writes = matches!(&original_operation, Operation::UploadChunk { .. });
+            let result = if writes {
+                repository.scoped_chunk_write(gate, &chunk, payload, before_publish)
+            } else {
+                repository.scoped_chunk_query(gate, &chunk)
+            };
+            match result {
+                Ok(status) => {
+                    let encoded = status.validate_for(&chunk).and_then(|()| {
+                        if writes
+                            && !matches!(status.state, protocol::ScopedChunkState::Accepted { .. })
+                        {
+                            return Err("chunk acknowledgement has no accepted decision".into());
+                        }
+                        crate::binary::encode(&status)
+                    });
+                    match encoded {
+                        Ok(bytes) => bytes,
+                        Err(error) => {
+                            return Ok((
+                                Response {
+                                    version: 1,
+                                    ok: false,
+                                    publication_unknown: writes,
+                                    error: Some(error),
+                                    state: None,
+                                    tip: None,
+                                },
+                                Vec::new(),
+                            ))
+                        }
+                    }
+                }
+                Err(error) => {
+                    return Ok((
+                        Response {
+                            version: 1,
+                            ok: false,
+                            publication_unknown: error.outcome_unknown,
+                            error: Some(error.message),
+                            state: None,
+                            tip: None,
+                        },
+                        Vec::new(),
+                    ))
+                }
+            }
+        }
+        Operation::ReleaseRetention { command } => {
+            if !payload.is_empty() {
+                return Err("release retention requires an empty payload".into());
+            }
+            match repository.release_retention_checked(
+                &request.repository,
+                &settings.actor,
+                command,
+                before_publish,
+            ) {
+                Ok(reply) => crate::binary::encode(&reply)?,
+                Err(error) => {
+                    return Ok((
+                        Response {
+                            version: 1,
+                            ok: false,
+                            publication_unknown: error.outcome_unknown,
+                            error: Some(error.message),
+                            state: None,
+                            tip: None,
+                        },
+                        Vec::new(),
+                    ))
+                }
+            }
+        }
+        Operation::ScopedUploadSlice {
+            session,
+            binding,
+            offset,
+        } => {
+            if let Err(error) = repository.scoped_upload_slice_checked(
+                &request.repository,
+                &settings.actor,
+                &session,
+                &binding,
+                offset,
+                payload,
+                before_publish,
+            ) {
+                return Ok((
+                    Response {
+                        version: 1,
+                        ok: false,
+                        publication_unknown: error.outcome_unknown,
+                        error: Some(error.message),
+                        state: None,
+                        tip: None,
+                    },
+                    Vec::new(),
+                ));
+            }
+            Vec::new()
+        }
+        Operation::QueryScopedUpload { session, binding } => {
+            if !payload.is_empty() {
+                return Err("upload query requires an empty payload".into());
+            }
+            let status = if settings.require_operation_credentials {
+                repository.scoped_upload_observe(
+                    gate,
+                    &request.repository,
+                    &settings.actor,
+                    &session,
+                    &binding,
+                )?
+            } else {
+                repository.scoped_upload_status(
+                    gate,
+                    &request.repository,
+                    &settings.actor,
+                    &session,
+                    &binding,
+                )?
+            };
+            crate::binary::encode(&status)?
+        }
+        Operation::CancelScopedUpload { session, binding } => {
+            if !payload.is_empty() {
+                return Err("upload cancellation requires an empty payload".into());
+            }
+            if let Err(error) = repository.scoped_upload_cancel_checked(
+                &request.repository,
+                &settings.actor,
+                &session,
+                &binding,
+                before_publish,
+            ) {
+                return Ok((
+                    Response {
+                        version: 1,
+                        ok: false,
+                        publication_unknown: error.outcome_unknown,
+                        error: Some(error.message),
+                        state: None,
+                        tip: None,
+                    },
+                    Vec::new(),
+                ));
+            }
+            Vec::new()
+        }
+        Operation::ApplyScopedUpload { session, binding } => {
+            if !payload.is_empty() {
+                return Err("upload application requires an empty payload".into());
+            }
+            let status = if settings.require_operation_credentials {
+                repository.scoped_upload_observe(
+                    gate,
+                    &request.repository,
+                    &settings.actor,
+                    &session,
+                    &binding,
+                )?
+            } else {
+                repository.scoped_upload_status(
+                    gate,
+                    &request.repository,
+                    &settings.actor,
+                    &session,
+                    &binding,
+                )?
+            };
+            match status.state {
+                Some(protocol::ScopedUploadState::Finished { response, payload }) => {
+                    return Ok((response, payload))
+                }
+                Some(protocol::ScopedUploadState::FinishedV4 { receipt }) => {
+                    return Ok((receipt.response, receipt.payload))
+                }
+                Some(
+                    protocol::ScopedUploadState::Applying
+                    | protocol::ScopedUploadState::ApplyingV4 { .. },
+                ) => {
+                    return Ok((
+                        Response {
+                            version: 1,
+                            ok: false,
+                            publication_unknown: true,
+                            error: Some(
+                                "scoped upload outcome is unknown; recover the original operation"
+                                    .into(),
+                            ),
+                            state: None,
+                            tip: None,
+                        },
+                        Vec::new(),
+                    ))
+                }
+                Some(protocol::ScopedUploadState::Canceled) => {
+                    return Err("scoped upload is canceled".into())
+                }
+                Some(protocol::ScopedUploadState::Aborted { .. }) => {
+                    return Err("scoped upload was aborted before its native decision".into())
+                }
+                _ => (),
+            }
+            let bytes = repository.scoped_upload_read(
+                &request.repository,
+                &settings.actor,
+                &session,
+                &binding,
+            )?;
+            authorize(settings, &request.repository, &binding.operation, &bytes)?;
+            if let Err(error) = repository.scoped_upload_applying_checked(
+                gate,
+                &request.repository,
+                &settings.actor,
+                &session,
+                &binding,
+                before_publish,
+            ) {
+                return Ok((
+                    Response {
+                        version: 1,
+                        ok: false,
+                        publication_unknown: error.outcome_unknown,
+                        error: Some(error.message),
+                        state: None,
+                        tip: None,
+                    },
+                    Vec::new(),
+                ));
+            }
+            let execution = crate::repository::ScopedExecution {
+                actor: settings.actor.clone(),
+                repository: request.repository.clone(),
+                session: session.clone(),
+                binding: binding.clone(),
+            };
+            let result = process_locked(
+                settings,
+                Request {
+                    version: request.version,
+                    repository: request.repository,
+                    operation: *binding.operation.clone(),
+                },
+                &bytes,
+                gate,
+                Some(&execution),
+                repository,
+            );
+            // An error after entering application may follow a committed ref
+            // update; retain an unknown outcome rather than claiming failure.
+            let (reply, _reply_bytes) = result.unwrap_or_else(|error| {
+                (
+                    Response {
+                        version: 1,
+                        ok: false,
+                        publication_unknown: true,
+                        error: Some(error),
+                        state: None,
+                        tip: None,
+                    },
+                    Vec::new(),
+                )
+            });
+            let durable = if reply.ok {
+                match repository.scoped_upload_status(
+                    gate,
+                    &execution.repository,
+                    &settings.actor,
+                    &session,
+                    &binding,
+                ) {
+                    Ok(protocol::ScopedUploadStatus {
+                        state: Some(protocol::ScopedUploadState::Finished { response, payload }),
+                        ..
+                    }) => Ok((response, payload)),
+                    Ok(protocol::ScopedUploadStatus {
+                        state: Some(protocol::ScopedUploadState::FinishedV4 { receipt }),
+                        ..
+                    }) => Ok((receipt.response, receipt.payload)),
+                    Ok(_) => Err("scoped success has no durable receipt".into()),
+                    Err(error) => Err(error),
+                }
+            } else {
+                repository.scoped_record_failure(gate, &execution, reply)
+            };
+            match durable {
+                Ok(result) => {
+                    if let Err(error) = repository.scoped_upload_cleanup(&session) {
+                        crate::cli_error(&format!("scoped upload cleanup: {error}"));
+                    }
+                    return Ok(result);
+                }
+                Err(error) => {
+                    return Ok((
+                        Response {
+                            version: 1,
+                            ok: false,
+                            publication_unknown: true,
+                            error: Some(format!(
+                            "scoped upload outcome is unknown; query the original session: {error}"
+                        )),
+                            state: None,
+                            tip: None,
+                        },
+                        Vec::new(),
+                    ))
+                }
+            }
+        }
         Operation::PullRequest {} => {
             let command: crate::pull::PullCommand = crate::binary::decode(payload)?;
             let mutates = command.mutates();
-            match pulls::run(settings, &request.repository, &repository, command) {
+            match pulls::run(settings, &request.repository, repository, command) {
                 Ok(reply) => {
                     use sha2::Digest;
                     response.tip = Some(format!("{:x}", sha2::Sha256::digest(payload)));
@@ -352,74 +871,10 @@ fn process_locked(
             response.state = state;
             bytes
         }
-        Operation::UploadSlice {
-            transfer,
-            total,
-            offset,
-        } => {
-            if !settings.write {
-                return Err("server is read-only".into());
-            }
-            repository.upload_slice(&transfer, total, offset, payload)?;
-            Vec::new()
-        }
-        Operation::CancelUpload { transfer } => {
-            if !settings.write {
-                return Err("server is read-only".into());
-            }
-            if !payload.is_empty() {
-                return Err("cancel upload requires an empty payload".into());
-            }
-            repository.remove_upload(&transfer)?;
-            Vec::new()
-        }
-        Operation::ApplyUpload {
-            transfer,
-            operation,
-        } => {
-            if !settings.write {
-                return Err("server is read-only".into());
-            }
-            if !payload.is_empty()
-                || !matches!(
-                    &*operation,
-                    Operation::Push { .. }
-                        | Operation::UpdateRef { .. }
-                        | Operation::PublishBatch {}
-                        | Operation::PublishOptions {}
-                        | Operation::CheckBatch {}
-                        | Operation::PublishPartial { .. }
-                )
-            {
-                return Err("uploaded payload can only apply one reference mutation".into());
-            }
-            let bytes = match repository.read_upload(&transfer) {
-                Ok(bytes) => bytes,
-                Err(error) => {
-                    // Incomplete uploads remain resumable. A complete upload
-                    // with a bad digest can never succeed and must be removed.
-                    if error.contains("checksum mismatch") {
-                        repository.remove_upload(&transfer)?;
-                    }
-                    return Err(error);
-                }
-            };
-            let result =
-                authorize(settings, &request.repository, &operation, &bytes).and_then(|()| {
-                    process_locked(
-                        settings,
-                        Request {
-                            version: request.version,
-                            repository: request.repository,
-                            operation: *operation,
-                        },
-                        &bytes,
-                    )
-                });
-            if let Err(error) = repository.remove_upload(&transfer) {
-                crate::cli_error(&format!("upload cleanup: {error}"));
-            }
-            return result;
+        Operation::UploadSlice { .. }
+        | Operation::ApplyUpload { .. }
+        | Operation::CancelUpload { .. } => {
+            return Err("legacy unscoped uploads are disabled".into())
         }
         Operation::Fork { destination } => {
             if !settings.write {
@@ -429,7 +884,7 @@ fn process_locked(
                 return Err("fork requires an empty payload".into());
             }
             repository_name(&destination)?;
-            match receive::fork(settings, &request.repository, &repository, &destination) {
+            match receive::fork(settings, &request.repository, repository, &destination) {
                 Ok(()) => response.tip = Some(format!("fork-created:{destination}")),
                 Err(error) => return Ok((receive_error_response(error), Vec::new())),
             }
@@ -473,10 +928,11 @@ fn process_locked(
             match receive::publish(
                 settings,
                 &request.repository,
-                &repository,
+                repository,
                 &completed,
                 &updates,
                 &[],
+                scope,
             ) {
                 Ok(()) => response.tip = Some(tip),
                 Err(error) => return Ok((receive_error_response(error), Vec::new())),
@@ -509,10 +965,11 @@ fn process_locked(
             match receive::publish(
                 settings,
                 &request.repository,
-                &repository,
+                repository,
                 payload,
                 &updates,
                 &[],
+                scope,
             ) {
                 Ok(()) => response.tip = new,
                 Err(error) => return Ok((receive_error_response(error), Vec::new())),
@@ -524,10 +981,11 @@ fn process_locked(
             match receive::publish_selective(
                 settings,
                 &request.repository,
-                &repository,
+                repository,
                 &batch,
                 &options,
                 dry_run,
+                scope,
             ) {
                 Ok(rejections) => {
                     response.tip = Some(format!(
@@ -544,20 +1002,26 @@ fn process_locked(
         | Operation::CheckBatch {}) => {
             let (batch, options) = protocol::publication_payload(&operation, payload)?;
             let result = if matches!(operation, Operation::CheckBatch {}) {
-                repository.check_receive_batch(&batch.bundle, &batch.updates, |bundle| {
-                    if let Some(path) = &settings.signed_authors {
-                        repository.verify_receive_authors(bundle, &batch.updates, path)?;
-                    }
-                    Ok(())
-                })
+                repository.check_receive_batch_scoped(
+                    &batch.bundle,
+                    &batch.updates,
+                    scope,
+                    |bundle| {
+                        if let Some(path) = &settings.signed_authors {
+                            repository.verify_receive_authors(bundle, &batch.updates, path)?;
+                        }
+                        Ok(())
+                    },
+                )
             } else {
                 receive::publish(
                     settings,
                     &request.repository,
-                    &repository,
+                    repository,
                     &batch.bundle,
                     &batch.updates,
                     &options,
+                    scope,
                 )
             };
             match result {
@@ -606,23 +1070,86 @@ fn response_packet(response: &Response, payload: &[u8]) -> Result<Vec<u8>, Strin
     Ok(bytes)
 }
 
-fn rpc(settings: &Settings, bytes: &[u8]) -> Result<Vec<u8>, String> {
-    let outcome = protocol::read_complete_packet::<Request>(bytes)
-        .and_then(|(request, payload)| process(settings, request, &payload));
-    let (response, payload) = outcome.unwrap_or_else(|error| {
-        (
-            Response {
-                version: 1,
-                ok: false,
-                publication_unknown: false,
-                error: Some(error),
-                state: None,
-                tip: None,
-            },
-            Vec::new(),
-        )
-    });
-    response_packet(&response, &payload)
+struct PreparedReply {
+    request: Option<(Request, Vec<u8>)>,
+    response: Response,
+    bytes: Vec<u8>,
+}
+
+impl PreparedReply {
+    fn new(
+        settings: &Settings,
+        request: Result<(Request, Vec<u8>), String>,
+    ) -> Result<Self, String> {
+        let (request, outcome) = match request {
+            Ok((request, payload)) => {
+                let outcome = process(settings, request.clone(), &payload);
+                (Some((request, payload)), outcome)
+            }
+            Err(error) => (None, Err(error)),
+        };
+        let (response, payload) = outcome.unwrap_or_else(|error| {
+            (
+                Response {
+                    version: 1,
+                    ok: false,
+                    publication_unknown: settings.require_operation_credentials
+                        && settings
+                            .operation_credential
+                            .as_ref()
+                            .is_some_and(|c| c.effect_key.is_some()),
+                    error: Some(error),
+                    state: None,
+                    tip: None,
+                },
+                Vec::new(),
+            )
+        });
+        let bytes = response_packet(&response, &payload)?;
+        Ok(Self {
+            request,
+            response,
+            bytes,
+        })
+    }
+
+    /// This is the last check before the first protected output write. Once
+    /// that write begins, the single already-authorized transfer may finish.
+    fn for_delivery(self, settings: &Settings) -> Result<Vec<u8>, String> {
+        if let Some((request, payload)) = &self.request {
+            if let Err(cause) =
+                authorize(settings, &request.repository, &request.operation, payload)
+            {
+                crate::cli_error(&format!("authorization before delivery: {cause}"));
+                let mutates = match &request.operation {
+                    Operation::Advertise {}
+                    | Operation::Fetch {}
+                    | Operation::FetchSlice { .. }
+                    | Operation::RefsPage { .. }
+                    | Operation::ObjectSlice { .. }
+                    | Operation::QueryScopedUpload { .. }
+                    | Operation::CheckBatch {}
+                    | Operation::QueryChunk { .. }
+                    | Operation::PublishPartial { dry_run: true } => false,
+                    Operation::ReleaseRetention { command } => !matches!(
+                        command,
+                        protocol::RetentionCommand::Query { .. }
+                            | protocol::RetentionCommand::Read { .. }
+                    ),
+                    Operation::PullRequest {} => {
+                        crate::binary::decode::<crate::pull::PullCommand>(payload)
+                            .is_ok_and(|p| p.mutates())
+                    }
+                    _ => true,
+                };
+                return response_packet(&Response { version: 1, ok: false,
+                    publication_unknown: self.response.publication_unknown || (self.response.ok && mutates),
+                    error: Some("authorization unavailable before delivery; query the original operation with current authorization".into()),
+                    state: None, tip: None }, &[]);
+            }
+        }
+        Ok(self.bytes)
+    }
 }
 
 fn equal_secret(left: &[u8], right: &[u8]) -> bool {
@@ -799,6 +1326,34 @@ fn finish_http(stream: &mut DeadlineStream) -> usize {
     consumed
 }
 
+fn http_authentication(
+    stream: &mut impl Write,
+    result: Result<Option<policy::Authentication>, String>,
+) -> Result<Option<policy::Authentication>, String> {
+    match result {
+        Ok(Some(authenticated)) => Ok(Some(authenticated)),
+        Ok(None) => {
+            http_response(
+                stream,
+                "401 Unauthorized",
+                b"authentication required",
+                false,
+            )?;
+            Ok(None)
+        }
+        Err(cause) => {
+            crate::cli_error(&format!("operation credential authentication: {cause}"));
+            http_response(
+                stream,
+                "503 Service Unavailable",
+                b"authorization unavailable",
+                false,
+            )?;
+            Ok(None)
+        }
+    }
+}
+
 fn http_request(stream: &mut DeadlineStream, settings: &Settings) -> Result<(), String> {
     let headers = match read_headers(stream) {
         Ok(headers) => headers,
@@ -819,22 +1374,49 @@ fn http_request(stream: &mut DeadlineStream, settings: &Settings) -> Result<(), 
         }
     }
     let mut authenticated = settings.clone();
-    if let Some(policy) = &settings.policy {
+    let initial = match policy::request_guard(&settings.root, settings.policy_enabled) {
+        Ok(guard) => guard,
+        Err(_) => {
+            return http_response(
+                stream,
+                "503 Service Unavailable",
+                b"authorization unavailable",
+                false,
+            )
+        }
+    };
+    if initial.operation_credentials
+        && (!settings.require_operation_credentials || !initial.chunk_receipts)
+    {
+        return http_response(
+            stream,
+            "503 Service Unavailable",
+            b"this root requires the strict credential entry point",
+            false,
+        );
+    }
+    if let Some(policy) = &initial.policy {
         let token = headers
             .get("authorization")
             .and_then(|h| h.strip_prefix("Bearer "))
             .unwrap_or("");
-        let Some(actor) = policy.authenticate(token.as_bytes()) else {
-            return http_response(
-                stream,
-                "401 Unauthorized",
-                b"authentication required",
-                false,
-            );
+        let Some((actor, credential)) = http_authentication(
+            stream,
+            policy::authenticate(
+                &settings.root,
+                policy,
+                initial.generation,
+                token.as_bytes(),
+                settings.require_operation_credentials,
+            ),
+        )?
+        else {
+            return Ok(());
         };
         authenticated.actor = actor;
+        authenticated.operation_credential = credential;
     }
-    let settings = &authenticated;
+    drop(initial);
     let Some(length_text) = headers.get("content-length") else {
         return http_response(
             stream,
@@ -883,16 +1465,64 @@ fn http_request(stream: &mut DeadlineStream, settings: &Settings) -> Result<(), 
             false,
         );
     }
+    // Authentication before reading the body is only an early rejection. The
+    // actual request uses a fresh snapshot and retains the gate through output.
+    let guard = match policy::request_guard(&settings.root, settings.policy_enabled) {
+        Ok(guard) => guard,
+        Err(_) => {
+            return http_response(
+                stream,
+                "503 Service Unavailable",
+                b"authorization unavailable",
+                false,
+            )
+        }
+    };
+    if guard.operation_credentials
+        && (!settings.require_operation_credentials || !guard.chunk_receipts)
+    {
+        return http_response(
+            stream,
+            "503 Service Unavailable",
+            b"this root requires the strict credential entry point",
+            false,
+        );
+    }
+    authenticated.policy = guard.policy.clone();
+    if let Some(policy) = &authenticated.policy {
+        let token = headers
+            .get("authorization")
+            .and_then(|h| h.strip_prefix("Bearer "))
+            .unwrap_or("");
+        let Some((actor, credential)) = http_authentication(
+            stream,
+            policy::authenticate(
+                &settings.root,
+                policy,
+                guard.generation,
+                token.as_bytes(),
+                settings.require_operation_credentials,
+            ),
+        )?
+        else {
+            return Ok(());
+        };
+        authenticated.actor = actor;
+        authenticated.operation_credential = credential;
+    }
+    let settings = &authenticated;
     let started = Instant::now();
-    let bytes = rpc(settings, &body);
+    let reply = PreparedReply::new(settings, protocol::read_complete_packet::<Request>(&body));
     // Verification/fsync may exceed the network budget on a slow host. A
     // completed publication still needs its acknowledgement; only the time
     // spent processing this fully buffered request is excluded from I/O time.
     stream
         .exclude_processing(started.elapsed())
         .map_err(|e| e.to_string())?;
-    let bytes = bytes?;
-    http_response(stream, "200 OK", &bytes, true)
+    let bytes = reply?.for_delivery(settings)?;
+    let result = http_response(stream, "200 OK", &bytes, true);
+    drop(guard);
+    result
 }
 
 fn read_token_file(path: &Path) -> Result<Vec<u8>, String> {
@@ -929,6 +1559,104 @@ pub fn run(args: &[String]) -> Result<String, String> {
         return Ok(USAGE.into());
     }
     if let [_, command, input, output] = args {
+        if matches!(
+            command.as_str(),
+            "policy-set"
+                | "policy-query"
+                | "policy-migrate"
+                | "operation-credential-issue"
+                | "operation-credential-query"
+                | "operation-recover"
+                | "audit-query"
+                | "operation-context"
+                | "capacity-query"
+        ) {
+            let root = real_path(Path::new(input), true)?;
+            let request_path = real_path(Path::new(output), false)?;
+            if fs::metadata(&request_path)
+                .map_err(|e| e.to_string())?
+                .len()
+                > 16 * 1024 * 1024
+            {
+                return Err("policy update request exceeds 16 MiB".into());
+            }
+            let bytes = fs::read(request_path).map_err(|e| e.to_string())?;
+            protocol::validate_node_safe_json(&bytes)?;
+            if command == "operation-recover" {
+                let request: protocol::OperationRecoveryRequest =
+                    serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+                return serde_json::to_string(&recovery::run(&root, &request)?)
+                    .map_err(|e| e.to_string());
+            }
+            if command == "audit-query" {
+                admin_identity::authorize_recovery_root(&root)?;
+                let request: protocol::AuditQueryRequest =
+                    serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+                let reply = policy::audit_query(&root, &request)?;
+                reply.validate_for(&request)?;
+                return serde_json::to_string(&reply).map_err(|e| e.to_string());
+            }
+            if command == "operation-context" {
+                admin_identity::authorize_recovery_root(&root)?;
+                let request: protocol::OperationCredentialQuery =
+                    serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+                request.validate()?;
+                let reply = protocol::OperationContextReply {
+                    version: 1,
+                    operation_id: request.operation_id.clone(),
+                    original: policy::operation_context(&root, &request.operation_id)?,
+                };
+                reply.validate_for(&request)?;
+                return serde_json::to_string(&reply).map_err(|e| e.to_string());
+            }
+            if command == "capacity-query" {
+                admin_identity::authorize_recovery_root(&root)?;
+                let request: protocol::CapacityQueryRequest =
+                    serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+                request.validate()?;
+                let _guard = policy::request_guard(&root, true)?;
+                let repository = Repository::open_for_recovery(
+                    repository_path_in(&root, &request.repository)?,
+                    None,
+                )?;
+                let capacity = repository.capacity_status()?;
+                let reply = protocol::CapacityQueryReply {
+                    version: 1,
+                    repository: request.repository.clone(),
+                    capacity,
+                };
+                reply.validate_for(&request)?;
+                return serde_json::to_string(&reply).map_err(|e| e.to_string());
+            }
+            if command == "operation-credential-issue" {
+                let request: protocol::OperationCredentialRequest =
+                    serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+                return serde_json::to_string(&policy::issue_credential(&root, &request)?)
+                    .map_err(|e| e.to_string());
+            }
+            if command == "operation-credential-query" {
+                let request: protocol::OperationCredentialQuery =
+                    serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+                return serde_json::to_string(&policy::query_credential(&root, &request)?)
+                    .map_err(|e| e.to_string());
+            }
+            if command == "policy-set" {
+                let request: protocol::PolicyUpdateRequest =
+                    serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+                return serde_json::to_string(&policy::set(&root, &request)?)
+                    .map_err(|e| e.to_string());
+            }
+            if command == "policy-migrate" {
+                let request: protocol::PolicyMigrationRequest =
+                    serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+                return serde_json::to_string(&policy::migrate(&root, &request)?)
+                    .map_err(|e| e.to_string());
+            }
+            let request: protocol::PolicyQueryRequest =
+                serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+            return serde_json::to_string(&policy::query(&root, &request)?)
+                .map_err(|e| e.to_string());
+        }
         if command == "compile-policy" {
             return policy::compile(Path::new(input), Path::new(output));
         }
@@ -940,6 +1668,10 @@ pub fn run(args: &[String]) -> Result<String, String> {
         }
     }
     if let [_, command, path] = args {
+        if command == "policy-status" {
+            let root = real_path(Path::new(path), true)?;
+            return serde_json::to_string(&policy::status(&root)?).map_err(|e| e.to_string());
+        }
         if command == "audit-log" {
             return receive::read_audit(Path::new(path));
         }
@@ -961,6 +1693,7 @@ pub fn run(args: &[String]) -> Result<String, String> {
     let mut listen_selected = false;
     let mut token_file = None;
     let mut stdio = false;
+    let mut require_operation_credentials = false;
     let mut write = false;
     let mut force = false;
     let mut max_connections = None;
@@ -968,6 +1701,7 @@ pub fn run(args: &[String]) -> Result<String, String> {
     while index < args.len() {
         match args[index].as_str() {
             "--stdio" => stdio = true,
+            "--require-operation-credentials" => require_operation_credentials = true,
             "--read-only" => read_only = true,
             "--allow-write" => write = true,
             "--allow-force" => force = true,
@@ -1046,24 +1780,39 @@ pub fn run(args: &[String]) -> Result<String, String> {
     if read_only && (write || force) {
         return Err("--read-only conflicts with write/force flags".into());
     }
-    let policy = policy_file
-        .map(|p| policy::Policy::load(&p).map(Arc::new))
-        .transpose()?;
-    if policy.is_some() && token.is_some() {
+    let policy_enabled = policy_file.is_some();
+    if require_operation_credentials && (!policy_enabled || stdio) {
+        return Err("operation credentials require an HTTP policy entry point".into());
+    }
+    if policy_enabled && token.is_some() {
         return Err("choose --policy or --token-file".into());
     }
-    if principal.is_some() && (!stdio || policy.is_none()) {
+    if principal.is_some() && (!stdio || !policy_enabled) {
         return Err("--principal requires SSH stdio and --policy".into());
     }
-    if stdio && policy.is_some() && principal.is_none() {
+    if stdio && policy_enabled && principal.is_none() {
         return Err("SSH policy requires a trusted forced-command --principal".into());
     }
-    if let Some(name) = &principal {
-        if !policy.as_ref().unwrap().principal_exists(name) {
-            return Err("unknown SSH principal".into());
+    if let Some(path) = &policy_file {
+        policy::bootstrap(&root, path)?;
+    }
+    {
+        let guard = policy::request_guard(&root, policy_enabled)?;
+        if guard.operation_credentials && (!require_operation_credentials || !guard.chunk_receipts)
+        {
+            return Err("this root requires the strict credential entry point".into());
+        }
+        if let Some(name) = &principal {
+            if !guard
+                .policy
+                .as_ref()
+                .is_some_and(|policy| policy.principal_exists(name))
+            {
+                return Err("unknown SSH principal".into());
+            }
         }
     }
-    if !stdio && write && token.is_none() && policy.is_none() {
+    if !stdio && write && token.is_none() && !policy_enabled {
         return Err("HTTP --allow-write requires --token-file or --policy".into());
     }
     let settings = Arc::new(Settings {
@@ -1091,7 +1840,10 @@ pub fn run(args: &[String]) -> Result<String, String> {
         token,
         write: !read_only && (stdio || write),
         force,
-        policy,
+        policy_enabled,
+        policy: None,
+        require_operation_credentials,
+        operation_credential: None,
         actor: principal.unwrap_or_else(|| if stdio { "ssh".into() } else { "token".into() }),
         pre_receive,
         update_hook,
@@ -1106,26 +1858,25 @@ pub fn run(args: &[String]) -> Result<String, String> {
         if input.read(&mut extra).map_err(|e| e.to_string())? != 0 {
             return Err("trailing bytes after stdio request".into());
         }
-        let result = process(&settings, request, &payload);
-        let (response, payload) = result.unwrap_or_else(|error| {
-            (
-                Response {
-                    version: 1,
-                    ok: false,
-                    publication_unknown: false,
-                    error: Some(error),
-                    state: None,
-                    tip: None,
-                },
-                Vec::new(),
-            )
-        });
+        let guard = policy::request_guard(&settings.root, settings.policy_enabled)?;
+        if guard.operation_credentials {
+            return Err("this root requires the strict credential entry point".into());
+        }
+        let mut authenticated = (*settings).clone();
+        authenticated.policy = guard.policy.clone();
+        if let Some(policy) = &authenticated.policy {
+            if !policy.principal_exists(&authenticated.actor) {
+                return Err("unknown SSH principal".into());
+            }
+        }
+        let reply = PreparedReply::new(&authenticated, Ok((request, payload)))?;
         let mut output = std::io::stdout().lock();
-        let bytes = response_packet(&response, &payload)?;
+        let bytes = reply.for_delivery(&authenticated)?;
         output
             .write_all(&bytes)
             .map_err(|e| format!("write stdio response: {e}"))?;
         output.flush().map_err(|e| e.to_string())?;
+        drop(guard);
         return Ok(String::new());
     }
     let listener = TcpListener::bind(&listen).map_err(|e| format!("listen: {e}"))?;
@@ -1184,8 +1935,166 @@ pub fn run(args: &[String]) -> Result<String, String> {
 }
 
 #[cfg(test)]
+pub(crate) fn test_authorized_process(
+    root: &Path,
+    actor: &str,
+    request: Request,
+    payload: &[u8],
+) -> Result<(Response, Vec<u8>), String> {
+    let root = real_path(root, true)?;
+    let guard = policy::request_guard(&root, true)?;
+    let settings = Settings {
+        protection: None,
+        merge_signer: None,
+        root,
+        token: None,
+        write: true,
+        force: true,
+        policy_enabled: true,
+        policy: guard.policy.clone(),
+        require_operation_credentials: false,
+        operation_credential: None,
+        actor: actor.into(),
+        pre_receive: None,
+        update_hook: None,
+        signed_authors: None,
+        post_receive: None,
+        post_update: None,
+    };
+    let result = process(&settings, request, payload);
+    drop(guard);
+    result
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credential_store_failure_is_unavailable_not_invalid_credentials() {
+        let absent = std::env::temp_dir().join(format!(
+            "wasm-git-absent-credential-root-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        assert!(!absent.exists());
+        let policy = protocol::ServerPolicy {
+            version: protocol::SERVER_POLICY_VERSION,
+            principals: Vec::new(),
+        };
+        let failure = policy::authenticate(&absent, &policy, 0, b"token", true);
+        assert!(failure.is_err());
+        let mut bytes = Vec::new();
+        assert!(http_authentication(&mut bytes, failure).unwrap().is_none());
+        assert!(bytes.starts_with(b"HTTP/1.1 503 Service Unavailable"));
+        assert!(!String::from_utf8_lossy(&bytes).contains("store is not initialized"));
+        bytes.clear();
+        assert!(http_authentication(&mut bytes, Ok(None)).unwrap().is_none());
+        assert!(bytes.starts_with(b"HTTP/1.1 401 Unauthorized"));
+    }
+
+    #[test]
+    fn first_delivery_removes_expired_data_without_reclassifying_committed_or_unknown_writes() {
+        let policy = protocol::ServerPolicy {
+            version: protocol::SERVER_POLICY_VERSION,
+            principals: vec![protocol::PolicyPrincipal {
+                name: "alice".into(),
+                token_sha256: None,
+                grants: vec![protocol::PolicyGrant {
+                    repository: "project".into(),
+                    read: true,
+                    write: vec!["refs/heads/*".into()],
+                    force: false,
+                    create: false,
+                    release_retention: true,
+                    expires_at: None,
+                }],
+            }],
+        };
+        let mut settings = Settings {
+            protection: None,
+            merge_signer: None,
+            root: PathBuf::new(),
+            token: None,
+            write: true,
+            force: false,
+            policy_enabled: true,
+            policy: Some(Arc::new(policy)),
+            require_operation_credentials: true,
+            operation_credential: None,
+            actor: "alice".into(),
+            pre_receive: None,
+            update_hook: None,
+            signed_authors: None,
+            post_receive: None,
+            post_update: None,
+        };
+        for (operation, mutation) in [
+            (Operation::Fetch {}, false),
+            (
+                Operation::ReleaseRetention {
+                    command: protocol::RetentionCommand::Close {
+                        operation: "a".repeat(64),
+                    },
+                },
+                true,
+            ),
+        ] {
+            let request = Request {
+                version: 1,
+                repository: "project".into(),
+                operation,
+            };
+            let issuance = protocol::OperationCredentialRequest {
+                version: 1,
+                operation_id: "b".repeat(64),
+                policy_generation: 1,
+                actor: "alice".into(),
+                token_sha256: "c".repeat(64),
+                request: request.clone(),
+                payload_sha256: format!("{:x}", <sha2::Sha256 as sha2::Digest>::digest([])),
+                expires_at: protocol::NODE_SAFE_INTEGER_MAX,
+            };
+            settings.operation_credential = Some(issuance.receipt().unwrap());
+            let ready = |ok, unknown| {
+                let response = Response {
+                    version: 1,
+                    ok,
+                    publication_unknown: unknown,
+                    error: None,
+                    state: None,
+                    tip: Some("private-tip".into()),
+                };
+                PreparedReply {
+                    request: Some((request.clone(), Vec::new())),
+                    bytes: response_packet(&response, b"private-bytes").unwrap(),
+                    response,
+                }
+            };
+            let allowed = ready(true, false).for_delivery(&settings).unwrap();
+            assert_eq!(
+                protocol::read_complete_packet::<Response>(&allowed)
+                    .unwrap()
+                    .1,
+                b"private-bytes"
+            );
+            // The result was prepared while valid, but no output has started.
+            settings.operation_credential.as_mut().unwrap().expires_at = 1;
+            for (ok, unknown) in [(true, false), (false, true), (false, false)] {
+                let (response, payload) = protocol::read_complete_packet::<Response>(
+                    &ready(ok, unknown).for_delivery(&settings).unwrap(),
+                )
+                .unwrap();
+                assert!(!response.ok);
+                assert!(payload.is_empty());
+                assert!(response.tip.is_none());
+                assert_eq!(response.publication_unknown, unknown || (ok && mutation));
+            }
+        }
+    }
 
     #[test]
     fn http_framing_rejects_ambiguity_and_oversized_headers() {
@@ -1308,7 +2217,10 @@ mod tests {
             token: Some(b"required-token".to_vec()),
             write: false,
             force: false,
+            policy_enabled: false,
             policy: None,
+            require_operation_credentials: false,
+            operation_credential: None,
             actor: "test".into(),
             pre_receive: None,
             update_hook: None,

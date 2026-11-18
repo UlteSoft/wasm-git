@@ -87,6 +87,10 @@ pub fn is_remote_url(value: &str) -> bool {
     value.starts_with("http://") || value.starts_with("https://") || value.starts_with("ssh://")
 }
 
+pub(crate) fn validate_remote_url(value: &str) -> RepositoryResult<()> {
+    parse_url(value).map(|_| ())
+}
+
 fn name(value: &str) -> RepositoryResult<()> {
     if value.is_empty()
         || value.len() > 64
@@ -863,13 +867,26 @@ fn exchange(
         if payload.len() as u64 > protocol::MAX_BUNDLE_BYTES {
             return Err("bundle exceeds the 4 GiB transfer limit".into());
         }
-        let transfer = format!("{:x}", sha2::Sha256::digest(payload));
+        let session = std::env::var("WASM_GIT_UPLOAD_SESSION").map_err(|_| {
+            "large uploads require WASM_GIT_UPLOAD_SESSION with a unique 64-digit hex ID"
+        })?;
+        crate::binary::oid(&session)?;
+        let recovery_directory = std::env::var_os("WASM_GIT_UPLOAD_RECOVERY_DIR")
+            .ok_or("large uploads require WASM_GIT_UPLOAD_RECOVERY_DIR")?;
+        let binding = protocol::UploadBinding::for_payload(operation, payload)?;
+        persist_upload_recovery(
+            Path::new(&recovery_directory),
+            remote,
+            &session,
+            &binding,
+            payload,
+        )?;
         for (i, chunk) in payload.chunks(protocol::TRANSFER_CHUNK).enumerate() {
             exchange(
                 remote,
-                Operation::UploadSlice {
-                    transfer: transfer.clone(),
-                    total: payload.len() as u64,
+                Operation::ScopedUploadSlice {
+                    session: session.clone(),
+                    binding: binding.clone(),
                     offset: (i * protocol::TRANSFER_CHUNK) as u64,
                 },
                 chunk,
@@ -878,15 +895,20 @@ fn exchange(
         }
         return exchange(
             remote,
-            Operation::ApplyUpload {
-                transfer,
-                operation: Box::new(operation),
-            },
+            Operation::ApplyScopedUpload { session, binding },
             &[],
             allow_http,
         );
     }
     let endpoint = parse_url(&remote.url)?;
+    let retention_mutation = matches!(
+        &operation,
+        Operation::ReleaseRetention {
+            command: protocol::RetentionCommand::Prepare { .. }
+                | protocol::RetentionCommand::Promote { .. }
+                | protocol::RetentionCommand::Close { .. }
+        }
+    );
     let publishes = (matches!(&operation, Operation::PullRequest {})
         && crate::binary::decode::<crate::pull::PullCommand>(payload).is_ok_and(|p| p.mutates()))
         || matches!(
@@ -899,8 +921,15 @@ fn exchange(
                 | Operation::Fork { .. }
         )
         || matches!(&operation, Operation::ApplyUpload { operation, .. } if !matches!(**operation, Operation::CheckBatch {} | Operation::PublishPartial { dry_run: true }));
+    let publishes = publishes
+        || matches!(&operation, Operation::ApplyScopedUpload { binding, .. } if !matches!(*binding.operation, Operation::CheckBatch {} | Operation::PublishPartial { dry_run: true }));
+    let upload_mutation = matches!(&operation, Operation::UploadChunk { .. } | Operation::ScopedUploadSlice { .. } | Operation::CancelScopedUpload { .. });
     let uncertain = |error: String| {
-        if publishes {
+        if upload_mutation {
+            format!("remote upload outcome is unknown: {error}; query the original operation")
+        } else if retention_mutation {
+            format!("remote retention outcome is unknown: {error}; query the same operation")
+        } else if publishes {
             format!("remote publication outcome is unknown: {error}; inspect the remote before retrying")
         } else {
             error
@@ -1010,7 +1039,13 @@ fn exchange(
                 .as_deref()
                 .unwrap_or("unspecified publication failure")
         };
-        return Err(format!("remote publication outcome is unknown: {reason}"));
+        return Err(if upload_mutation {
+            format!("remote upload outcome is unknown: {reason}; query the original operation")
+        } else if retention_mutation {
+            format!("remote retention outcome is unknown: {reason}; query the same operation")
+        } else {
+            format!("remote publication outcome is unknown: {reason}")
+        });
     }
     if !response.ok {
         return Err(format!(
@@ -1024,6 +1059,291 @@ fn exchange(
         ));
     }
     Ok((response, payload))
+}
+
+fn persist_upload_recovery(
+    directory: &Path,
+    remote: &Remote,
+    session: &str,
+    binding: &protocol::UploadBinding,
+    payload: &[u8],
+) -> RepositoryResult<()> {
+    crate::binary::oid(session)?;
+    parse_url(&remote.url)?;
+    binding.validate_payload(payload)?;
+    let metadata = fs::symlink_metadata(directory).map_err(|e| e.to_string())?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err("upload recovery directory must be a real directory".into());
+    }
+    let payload_name = format!("upload-{session}.bin");
+    let payload_path = directory.join(&payload_name);
+    let state_path = directory.join(format!("upload-{session}.json"));
+    let record = protocol::UploadRecovery {
+        version: 1,
+        repository_url: remote.url.clone(),
+        session: session.into(),
+        binding: binding.clone(),
+        payload_file: payload_name,
+    };
+    let state = serde_json::to_vec(&record).map_err(|e| e.to_string())?;
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut data = options
+        .open(&payload_path)
+        .map_err(|e| format!("create upload recovery payload: {e}"))?;
+    let mut file = match options.open(&state_path) {
+        Ok(file) => file,
+        Err(e) => {
+            drop(data);
+            fs::remove_file(&payload_path).map_err(|cleanup| {
+                format!("create upload recovery state: {e}; remove incomplete payload: {cleanup}")
+            })?;
+            return Err(format!("create upload recovery state: {e}"));
+        }
+    };
+    let result = data
+        .write_all(payload)
+        .and_then(|()| data.sync_all())
+        .and_then(|()| file.write_all(&state))
+        .and_then(|()| file.sync_all())
+        .map_err(|e| format!("persist upload recovery: {e}"));
+    drop(data);
+    drop(file);
+    if let Err(error) = result {
+        let a = fs::remove_file(&payload_path);
+        let b = fs::remove_file(&state_path);
+        return Err(format!("{error}; cleanup payload={a:?}, state={b:?}"));
+    }
+    crate::output::sync_directory(directory)
+}
+
+/// JSON is decoded and validated by the same native types used by the server.
+/// Credentials use the normal WASM_GIT_REMOTE_TOKEN mechanism, never arguments.
+pub fn retention_cli(args: &[String]) -> RepositoryResult<String> {
+    let [url] = args else {
+        return Err("usage: wasm-git --format json retention-rpc URL < REQUEST.json".into());
+    };
+    let mut input = Vec::new();
+    std::io::stdin()
+        .lock()
+        .take(65_537)
+        .read_to_end(&mut input)
+        .map_err(|e| e.to_string())?;
+    if input.len() > 65_536 {
+        return Err("retention request exceeds 64 KiB".into());
+    }
+    let request: protocol::RetentionRequest =
+        serde_json::from_slice(&input).map_err(|e| format!("invalid retention request: {e}"))?;
+    request.validate()?;
+    let remote = Remote {
+        version: 1,
+        name: "retention".into(),
+        url: url.clone(),
+        allow_insecure_http: false,
+    };
+    let expected_repository = parse_url(&remote.url)?.repository().to_owned();
+    let (_, bytes) = exchange(
+        &remote,
+        Operation::ReleaseRetention {
+            command: request.command.clone(),
+        },
+        &[],
+        false,
+    )?;
+    let reply: protocol::RetentionReply = crate::binary::decode(&bytes)?;
+    reply.validate_for(&expected_repository, &request.command)?;
+    serde_json::to_string(&reply).map_err(|e| e.to_string())
+}
+
+pub fn integration_validate_cli(args: &[String]) -> RepositoryResult<String> {
+    if !args.is_empty() { return Err("usage: wasm-git --format json integration-validate < VALIDATION.json".into()); }
+    let limit = protocol::MAX_PACKET_BYTES.saturating_mul(4);
+    let mut input = Vec::new();
+    std::io::stdin().lock().take(limit as u64 + 1).read_to_end(&mut input).map_err(|e| e.to_string())?;
+    if input.len() > limit { return Err("integration validation input exceeds bound".into()); }
+    protocol::validate_node_safe_json(&input)?;
+    let request: protocol::IntegrationValidation = serde_json::from_slice(&input).map_err(|e| format!("invalid integration validation request: {e}"))?;
+    request.validate()?;
+    serde_json::to_string(&request).map_err(|e| e.to_string())
+}
+
+pub fn upload_binding_cli(args: &[String]) -> RepositoryResult<String> {
+    let [path] = args else {
+        return Err(
+            "usage: wasm-git --format json upload-binding PAYLOAD_FILE < REQUEST.json".into(),
+        );
+    };
+    let mut input = Vec::new();
+    std::io::stdin()
+        .lock()
+        .take(65_537)
+        .read_to_end(&mut input)
+        .map_err(|e| e.to_string())?;
+    if input.len() > 65_536 {
+        return Err("upload binding request exceeds 64 KiB".into());
+    }
+    let request: protocol::UploadBindingRequest = serde_json::from_slice(&input)
+        .map_err(|e| format!("invalid upload binding request: {e}"))?;
+    request.validate()?;
+    let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() == 0
+        || metadata.len() > protocol::MAX_BUNDLE_BYTES
+    {
+        return Err("invalid upload payload file".into());
+    }
+    let payload = fs::read(path).map_err(|e| e.to_string())?;
+    if payload.len() as u64 != metadata.len() {
+        return Err("upload payload file changed during read".into());
+    }
+    let binding = protocol::UploadBinding::for_payload(*request.operation, &payload)?;
+    serde_json::to_string(&binding).map_err(|e| e.to_string())
+}
+
+pub fn upload_recovery_cli(args: &[String]) -> RepositoryResult<String> {
+    let [path] = args else {
+        return Err("usage: wasm-git --format json upload-recovery STATE_FILE".into());
+    };
+    let path = Path::new(path);
+    let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 1024 * 1024 {
+        return Err("invalid upload recovery state file".into());
+    }
+    let state: protocol::UploadRecovery =
+        serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    crate::binary::oid(&state.session)?;
+    if state.payload_file != format!("upload-{}.bin", state.session) {
+        return Err("invalid upload recovery payload name".into());
+    }
+    parse_url(&state.repository_url)?;
+    let payload_path = path
+        .parent()
+        .ok_or("recovery state has no parent directory")?
+        .join(&state.payload_file);
+    let metadata = fs::symlink_metadata(&payload_path).map_err(|e| e.to_string())?;
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() != state.binding.total
+        || metadata.len() > protocol::MAX_BUNDLE_BYTES
+    {
+        return Err("invalid upload recovery payload".into());
+    }
+    let payload = fs::read(payload_path).map_err(|e| e.to_string())?;
+    state.validate(&payload)?;
+    serde_json::to_string(&state).map_err(|e| e.to_string())
+}
+
+pub fn scoped_upload_cli(args: &[String]) -> RepositoryResult<String> {
+    let [url] = args else {
+        return Err("usage: wasm-git --format json scoped-upload-rpc URL < REQUEST.json".into());
+    };
+    let mut input = Vec::new();
+    std::io::stdin()
+        .lock()
+        .take(8 * 1024 * 1024 + 1)
+        .read_to_end(&mut input)
+        .map_err(|e| e.to_string())?;
+    if input.len() > 8 * 1024 * 1024 {
+        return Err("scoped upload request exceeds 8 MiB".into());
+    }
+    let request: protocol::ScopedUploadRequest = serde_json::from_slice(&input)
+        .map_err(|e| format!("invalid scoped upload request: {e}"))?;
+    request.validate()?;
+    let validated_request = request.clone();
+    let (session, binding, operation, payload, kind) = match request.command {
+        protocol::ScopedUploadCommand::Chunk { chunk, bytes } => (
+            chunk.scope.session.clone(), chunk.scope.binding.clone(), Operation::UploadChunk { chunk }, bytes, 3,
+        ),
+        protocol::ScopedUploadCommand::QueryChunk { chunk } => (
+            chunk.scope.session.clone(), chunk.scope.binding.clone(), Operation::QueryChunk { chunk }, Vec::new(), 3,
+        ),
+        protocol::ScopedUploadCommand::Slice {
+            session,
+            binding,
+            offset,
+            bytes,
+        } => (
+            session.clone(),
+            binding.clone(),
+            Operation::ScopedUploadSlice {
+                session,
+                binding,
+                offset,
+            },
+            bytes,
+            0,
+        ),
+        protocol::ScopedUploadCommand::Apply { session, binding } => (
+            session.clone(),
+            binding.clone(),
+            Operation::ApplyScopedUpload { session, binding },
+            Vec::new(),
+            1,
+        ),
+        protocol::ScopedUploadCommand::Cancel { session, binding } => (
+            session.clone(),
+            binding.clone(),
+            Operation::CancelScopedUpload { session, binding },
+            Vec::new(),
+            0,
+        ),
+        protocol::ScopedUploadCommand::Query { session, binding } => (
+            session.clone(),
+            binding.clone(),
+            Operation::QueryScopedUpload { session, binding },
+            Vec::new(),
+            2,
+        ),
+    };
+    crate::binary::oid(&session)?;
+    binding.validate()?;
+    let remote = Remote {
+        version: 1,
+        name: "upload".into(),
+        url: url.clone(),
+        allow_insecure_http: false,
+    };
+    let expected_repository = parse_url(&remote.url)?.repository().to_owned();
+    let (response, payload) = exchange(&remote, operation, &payload, false)?;
+    let finish = || -> RepositoryResult<String> {
+    let reply = match kind {
+        3 => protocol::ScopedUploadReply::Chunk { version: 1, status: crate::binary::decode(&payload)? },
+        0 if payload.is_empty() => protocol::ScopedUploadReply::Acknowledged {
+            version: 1,
+            session,
+        },
+        1 => protocol::ScopedUploadReply::Applied {
+            version: 1,
+            session,
+            response,
+            payload,
+        },
+        2 => {
+            let status: protocol::ScopedUploadStatus = crate::binary::decode(&payload)?;
+            status.validate_for(&expected_repository, &session, &binding)?;
+            protocol::ScopedUploadReply::Status {
+                version: 1,
+                session,
+                status,
+            }
+        }
+        _ => return Err("invalid scoped upload response".into()),
+    };
+    reply.validate_for(&expected_repository, &validated_request)?;
+    serde_json::to_string(&reply).map_err(|e| e.to_string())
+    };
+    finish().map_err(|error| {
+        if !matches!(&validated_request.command, protocol::ScopedUploadCommand::Query { .. } | protocol::ScopedUploadCommand::QueryChunk { .. }) {
+            format!("remote upload outcome is unknown: {error}; query the original operation")
+        } else { error }
+    })
 }
 
 fn fetch_payload(
@@ -2277,6 +2597,45 @@ pub fn run(args: &[String]) -> RepositoryResult<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upload_recovery_preserves_original_session_binding_and_payload() {
+        let directory = std::env::temp_dir().join(format!(
+            "wasm-git-upload-recovery-{}-{}",
+            std::process::id(),
+            SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&directory).unwrap();
+        let payload = b"frozen upload";
+        let binding = protocol::UploadBinding::for_payload(
+            Operation::Push {
+                branch: "topic".into(),
+                expected: None,
+                force: false,
+            },
+            payload,
+        )
+        .unwrap();
+        let remote = Remote {
+            version: 1,
+            name: "origin".into(),
+            url: "http://127.0.0.1:9419/project".into(),
+            allow_insecure_http: false,
+        };
+        let session = "5".repeat(64);
+        persist_upload_recovery(&directory, &remote, &session, &binding, payload).unwrap();
+        let state_path = directory.join(format!("upload-{session}.json"));
+        let state: protocol::UploadRecovery = serde_json::from_str(
+            &upload_recovery_cli(&[state_path.to_str().unwrap().into()]).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(state.session, session);
+        assert_eq!(state.repository_url, remote.url);
+        assert!(persist_upload_recovery(&directory, &remote, &session, &binding, payload).is_err());
+        fs::write(directory.join(&state.payload_file), b"corrupt").unwrap();
+        assert!(upload_recovery_cli(&[state_path.to_str().unwrap().into()]).is_err());
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn rpc_timeout_is_bounded_and_defaults_to_five_minutes() {

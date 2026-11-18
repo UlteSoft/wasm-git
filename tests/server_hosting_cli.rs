@@ -311,19 +311,33 @@ fn negotiation_compresses_history_sends_no_known_objects_and_hides_unreachable_h
 }
 
 #[test]
-fn terminal_upload_corruption_is_removed_reservations_are_bounded_and_cancel_is_explicit() {
+fn corrupt_scoped_upload_is_canceled_and_reservations_are_bounded() {
     let t = Temp::new();
     Repository::init(t.0.join("project")).unwrap();
     let server = Server::start(&t.0, &["--allow-write"]);
     let bytes = vec![0; protocol::TRANSFER_CHUNK];
     let id = "1".repeat(64);
+    let binding = protocol::UploadBinding {
+        version: 1,
+        digest: id.clone(),
+        total: bytes.len() as u64,
+        operation: Box::new(Operation::Push {
+            branch: "main".into(),
+            expected: None,
+            force: false,
+        }),
+        targets: vec![protocol::UploadTarget {
+            reference: "refs/heads/main".into(),
+            force: false,
+        }],
+    };
     assert!(
         server
             .rpc(
                 "project",
-                Operation::UploadSlice {
-                    transfer: id.clone(),
-                    total: bytes.len() as u64,
+                Operation::ScopedUploadSlice {
+                    session: id.clone(),
+                    binding: binding.clone(),
                     offset: 0
                 },
                 &bytes
@@ -334,19 +348,28 @@ fn terminal_upload_corruption_is_removed_reservations_are_bounded_and_cancel_is_
     let result = server
         .rpc(
             "project",
-            Operation::ApplyUpload {
-                transfer: id.clone(),
-                operation: Box::new(Operation::Push {
-                    branch: "main".into(),
-                    expected: None,
-                    force: false,
-                }),
+            Operation::ApplyScopedUpload {
+                session: id.clone(),
+                binding: binding.clone(),
             },
             &[],
         )
         .0;
     assert!(!result.ok);
     assert!(result.error.unwrap().contains("checksum"));
+    assert!(
+        server
+            .rpc(
+                "project",
+                Operation::CancelScopedUpload {
+                    session: id.clone(),
+                    binding: binding.clone()
+                },
+                &[]
+            )
+            .0
+            .ok
+    );
     assert!(!t
         .0
         .join(format!("project/.wasm-git/tmp/upload-{id}"))
@@ -354,14 +377,18 @@ fn terminal_upload_corruption_is_removed_reservations_are_bounded_and_cancel_is_
     let a = "2".repeat(64);
     let b = "3".repeat(64);
     let c = "4".repeat(64);
+    let mut large = binding.clone();
+    large.total = protocol::MAX_BUNDLE_BYTES;
+    let mut small = binding.clone();
+    small.total = 1;
     for id in [&a, &b] {
         assert!(
             server
                 .rpc(
                     "project",
-                    Operation::UploadSlice {
-                        transfer: id.clone(),
-                        total: protocol::MAX_BUNDLE_BYTES,
+                    Operation::ScopedUploadSlice {
+                        session: id.clone(),
+                        binding: large.clone(),
                         offset: 0
                     },
                     &bytes
@@ -373,9 +400,9 @@ fn terminal_upload_corruption_is_removed_reservations_are_bounded_and_cancel_is_
     let full = server
         .rpc(
             "project",
-            Operation::UploadSlice {
-                transfer: c.clone(),
-                total: 1,
+            Operation::ScopedUploadSlice {
+                session: c.clone(),
+                binding: small.clone(),
                 offset: 0,
             },
             &[1],
@@ -385,7 +412,14 @@ fn terminal_upload_corruption_is_removed_reservations_are_bounded_and_cancel_is_
     assert!(full.error.unwrap().contains("quota"));
     assert!(
         server
-            .rpc("project", Operation::CancelUpload { transfer: a }, &[])
+            .rpc(
+                "project",
+                Operation::CancelScopedUpload {
+                    session: a,
+                    binding: large
+                },
+                &[]
+            )
             .0
             .ok
     );
@@ -393,9 +427,9 @@ fn terminal_upload_corruption_is_removed_reservations_are_bounded_and_cancel_is_
         server
             .rpc(
                 "project",
-                Operation::UploadSlice {
-                    transfer: c,
-                    total: 1,
+                Operation::ScopedUploadSlice {
+                    session: c,
+                    binding: small,
                     offset: 0
                 },
                 &[1]
@@ -403,6 +437,253 @@ fn terminal_upload_corruption_is_removed_reservations_are_bounded_and_cancel_is_
             .0
             .ok
     );
+}
+
+#[test]
+fn authenticated_retention_rpc_and_cli_preserve_fixed_bytes_and_tombstones() {
+    let t = Temp::new();
+    let repo = Repository::init(t.0.join("project")).unwrap();
+    let tree = repo
+        .create_files_tree(&std::collections::BTreeMap::from([(
+            "module.wasm".into(),
+            WASM.to_vec(),
+        )]))
+        .unwrap();
+    let commit = repo.create_commit_object(&tree, &[], "release").unwrap();
+    let policy_input = t.0.join("policy.json");
+    let policy = t.0.join("policy.bin");
+    fs::write(&policy_input, json!({"version":3,"principals":[
+        {"name":"publisher","token_sha256":format!("{:x}",Sha256::digest(b"hosting-test")),"grants":[{"repository":"project","read":true,"write":[],"force":false,"create":false,"release_retention":true}]},
+        {"name":"other","token_sha256":format!("{:x}",Sha256::digest(b"other")),"grants":[{"repository":"project","read":true,"write":[],"force":false,"create":false,"release_retention":true}]},
+        {"name":"reader","token_sha256":format!("{:x}",Sha256::digest(b"reader")),"grants":[{"repository":"project","read":true,"write":[],"force":false,"create":false}]}
+    ]}).to_string()).unwrap();
+    success(
+        Command::new(env!("CARGO_BIN_EXE_wasm-git-server"))
+            .args([
+                "compile-policy",
+                policy_input.to_str().unwrap(),
+                policy.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap(),
+    );
+    let server = Server::start(
+        &t.0,
+        &["--allow-write", "--policy", policy.to_str().unwrap()],
+    );
+    let id = "b".repeat(64);
+    let command = protocol::RetentionCommand::Prepare {
+        operation: id.clone(),
+        commit: commit.clone(),
+        paths: vec!["module.wasm".into()],
+    };
+    let op = || Operation::ReleaseRetention {
+        command: command.clone(),
+    };
+    let (result, bytes) = server.rpc("project", op(), &[]);
+    assert!(result.ok, "{result:?}");
+    let reply: protocol::RetentionReply = binary::decode(&bytes).unwrap();
+    reply.validate_for("project", &command).unwrap();
+    assert!(!rpc(&server.address, "other", "project", op(), &[]).0.ok);
+    assert!(!rpc(&server.address, "reader", "project", op(), &[]).0.ok);
+    repo.garbage_collect_mode(&[], true, true).unwrap();
+    let read = protocol::RetentionCommand::Read {
+        operation: id.clone(),
+        path: "module.wasm".into(),
+        offset: 0,
+    };
+    let (result, bytes) = server.rpc(
+        "project",
+        Operation::ReleaseRetention {
+            command: read.clone(),
+        },
+        &[],
+    );
+    assert!(result.ok, "{result:?}");
+    let reply: protocol::RetentionReply = binary::decode(&bytes).unwrap();
+    reply.validate_for("project", &read).unwrap();
+    assert!(matches!(reply, protocol::RetentionReply::File { bytes, .. } if bytes == WASM));
+    let mut child = Command::new(env!("CARGO_BIN_EXE_wasm-git"))
+        .args(["--format", "json", "retention-rpc", &server.url("project")])
+        .env("WASM_GIT_REMOTE_TOKEN", "hosting-test")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(
+            &serde_json::to_vec(&protocol::RetentionRequest {
+                version: 1,
+                command: protocol::RetentionCommand::Query {
+                    operation: id.clone(),
+                },
+            })
+            .unwrap(),
+        )
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    let raw = success(output);
+    let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(value["protocol"], "wasm-git.command");
+    assert_eq!(value["result"]["value"]["State"]["record"]["operation"], id);
+    let request = serde_json::to_string(&protocol::RetentionRequest { version: 1, command: protocol::RetentionCommand::Query { operation: id.clone() } }).unwrap();
+    for (exit, expected) in [(0, true), (1, false)] {
+        let validation = format!(r#"{{"kind":"retention_cli_reply","repository":"project","request":{request},"process_exit":{exit},"response":{raw}}}"#);
+        let mut child = Command::new(env!("CARGO_BIN_EXE_wasm-git")).args(["--format", "json", "integration-validate"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+        child.stdin.take().unwrap().write_all(validation.as_bytes()).unwrap();
+        assert_eq!(child.wait_with_output().unwrap().status.success(), expected);
+    }
+    assert!(
+        server
+            .rpc(
+                "project",
+                Operation::ReleaseRetention {
+                    command: protocol::RetentionCommand::Promote {
+                        operation: id.clone()
+                    }
+                },
+                &[]
+            )
+            .0
+            .ok
+    );
+    assert!(
+        !server
+            .rpc(
+                "project",
+                Operation::ReleaseRetention {
+                    command: protocol::RetentionCommand::Close { operation: id }
+                },
+                &[]
+            )
+            .0
+            .ok
+    );
+    let closed = "c".repeat(64);
+    assert!(
+        server
+            .rpc(
+                "project",
+                Operation::ReleaseRetention {
+                    command: protocol::RetentionCommand::Close {
+                        operation: closed.clone()
+                    }
+                },
+                &[]
+            )
+            .0
+            .ok
+    );
+    drop(server);
+    let server = Server::start(
+        &t.0,
+        &["--allow-write", "--policy", policy.to_str().unwrap()],
+    );
+    assert!(
+        !server
+            .rpc(
+                "project",
+                Operation::ReleaseRetention {
+                    command: protocol::RetentionCommand::Prepare {
+                        operation: closed,
+                        commit,
+                        paths: vec!["module.wasm".into()]
+                    }
+                },
+                &[]
+            )
+            .0
+            .ok
+    );
+}
+
+#[test]
+fn shared_common_metadata_does_not_cross_logical_repository_scopes() {
+    let t = Temp::new();
+    let repo = Repository::init(t.0.join("project")).unwrap();
+    let commit = repo.commit_files_on_branch(&std::collections::BTreeMap::from([("module.wasm".into(), WASM.to_vec())]), "initial", &[], "main", None, None).unwrap();
+    repo.add_linked_worktree(&t.0.join("alias"), "alias-branch", Some(&commit), None).unwrap();
+    let input = t.0.join("policy.json");
+    let policy = t.0.join("policy.bin");
+    fs::write(&input, json!({"version":3,"principals":[{"name":"owner","token_sha256":format!("{:x}",Sha256::digest(b"hosting-test")),"grants":[{"repository":"*","read":true,"write":["refs/heads/*"],"force":false,"create":false,"release_retention":true}]}]}).to_string()).unwrap();
+    success(Command::new(env!("CARGO_BIN_EXE_wasm-git-server")).args(["compile-policy", input.to_str().unwrap(), policy.to_str().unwrap()]).output().unwrap());
+    let server = Server::start(&t.0, &["--allow-write", "--policy", policy.to_str().unwrap()]);
+    let bytes = b"frozen upload";
+    let binding = protocol::UploadBinding::for_payload(Operation::Push { branch: "topic".into(), expected: None, force: false }, bytes).unwrap();
+    let session = "d".repeat(64);
+    let chunk = || Operation::ScopedUploadSlice { session: session.clone(), binding: binding.clone(), offset: 0 };
+    let apply = || Operation::ApplyScopedUpload { session: session.clone(), binding: binding.clone() };
+    let cancel = || Operation::CancelScopedUpload { session: session.clone(), binding: binding.clone() };
+    let query = || Operation::QueryScopedUpload { session: session.clone(), binding: binding.clone() };
+    assert!(server.rpc("project", chunk(), bytes).0.ok);
+    assert!(!server.rpc("alias", chunk(), bytes).0.ok);
+    assert!(!server.rpc("alias", apply(), &[]).0.ok);
+    assert!(!server.rpc("alias", cancel(), &[]).0.ok);
+    assert!(!server.rpc("alias", query(), &[]).0.ok);
+    assert!(server.rpc("project", query(), &[]).0.ok);
+    assert!(server.rpc("project", cancel(), &[]).0.ok);
+    assert!(!server.rpc("project", chunk(), bytes).0.ok);
+    let operation = "e".repeat(64);
+    let prepare = protocol::RetentionCommand::Prepare { operation: operation.clone(), commit, paths: vec!["module.wasm".into()] };
+    assert!(server.rpc("project", Operation::ReleaseRetention { command: prepare }, &[]).0.ok);
+    assert!(!server.rpc("alias", Operation::ReleaseRetention { command: protocol::RetentionCommand::Query { operation: operation.clone() } }, &[]).0.ok);
+    assert!(!server.rpc("alias", Operation::ReleaseRetention { command: protocol::RetentionCommand::Read { operation: operation.clone(), path: "module.wasm".into(), offset: 0 } }, &[]).0.ok);
+    assert!(!server.rpc("alias", Operation::ReleaseRetention { command: protocol::RetentionCommand::Close { operation: operation.clone() } }, &[]).0.ok);
+    assert!(server.rpc("project", Operation::ReleaseRetention { command: protocol::RetentionCommand::Query { operation } }, &[]).0.ok);
+}
+
+#[test]
+fn native_integration_validator_rejects_duplicate_unknown_and_unsafe_json() {
+    fn validate(input: &str) -> std::process::Output {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_wasm-git"))
+            .args(["--format", "json", "integration-validate"])
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+        child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+        child.wait_with_output().unwrap()
+    }
+    let id = "a".repeat(64);
+    let request = format!(r#"{{"version":1,"command":{{"Query":{{"operation":"{id}"}}}}}}"#);
+    let valid = format!(r#"{{"kind":"retention_reply","repository":"project","request":{request},"reply":{{"State":{{"version":2,"repository":"project","operation":"{id}","record":null}}}}}}"#);
+    assert!(validate(&valid).status.success());
+    let duplicate_version = format!(r#"{{"kind":"retention_request","request":{{"version":1,"version":1,"command":{{"Query":{{"operation":"{id}"}}}}}}}}"#);
+    assert!(!validate(&duplicate_version).status.success());
+    let duplicate_repository = valid.replacen("\"repository\":\"project\"", "\"repository\":\"project\",\"repository\":\"other\"", 1);
+    assert!(!validate(&duplicate_repository).status.success());
+    let unknown = valid.replace("\"record\":null", "\"record\":null,\"ignored\":true");
+    assert!(!validate(&unknown).status.success());
+    let file = format!(r#"{{"blob":"{id}","sha256":"{id}","size":8}}"#);
+    let record = format!(r#"{{"version":2,"operation":"{id}","actor":"publisher","state":"Prepared","repository":"project","commit":"{id}","files":{{"m.wasm":{file}}}}}"#);
+    let mapped = valid.replace("\"record\":null", &format!("\"record\":{record}"));
+    assert!(validate(&mapped).status.success());
+    let duplicate_map = mapped.replace(&format!(r#""m.wasm":{file}"#), &format!(r#""m.wasm":{file},"m.wasm":{file}"#));
+    assert!(!validate(&duplicate_map).status.success());
+    let raw_response = format!(r#"{{"protocol":"wasm-git.command","version":1,"command":"retention-rpc","ok":true,"exit_code":0,"result":{{"kind":"data","value":{{"State":{{"version":2,"repository":"project","operation":"{id}","record":null}}}}}},"error":null}}"#);
+    let embedded = format!(r#"{{"kind":"retention_cli_reply","repository":"project","request":{request},"process_exit":0,"response":{raw_response}}}"#);
+    assert!(validate(&embedded).status.success());
+    assert!(!validate(&embedded.replacen("\"protocol\":\"wasm-git.command\",\"version\":1", "\"protocol\":\"wasm-git.command\",\"version\":1,\"version\":1", 1)).status.success());
+    let safe = format!(r#"{{"kind":"retention_request","request":{{"version":1,"command":{{"Read":{{"operation":"{id}","path":"m.wasm","offset":9007199254740991}}}}}}}}"#);
+    assert!(validate(&safe).status.success());
+    assert!(!validate(&safe.replace("9007199254740991", "9007199254740992")).status.success());
+    let raw_capabilities = success(Command::new(env!("CARGO_BIN_EXE_wasm-git")).args(["--format", "json", "integration-capabilities"]).output().unwrap());
+    let capabilities: serde_json::Value = serde_json::from_str(&raw_capabilities).unwrap();
+    assert_eq!(capabilities["result"]["value"]["node_safe_integer_max"], 9_007_199_254_740_991_u64);
+    assert_eq!(capabilities["result"]["value"]["authorization_natural_expiry"], false);
+    assert_eq!(capabilities["result"]["value"]["authorization_revocation_fence"], cfg!(all(target_os = "linux", target_arch = "x86_64", any(target_env = "gnu", target_env = "musl"))));
+    let input = json!({"kind":"capabilities","capabilities":capabilities["result"]["value"]}).to_string();
+    assert!(validate(&input).status.success());
+    let input = format!(r#"{{"kind":"capabilities_cli_reply","process_exit":0,"response":{raw_capabilities}}}"#);
+    assert!(validate(&input).status.success());
+    assert!(!validate(&input.replace("\"process_exit\":0", "\"process_exit\":1")).status.success());
+    let failed = Command::new(env!("CARGO_BIN_EXE_wasm-git")).args(["--format", "json", "integration-capabilities", "unexpected"]).output().unwrap();
+    let exit = failed.status.code().unwrap();
+    assert_ne!(exit, 0);
+    let raw_failure = String::from_utf8(failed.stdout).unwrap();
+    let failed_input = format!(r#"{{"kind":"capabilities_cli_reply","process_exit":{exit},"response":{raw_failure}}}"#);
+    assert!(validate(&failed_input).status.success());
+    assert!(!validate(&failed_input.replace(&format!("\"process_exit\":{exit}"), "\"process_exit\":0")).status.success());
 }
 
 #[test]
@@ -475,7 +756,7 @@ fn policy_enforces_principals_repo_ref_force_and_fork_scopes_over_http_and_stdio
     }
     let input = t.0.join("policy-input.json");
     let output = t.0.join("policy.bin");
-    fs::write(&input,serde_json::to_vec(&json!({"version":1,"principals":[{"name":"alice","token_sha256":format!("{:x}",Sha256::digest(b"hosting-test")),"grants":[{"repository":"alice.*","read":true,"write":["refs/heads/topic*"],"force":false,"create":true}]}]})).unwrap()).unwrap();
+    fs::write(&input,serde_json::to_vec(&json!({"version":3,"principals":[{"name":"alice","token_sha256":format!("{:x}",Sha256::digest(b"hosting-test")),"grants":[{"repository":"alice.*","read":true,"write":["refs/heads/topic*"],"force":false,"create":true}]}]})).unwrap()).unwrap();
     success(
         Command::new(env!("CARGO_BIN_EXE_wasm-git-server"))
             .args([
@@ -1193,7 +1474,7 @@ fn hierarchical_repositories_clone_and_fork_under_exact_policy_boundaries() {
     let repo = Repository::init(t.0.join("team/project")).unwrap();
     let tip = repo.commit(WASM, "base").unwrap();
     let config = t.0.join("policy.json");
-    fs::write(&config, json!({"version":1,"principals":[{"name":"test","token_sha256":format!("{:x}",Sha256::digest(b"hosting-test")),"grants":[{"repository":"team/*","read":true,"write":["refs/heads/*"],"force":false,"create":true}]}]}).to_string()).unwrap();
+    fs::write(&config, json!({"version":3,"principals":[{"name":"test","token_sha256":format!("{:x}",Sha256::digest(b"hosting-test")),"grants":[{"repository":"team/*","read":true,"write":["refs/heads/*"],"force":false,"create":true}]}]}).to_string()).unwrap();
     let policy = t.0.join("policy.bin");
     success(
         Command::new(env!("CARGO_BIN_EXE_wasm-git-server"))
@@ -1438,13 +1719,18 @@ fn partial_receive_uses_one_quarantine_and_reports_only_accepted_refs_to_post_ho
     assert!(!repo.root.join("hooks.log").exists());
     // Exercise the nonrecursive uploaded-operation codec as well as the direct RPC.
     let transfer = format!("{:x}", Sha256::digest(&payload));
+    let binding = protocol::UploadBinding::for_payload(
+        Operation::PublishPartial { dry_run: false },
+        &payload,
+    )
+    .unwrap();
     assert!(
         server
             .rpc(
                 "project",
-                Operation::UploadSlice {
-                    transfer: transfer.clone(),
-                    total: payload.len() as u64,
+                Operation::ScopedUploadSlice {
+                    session: transfer.clone(),
+                    binding: binding.clone(),
                     offset: 0
                 },
                 &payload
@@ -1454,9 +1740,9 @@ fn partial_receive_uses_one_quarantine_and_reports_only_accepted_refs_to_post_ho
     );
     let (reply, bytes) = server.rpc(
         "project",
-        Operation::ApplyUpload {
-            transfer,
-            operation: Box::new(Operation::PublishPartial { dry_run: false }),
+        Operation::ApplyScopedUpload {
+            session: transfer,
+            binding,
         },
         &[],
     );
@@ -1521,7 +1807,7 @@ fn partial_receive_keeps_authorization_and_prefix_failures_per_reference() {
     let tip = repo.commit(WASM, "root").unwrap();
     repo.create_branch("allowed-parent", &tip).unwrap();
     let config = t.0.join("policy.json");
-    fs::write(&config, json!({"version":1,"principals":[{"name":"test","token_sha256":format!("{:x}",Sha256::digest(b"hosting-test")),"grants":[{"repository":"project","read":true,"write":["refs/heads/allowed*"],"force":false,"create":false}]}]}).to_string()).unwrap();
+    fs::write(&config, json!({"version":3,"principals":[{"name":"test","token_sha256":format!("{:x}",Sha256::digest(b"hosting-test")),"grants":[{"repository":"project","read":true,"write":["refs/heads/allowed*"],"force":false,"create":false}]}]}).to_string()).unwrap();
     let policy = t.0.join("policy.bin");
     success(
         Command::new(env!("CARGO_BIN_EXE_wasm-git-server"))

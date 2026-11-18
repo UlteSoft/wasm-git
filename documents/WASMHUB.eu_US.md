@@ -179,8 +179,9 @@ Without that restriction, any authorized target branch writer may report a check
 Use separate policy principals for authors, reviewers and CI; a shared token has
 one identity and cannot provide independent approvals.
 
-Access and protection policies are loaded at server startup; restart the service
-after replacing them. The author trust file is read for each verification/admission,
+Access policy updates use the root authorization store and fence described in
+[server authorization](../docs/server.md#多用户权限与原子发布). Protection policy is loaded at startup; restart the service
+after replacing it. The author trust file is read for each verification/admission,
 so an atomic trust update applies to subsequent operations without a restart.
 
 Merge supports fast-forward, a two-parent semantic merge, or a one-parent squash.

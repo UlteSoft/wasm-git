@@ -687,7 +687,7 @@ fn metadata_staging_directory_symlink_is_rejected_before_any_write() {
     );
     assert_eq!(fs::read(outside.path("module.wasm")).unwrap(), C);
     assert_eq!(fs::read_dir(&outside.0).unwrap().count(), 1);
-    assert!(!Path::new(&temp.path(".wasm-git/index.lock")).exists());
+    assert!(Path::new(&temp.path(".wasm-git/index.lock")).is_file());
 }
 
 #[test]

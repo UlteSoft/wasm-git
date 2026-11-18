@@ -4,8 +4,9 @@
 //! versioned object envelope (including its type and payload length) is hashed
 //! with SHA-256. Commits form an immutable DAG; branch files are the only mutable
 //! history pointers. Bundles are self-contained and verified before publication.
-//! Mutations and consistent snapshots use `.wasm-git/write.lock`; a crashed writer's
-//! lock requires manual inspection and removal before another writer proceeds.
+//! Mutations and consistent snapshots use the common `.wasm-git/write.lock`.
+//! Native hosts keep its inode and release the kernel lock when the owner exits;
+//! WASIp1 uses an exclusive-create lock that can require manual crash recovery.
 //!
 //! Immutable packs compress original envelopes without changing object IDs.
 //! Explicit GC preserves recovery roots after a verified full-store plan.
@@ -36,16 +37,29 @@ mod pulls;
 #[path = "repository_signing.rs"]
 mod signing_storage;
 pub use partial_storage::{CloneFilter, PromiseSource, SelectOptions};
+pub(crate) use signing_storage::author as validate_author_identity;
 pub use signing_storage::cli as signing_cli;
+pub(crate) use signing_storage::cli_formatted as signing_cli_formatted;
 pub use signing_storage::{AuthorSignature, SignatureFormat, SigningIdentity};
 #[path = "repository_notes.rs"]
 mod notes_storage;
 #[path = "repository_pack.rs"]
 mod pack_storage;
 pub use network_storage::FetchOptions;
+#[path = "repository_retention.rs"]
+mod retention_storage;
+pub use retention_storage::RetentionError;
+#[path = "repository_chunk_receipts.rs"]
+mod chunk_receipts;
+#[path = "infrastructure/repository_record_store.rs"]
+mod record_store;
+#[path = "repository_scoped_transfer.rs"]
+mod scoped_transfer_storage;
+pub(crate) use crate::protocol::{ScopedExecution, ScopedReceipt};
 #[path = "repository_transfer.rs"]
 mod transfer_storage;
 pub use notes_storage::NotesRequest;
+pub(crate) use transfer_storage::ServiceGuard;
 #[path = "repository_history_tools.rs"]
 mod history_tools;
 #[path = "repository_merge_tool.rs"]
@@ -415,6 +429,13 @@ pub struct Repository {
     pub root: PathBuf,
     metadata: PathBuf,
     common_metadata: PathBuf,
+    reference_recovery: ReferenceRecovery,
+}
+
+#[derive(Debug, Clone)]
+enum ReferenceRecovery {
+    Unrestricted,
+    Scoped(Option<ScopedExecution>),
 }
 
 /// In-memory commit view; the native payload has an explicit binary layout.
@@ -831,17 +852,7 @@ struct Snapshot {
     objects: BTreeMap<String, Object>,
 }
 
-struct WriteLock {
-    path: PathBuf,
-    // Keep the file open until the entire mutation is finished.
-    _file: File,
-}
-
-impl Drop for WriteLock {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
-}
+type WriteLock = crate::platform_fs::ResourceLock;
 
 impl Repository {
     #[cfg(feature = "server")]
@@ -860,6 +871,15 @@ impl Repository {
             let path = metadata.join(child);
             fs::create_dir(&path).map_err(|e| io_error("create repository directory", &path, e))?;
         }
+        #[cfg(any(unix, windows))]
+        for name in [
+            "write.lock",
+            "index.lock",
+            "transfer.lock",
+            "transfer-state.lock",
+        ] {
+            write_new_file(&metadata.join(name), crate::platform_fs::NATIVE_LOCK_FORMAT)?;
+        }
         write_new_file(&metadata.join("HEAD"), &encode_reference("main", false)?)?;
         // Write the format marker last; incomplete initialization cannot be opened.
         write_new_file(&metadata.join("format"), FORMAT)?;
@@ -868,10 +888,33 @@ impl Repository {
             root,
             common_metadata: metadata.clone(),
             metadata,
+            reference_recovery: ReferenceRecovery::Unrestricted,
         })
     }
 
     pub fn open(root: impl AsRef<Path>) -> RepositoryResult<Self> {
+        Self::open_with_recovery(root, ReferenceRecovery::Unrestricted)
+    }
+
+    /// Keep the journal boundary on every later writer-lock acquisition too.
+    /// `None` permits no reference recovery; `Some` permits only that scope.
+    pub(crate) fn open_for_recovery(
+        root: impl AsRef<Path>,
+        expected: Option<&ScopedExecution>,
+    ) -> RepositoryResult<Self> {
+        if let Some(scope) = expected {
+            crate::protocol::repository_name(&scope.repository)?;
+            crate::protocol::repository_component(&scope.actor)?;
+            require_id(&scope.session)?;
+            scope.binding.validate()?;
+        }
+        Self::open_with_recovery(root, ReferenceRecovery::Scoped(expected.cloned()))
+    }
+
+    fn open_with_recovery(
+        root: impl AsRef<Path>,
+        reference_recovery: ReferenceRecovery,
+    ) -> RepositoryResult<Self> {
         let root = root.as_ref().to_path_buf();
         require_directory(&root)?;
         let metadata = root.join(".wasm-git");
@@ -890,6 +933,7 @@ impl Repository {
             root,
             metadata,
             common_metadata,
+            reference_recovery,
         };
         repo.recover_reference_transaction_on_open()?;
         repo.current_branch()?;
@@ -1593,11 +1637,29 @@ impl Repository {
     }
 
     pub fn export_bundle(&self, destination: impl AsRef<Path>) -> RepositoryResult<usize> {
+        let result = self.export_bundle_result(destination)?;
+        usize::try_from(result.objects).map_err(|_| "bundle object count exceeds host size".into())
+    }
+
+    pub(crate) fn export_bundle_result(
+        &self,
+        destination: impl AsRef<Path>,
+    ) -> RepositoryResult<crate::protocol::BundleResult> {
         let _lock = self.lock()?;
         let snapshot = self.snapshot()?;
         let bundle = encode_bundle(&snapshot)?;
+        let result = crate::protocol::BundleResult {
+            version: 1,
+            head: snapshot.manifest.head.clone(),
+            tip: snapshot.manifest.tip().cloned(),
+            objects: u64::try_from(snapshot.objects.len())
+                .map_err(|_| "bundle object count overflow")?,
+            bytes: u64::try_from(bundle.len()).map_err(|_| "bundle length overflow")?,
+            sha256: format!("{:x}", Sha256::digest(&bundle)),
+        };
+        result.validate()?;
         crate::output::write_export_file(destination.as_ref(), &bundle)?;
-        Ok(snapshot.objects.len())
+        Ok(result)
     }
 
     /// Import a verified self-contained bundle to one explicitly named branch.
@@ -3385,40 +3447,13 @@ impl Repository {
     }
 
     fn lock_named(&self, name: &str) -> RepositoryResult<WriteLock> {
-        let directory = if name == "write.lock" {
+        let directory = if matches!(name, "write.lock" | "transfer.lock" | "transfer-state.lock") {
             &self.common_metadata
         } else {
             &self.metadata
         };
         let path = directory.join(name);
-        let file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .map_err(|e| {
-                if e.kind() == std::io::ErrorKind::AlreadyExists {
-                    format!(
-                        "repository is locked: {}; if a writer crashed, inspect and remove this lock manually",
-                        path.display()
-                    )
-                } else {
-                    io_error("lock repository", &path, e)
-                }
-            })?;
-        let mut lock = WriteLock { path, _file: file };
-        lock._file
-            .write_all(
-                &[
-                    b"WGTLCK\0\x01".as_slice(),
-                    &crate::platform_fs::process_id().to_be_bytes(),
-                ]
-                .concat(),
-            )
-            .map_err(|e| format!("write repository lock: {e}"))?;
-        lock._file
-            .sync_all()
-            .map_err(|e| format!("sync repository lock: {e}"))?;
-        Ok(lock)
+        crate::platform_fs::acquire_lock(&path, &directory.join("tmp"))
     }
 
     /// Return the exact stored payload after full-store verification.
@@ -3927,6 +3962,15 @@ impl Repository {
     }
 
     fn atomic_write(&self, destination: &Path, bytes: &[u8]) -> RepositoryResult<()> {
+        self.atomic_write_checked(destination, bytes, || Ok(()))
+    }
+
+    fn atomic_write_checked(
+        &self,
+        destination: &Path,
+        bytes: &[u8],
+        before_publish: impl FnOnce() -> RepositoryResult<()>,
+    ) -> RepositoryResult<()> {
         // Refuse symbolic-link destinations even though rename would replace the
         // link itself: a repository containing links is not a valid store.
         match fs::symlink_metadata(destination) {
@@ -3947,6 +3991,10 @@ impl Repository {
         };
         let temp = staging.join("tmp").join(unique_name("ref"));
         write_new_file(&temp, bytes)?;
+        if let Err(error) = before_publish() {
+            let _ = fs::remove_file(&temp);
+            return Err(error);
+        }
         let result = fs::rename(&temp, destination)
             .map_err(|e| io_error("publish reference", destination, e));
         if result.is_err() {
@@ -6654,6 +6702,10 @@ fn io_error(action: &str, path: &Path, error: std::io::Error) -> String {
 
 /// Repository command dispatch. The first argument is the command, not argv[0].
 pub fn run(args: &[String]) -> RepositoryResult<String> {
+    run_formatted(args, false)
+}
+
+pub(crate) fn run_formatted(args: &[String], machine: bool) -> RepositoryResult<String> {
     // Handle help before interpreting paths or performing any filesystem action.
     // Prefix a literal path named --help/-h with ./ to disambiguate it.
     if crate::command_args::help_requested(args) {
@@ -6797,8 +6849,12 @@ pub fn run(args: &[String]) -> RepositoryResult<String> {
             Ok(format!("cloned {} into {}", args[1], repo.root.display()))
         }
         "bundle" if args.len() == 3 => {
-            let count = Repository::open(&args[1])?.export_bundle(&args[2])?;
-            Ok(format!("wrote {count} verified objects to {}", args[2]))
+            let result = Repository::open(&args[1])?.export_bundle_result(&args[2])?;
+            if machine {
+                serde_json::to_string(&result).map_err(|e| e.to_string())
+            } else {
+                Ok(format!("wrote {} verified objects to {}", result.objects, args[2]))
+            }
         }
         "unbundle" if args.len() == 4 => {
             let id = Repository::open(&args[1])?.import_bundle(&args[2], &args[3])?;
@@ -8245,7 +8301,7 @@ mod tests {
         let mut seen = Vec::new();
         let report = repo
             .describe("HEAD", &DescribeOptions::default(), |name| {
-                assert!(repo.metadata.join("write.lock").is_file());
+                assert!(repo.lock_named("write.lock").is_err());
                 seen.push(name.to_owned());
                 Ok(name != "omit-base")
             })
@@ -8272,7 +8328,7 @@ mod tests {
             "fixed predicate error"
         );
         assert_eq!(stored_state(&repo), before);
-        assert!(!repo.metadata.join("write.lock").exists());
+        assert!(repo.lock_named("write.lock").is_ok());
     }
 
     #[test]
@@ -8395,7 +8451,7 @@ mod tests {
         let corrupt = stored_state(&repo);
         assert!(repo.describe("HEAD", &options, |_| Ok(true)).is_err());
         assert_eq!(stored_state(&repo), corrupt);
-        assert!(!repo.metadata.join("write.lock").exists());
+        assert!(repo.lock_named("write.lock").is_ok());
     }
 
     #[test]
@@ -8479,7 +8535,7 @@ mod tests {
         let corrupt = stored_state(&repo);
         assert!(repo.archive_files("HEAD").is_err());
         assert_eq!(stored_state(&repo), corrupt);
-        assert!(!repo.metadata.join("write.lock").exists());
+        assert!(repo.lock_named("write.lock").is_ok());
     }
 
     #[test]
@@ -8581,7 +8637,7 @@ mod tests {
             commit_id
         );
         assert_eq!(before.objects, both.objects);
-        assert!(!repo.metadata.join("write.lock").exists());
+        assert!(repo.lock_named("write.lock").is_ok());
     }
 
     fn query_tracking(
@@ -8656,7 +8712,7 @@ mod tests {
         );
         assert_eq!(fs::read(repo.metadata.join("index")).unwrap(), index);
         assert_eq!(fs::read(repo.root.join("editor.txt")).unwrap(), work);
-        assert!(!repo.metadata.join("write.lock").exists());
+        assert!(repo.lock_named("write.lock").is_ok());
     }
 
     #[test]
@@ -8924,13 +8980,9 @@ mod tests {
             assert!(repo.query_objects().is_err());
             assert_eq!(stored_state(&repo), before);
         };
-        fs::write(repo.metadata.join("write.lock"), b"external owner").unwrap();
+        let guard = repo.lock_named("write.lock").unwrap();
         assert_rejected();
-        assert_eq!(
-            fs::read(repo.metadata.join("write.lock")).unwrap(),
-            b"external owner"
-        );
-        fs::remove_file(repo.metadata.join("write.lock")).unwrap();
+        drop(guard);
         let id = repo.store_object(WASM_KIND, &wasm(&[99, 1, 9])).unwrap();
         let path = repo.metadata.join("objects").join(&id);
         let original = fs::read(&path).unwrap();
@@ -9238,8 +9290,8 @@ mod tests {
         assert_eq!(bare.resolve("HEAD").unwrap(), descendant);
         assert_eq!(bare.files_at("HEAD").unwrap().files, descendant_files);
         assert!(!bare.metadata.join("index").exists());
-        assert!(!target.metadata.join("index.lock").exists());
-        assert!(!target.metadata.join("write.lock").exists());
+        assert!(target.lock_named("index.lock").is_ok());
+        assert!(target.lock_named("write.lock").is_ok());
     }
 
     #[test]
@@ -9268,8 +9320,8 @@ mod tests {
             .contains("write.lock"));
         assert_eq!(complete_repository_bytes(&target), before);
         drop(writer_lock);
-        assert!(!target.metadata.join("index.lock").exists());
-        assert!(!target.metadata.join("write.lock").exists());
+        assert!(target.lock_named("index.lock").is_ok());
+        assert!(target.lock_named("write.lock").is_ok());
     }
 
     #[test]
@@ -10434,7 +10486,7 @@ mod tests {
             .contains("locked"));
         assert_eq!(stored_state(&target), before);
         drop(index_lock);
-        assert!(!target.metadata.join("index.lock").exists());
+        assert!(target.lock_named("index.lock").is_ok());
     }
 
     #[test]
@@ -11320,7 +11372,7 @@ mod tests {
         assert_eq!(batch[3].commit, original);
         assert_eq!(batch[2].bytes, original_bytes);
         assert_eq!(batch[3].bytes, original_bytes);
-        assert!(!repo.metadata.join("write.lock").exists());
+        assert!(repo.lock_named("write.lock").is_ok());
         repo.commit(&wasm(&[]), "advance after snapshot").unwrap();
         // Both IDs and copies remain an immutable description of the state read.
         assert_eq!(batch[0].commit, current);
@@ -11343,7 +11395,7 @@ mod tests {
         assert!(read_revisions(&repo.root, &["HEAD", "unknown"])
             .unwrap_err()
             .contains("unknown revision"));
-        assert!(!repo.metadata.join("write.lock").exists());
+        assert!(repo.lock_named("write.lock").is_ok());
         assert_eq!(
             read_revisions(&repo.root, &["HEAD", "HEAD"]).unwrap().len(),
             2
@@ -11377,7 +11429,7 @@ mod tests {
                 .unwrap_err()
                 .contains(expected_error));
             assert_eq!(stored_state(&repo), before);
-            assert!(!repo.metadata.join("write.lock").exists());
+            assert!(repo.lock_named("write.lock").is_ok());
         }
     }
 
@@ -11407,7 +11459,7 @@ mod tests {
         let before = stored_state(&repo);
         let history = read_history(&repo.root, "HEAD").unwrap();
         assert_eq!(stored_state(&repo), before);
-        assert!(!repo.metadata.join("write.lock").exists());
+        assert!(repo.lock_named("write.lock").is_ok());
         assert_eq!(history.tip, merged);
         assert_eq!(history.commits.len(), 4);
         assert_eq!(history.blobs.len(), 1);
@@ -11456,7 +11508,7 @@ mod tests {
             .unwrap_err()
             .contains("non-commit"));
         assert_eq!(stored_state(&repo), before);
-        assert!(!repo.metadata.join("write.lock").exists());
+        assert!(repo.lock_named("write.lock").is_ok());
         assert_eq!(read_history(&repo.root, &root).unwrap().tip, root);
     }
 
@@ -11501,7 +11553,7 @@ mod tests {
                 .unwrap_err()
                 .contains(expected_error));
             assert_eq!(stored_state(&repo), before);
-            assert!(!repo.metadata.join("write.lock").exists());
+            assert!(repo.lock_named("write.lock").is_ok());
         }
     }
 
@@ -11707,7 +11759,7 @@ mod tests {
         assert!(repo.metadata.join("write.lock").exists());
         drop(lock);
         repo.commit(&wasm(&[]), "allowed").unwrap();
-        assert!(!repo.metadata.join("write.lock").exists());
+        assert!(repo.lock_named("write.lock").is_ok());
     }
 
     fn function_wasm(left: i32, right: i32) -> Vec<u8> {
@@ -12046,7 +12098,7 @@ mod tests {
         assert_eq!(outcome.report.as_ref().unwrap().status, "conflict");
         assert_eq!(stored_state(&repo), before);
         assert_eq!(repo.fsck().unwrap().commits, 3);
-        assert!(!repo.metadata.join("write.lock").exists());
+        assert!(repo.lock_named("write.lock").is_ok());
     }
 
     #[test]
