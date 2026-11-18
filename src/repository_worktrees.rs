@@ -339,6 +339,11 @@ impl Repository {
             let metadata = target.join(".wasm-git");
             fs::create_dir(&metadata).map_err(|error| error.to_string())?;
             fs::create_dir(metadata.join("tmp")).map_err(|error| error.to_string())?;
+            #[cfg(any(unix, windows))]
+            write_new_file(
+                &metadata.join("index.lock"),
+                crate::platform_fs::NATIVE_LOCK_FORMAT,
+            )?;
             write_new_file(&metadata.join("HEAD"), &encode_reference(branch, false)?)?;
             let head_log = vec![ReflogEntry {
                 unix_seconds: reflog_timestamp()?,
@@ -640,6 +645,7 @@ pub(super) fn reference_head_origin(
         root,
         metadata,
         common_metadata: common,
+        reference_recovery: ReferenceRecovery::Unrestricted,
     })
 }
 

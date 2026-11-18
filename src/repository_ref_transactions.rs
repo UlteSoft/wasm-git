@@ -6,6 +6,7 @@ mod head_transaction;
 use head_transaction::{ReferenceHead, ResolvedHeadEdit};
 
 const JOURNAL: &str = "ref-transaction.bin";
+const SCOPED_JOURNAL_MAGIC: &[u8; 8] = b"WGTREF04";
 const MAX_TRANSACTION_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_REFERENCE_EDITS: usize = 4096;
 
@@ -131,11 +132,70 @@ struct ReferencePlan {
     head: Option<ReferenceHead>,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScopedReferenceJournal {
+    version: u32,
+    plan: ReferencePlan,
+    receipt: ScopedReceipt,
+}
+
+impl ScopedReferenceJournal {
+    fn bytes(&self) -> RepositoryResult<Vec<u8>> {
+        if self.version != 4 {
+            return Err("invalid scoped reference journal version".into());
+        }
+        self.plan.after()?;
+        self.receipt.validate()?;
+        let accepted: Vec<_> = if self.receipt.response.ok && !self.receipt.dry_run {
+            self.receipt
+                .updates
+                .iter()
+                .zip(&self.receipt.rejections)
+                .filter(|(_, reason)| reason.is_none())
+                .map(|(update, _)| update)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if accepted.len() != self.plan.changes.len() {
+            return Err("scoped journal reference count mismatch".into());
+        }
+        for (update, change) in accepted.into_iter().zip(&self.plan.changes) {
+            let reference = format!(
+                "refs/{}/{}",
+                if matches!(update.namespace, crate::protocol::RefNamespace::Branch) {
+                    "heads"
+                } else {
+                    "tags"
+                },
+                update.name
+            );
+            if reference != change.reference
+                || update.expected != change.old
+                || update.new != change.new
+            {
+                return Err("scoped journal reference image mismatch".into());
+            }
+        }
+        if self.plan.head.is_some() {
+            return Err("scoped receive cannot change HEAD directly".into());
+        }
+        let mut bytes = SCOPED_JOURNAL_MAGIC.to_vec();
+        bytes.extend(crate::binary::encode(self)?);
+        if bytes.len() as u64 > MAX_TRANSACTION_BYTES {
+            return Err("scoped reference transaction exceeds 64 MiB".into());
+        }
+        Ok(bytes)
+    }
+}
+
 pub struct PreparedReferences<'a> {
     repo: &'a Repository,
     _lock: WriteLock,
     plan: ReferencePlan,
     rejections: Vec<ReferenceRejection>,
+    scoped: Option<ScopedReceipt>,
 }
 
 fn reference_parts(reference: &str) -> RepositoryResult<(&str, &str)> {
@@ -518,6 +578,7 @@ impl Repository {
             _lock: lock,
             plan,
             rejections,
+            scoped: None,
         })
     }
 
@@ -786,14 +847,43 @@ impl Repository {
             return Err("reference transaction must be a bounded regular file".into());
         }
         let bytes = read_regular(&path)?;
-        let plan: ReferencePlan = crate::binary::decode(&bytes)
-            .map_err(|error| format!("invalid reference transaction: {error}"))?;
-        if plan.bytes()? != bytes {
-            return Err("noncanonical reference transaction".into());
+        let (plan, scoped) = if let Some(body) = bytes.strip_prefix(SCOPED_JOURNAL_MAGIC) {
+            let journal: ScopedReferenceJournal = crate::binary::decode(body)
+                .map_err(|error| format!("invalid scoped reference transaction: {error}"))?;
+            if journal.bytes()? != bytes {
+                return Err("noncanonical scoped reference transaction".into());
+            }
+            (journal.plan, Some(journal.receipt))
+        } else {
+            let plan: ReferencePlan = crate::binary::decode(&bytes)
+                .map_err(|error| format!("invalid reference transaction: {error}"))?;
+            if plan.bytes()? != bytes {
+                return Err("noncanonical reference transaction".into());
+            }
+            (plan, None)
+        };
+        if let ReferenceRecovery::Scoped(expected) = &self.reference_recovery {
+            match (expected, &scoped) {
+                (Some(expected), Some(receipt))
+                    if crate::binary::encode(expected)?
+                        == crate::binary::encode(&receipt.scope)? => {}
+                _ => {
+                    return Err(
+                        "pending reference transaction requires recovery of its original scope"
+                            .into(),
+                    )
+                }
+            }
         }
         let result = (|| {
             let after = self.validate_reference_plan(&plan)?;
+            if let Some(receipt) = &scoped {
+                self.scoped_check_journal(receipt)?;
+            }
             self.apply_reference_plan(&plan, &after, || Ok(()))?;
+            if let Some(receipt) = &scoped {
+                self.scoped_finish_from_journal(receipt)?;
+            }
             self.clear_reference_transaction()
         })();
         result.map_err(|error| format!("committed reference transaction requires recovery; no later operation may proceed: {error}"))
@@ -802,12 +892,20 @@ impl Repository {
 
 impl PreparedReferences<'_> {
     pub fn commit(self) -> RepositoryResult<ReferenceCommitOutcome> {
+        self.commit_checked(|| Ok(()))
+    }
+
+    fn commit_checked(
+        self,
+        before_publish: impl FnOnce() -> RepositoryResult<()>,
+    ) -> RepositoryResult<ReferenceCommitOutcome> {
         let after = self.plan.after()?;
         let mut reports: Vec<Value> = self.plan.changes.iter().map(|change| json!({"reference":change.reference,"old":change.old,"new":change.new,"updated":change.old != change.new})).collect();
         if let Some(head) = &self.plan.head {
             reports.push(head.report(&self.plan.before, &after));
         }
-        if !self.plan.head.as_ref().is_some_and(ReferenceHead::changed)
+        if self.scoped.is_none()
+            && !self.plan.head.as_ref().is_some_and(ReferenceHead::changed)
             && self
                 .plan
                 .changes
@@ -820,8 +918,40 @@ impl PreparedReferences<'_> {
             });
         }
         self.repo.check_reference_preimages(&self.plan, &after)?;
-        self.repo.atomic_write(&self.repo.common_metadata.join(JOURNAL), &self.plan.bytes()?).map_err(|error| format!("reference commit decision may be durable; inspect or retry a locked query to recover: {error}"))?;
-        self.repo.apply_reference_plan(&self.plan, &after, || Ok(())).and_then(|()| self.repo.clear_reference_transaction()).map_err(|error| format!("reference transaction is committed and may be partially installed; a locked query will finish recovery: {error}"))?;
+        if let Some(receipt) = &self.scoped {
+            self.repo.scoped_check_journal(receipt)?;
+        }
+        let journal = if let Some(receipt) = &self.scoped {
+            ScopedReferenceJournal {
+                version: 4,
+                plan: self.plan.clone(),
+                receipt: receipt.clone(),
+            }
+            .bytes()?
+        } else {
+            self.plan.bytes()?
+        };
+        let mut passed = false;
+        let result = self.repo.atomic_write_checked(
+            &self.repo.common_metadata.join(JOURNAL),
+            &journal,
+            || {
+                before_publish()?;
+                passed = true;
+                Ok(())
+            },
+        );
+        if let Err(error) = result {
+            return Err(if passed {
+                format!("reference commit decision may be durable; inspect or retry a locked query to recover: {error}")
+            } else {
+                error
+            });
+        }
+        self.repo.apply_reference_plan(&self.plan, &after, || Ok(())).and_then(|()| {
+            if let Some(receipt) = &self.scoped { self.repo.scoped_finish_from_journal(receipt)?; }
+            self.repo.clear_reference_transaction()
+        }).map_err(|error| format!("reference transaction is committed and may be partially installed; a locked query will finish recovery: {error}"))?;
         Ok(ReferenceCommitOutcome {
             updates: reports,
             rejections: self.rejections,
@@ -830,6 +960,47 @@ impl PreparedReferences<'_> {
 }
 
 impl Repository {
+    pub(super) fn scoped_record_receipt_locked(
+        &self,
+        _lock: WriteLock,
+        receipt: ScopedReceipt,
+    ) -> RepositoryResult<(crate::protocol::Response, Vec<u8>)> {
+        if let Some(result) = self.scoped_finished_under_writer(&receipt.scope)? {
+            return Ok(result);
+        }
+        let result = (receipt.response.clone(), receipt.payload.clone());
+        // No reference decision is being made. The writer lock has already
+        // rolled forward a prior committed journal; one record rename is the
+        // durable decision and does not require a full reference snapshot.
+        self.scoped_finish_from_journal(&receipt)?;
+        Ok(result)
+    }
+
+    pub(crate) fn scoped_record_failure(
+        &self,
+        gate: &ServiceGuard,
+        scope: &ScopedExecution,
+        mut response: crate::protocol::Response,
+    ) -> RepositoryResult<(crate::protocol::Response, Vec<u8>)> {
+        if gate.common_metadata != self.common_metadata {
+            return Err("service guard belongs to another repository".into());
+        }
+        let lock = self.lock()?;
+        if let Some(message) = &mut response.error {
+            if message.len() > 32 * 1024 {
+                crate::cli_error(&format!("scoped operation diagnostic: {message}"));
+                let mut end = 32 * 1024;
+                while !message.is_char_boundary(end) {
+                    end -= 1;
+                }
+                message.truncate(end);
+                message.push('…');
+            }
+        }
+        let receipt = ScopedReceipt::failure(scope, response)?;
+        self.scoped_record_receipt_locked(lock, receipt)
+    }
+
     /// One durable decision publishes the whole leased receive batch. Hook
     /// rejection precedes installation; the hook sees a verified quarantine
     /// bundle, never an unverified object in the repository's public store.
@@ -839,10 +1010,29 @@ impl Repository {
         updates: &[crate::protocol::RefUpdate],
         before_receive: impl FnOnce(&[u8]) -> RepositoryResult<()>,
     ) -> Result<(), ReceiveError> {
-        self.receive_batch_mode(bytes, updates, true, false, |bundle, _| {
-            before_receive(bundle)?;
-            Ok(vec![None; updates.len()])
-        })
+        self.receive_batch_checked_scoped(bytes, updates, None, before_receive, || Ok(()))
+    }
+
+    pub(crate) fn receive_batch_checked_scoped(
+        &self,
+        bytes: &[u8],
+        updates: &[crate::protocol::RefUpdate],
+        scope: Option<&ScopedExecution>,
+        before_receive: impl FnOnce(&[u8]) -> RepositoryResult<()>,
+        before_commit: impl FnOnce() -> RepositoryResult<()>,
+    ) -> Result<(), ReceiveError> {
+        self.receive_batch_mode(
+            bytes,
+            updates,
+            true,
+            false,
+            scope,
+            |bundle, _| {
+                before_receive(bundle)?;
+                Ok(vec![None; updates.len()])
+            },
+            |_| before_commit(),
+        )
         .map(|_| ())
     }
 
@@ -856,16 +1046,31 @@ impl Repository {
         dry_run: bool,
         check: impl FnOnce(&[u8], &[Option<String>]) -> RepositoryResult<Vec<Option<String>>>,
     ) -> Result<Vec<Option<String>>, ReceiveError> {
-        self.receive_batch_mode(bytes, updates, false, dry_run, check)
+        self.receive_batch_selective_scoped(bytes, updates, dry_run, None, check, |_| Ok(()))
     }
 
+    pub(crate) fn receive_batch_selective_scoped(
+        &self,
+        bytes: &[u8],
+        updates: &[crate::protocol::RefUpdate],
+        dry_run: bool,
+        scope: Option<&ScopedExecution>,
+        check: impl FnOnce(&[u8], &[Option<String>]) -> RepositoryResult<Vec<Option<String>>>,
+        before_commit: impl FnOnce(&[Option<String>]) -> RepositoryResult<()>,
+    ) -> Result<Vec<Option<String>>, ReceiveError> {
+        self.receive_batch_mode(bytes, updates, false, dry_run, scope, check, before_commit)
+    }
+
+    #[allow(clippy::too_many_arguments)] // Distinct authorization and publication hooks share one transaction.
     fn receive_batch_mode(
         &self,
         bytes: &[u8],
         updates: &[crate::protocol::RefUpdate],
         atomic: bool,
         dry_run: bool,
+        scope: Option<&ScopedExecution>,
         before_receive: impl FnOnce(&[u8], &[Option<String>]) -> RepositoryResult<Vec<Option<String>>>,
+        before_commit: impl FnOnce(&[Option<String>]) -> RepositoryResult<()>,
     ) -> Result<Vec<Option<String>>, ReceiveError> {
         let mut publishing = false;
         let result = (|| {
@@ -996,7 +1201,7 @@ impl Repository {
                     return Err(error.clone());
                 }
             }
-            let plan = ReferencePlan {
+            let mut plan = ReferencePlan {
                 unix_seconds: reflog_timestamp()?,
                 version: 3,
                 message: if atomic { "receive-atomic" } else { "receive" }.into(),
@@ -1016,21 +1221,34 @@ impl Repository {
             };
             plan.after()?;
             plan.bytes()?;
-            if dry_run || plan.changes.is_empty() {
+            if (dry_run || plan.changes.is_empty()) && scope.is_none() {
+                before_commit(&reasons)?;
                 return Ok(reasons);
             }
-            if let Some(incoming) = &incoming {
-                self.install_snapshot_objects(incoming)?;
+            let receipt = scope
+                .map(|scope| ScopedReceipt::success(scope, updates, &reasons, dry_run))
+                .transpose()?;
+            if dry_run {
+                plan.changes.clear();
+            }
+            if !dry_run && !plan.changes.is_empty() {
+                if let Some(incoming) = &incoming {
+                    self.install_snapshot_objects(incoming)?;
+                }
             }
             self.validate_reference_plan(&plan)?;
-            publishing = true;
             PreparedReferences {
                 repo: self,
                 _lock: lock,
                 plan,
                 rejections: Vec::new(),
+                scoped: receipt,
             }
-            .commit()?;
+            .commit_checked(|| {
+                before_commit(&reasons)?;
+                publishing = true;
+                Ok(())
+            })?;
             Ok(reasons)
         })();
         receive_result(result, publishing)
@@ -1045,10 +1263,28 @@ impl Repository {
         updates: &[crate::protocol::RefUpdate],
         check: impl FnOnce(&[u8]) -> RepositoryResult<()>,
     ) -> Result<(), ReceiveError> {
-        self.receive_batch_mode(bytes, updates, true, true, |quarantine, _| {
-            check(quarantine)?;
-            Ok(vec![None; updates.len()])
-        })
+        self.check_receive_batch_scoped(bytes, updates, None, check)
+    }
+
+    pub(crate) fn check_receive_batch_scoped(
+        &self,
+        bytes: &[u8],
+        updates: &[crate::protocol::RefUpdate],
+        scope: Option<&ScopedExecution>,
+        check: impl FnOnce(&[u8]) -> RepositoryResult<()>,
+    ) -> Result<(), ReceiveError> {
+        self.receive_batch_mode(
+            bytes,
+            updates,
+            true,
+            true,
+            scope,
+            |quarantine, _| {
+                check(quarantine)?;
+                Ok(vec![None; updates.len()])
+            },
+            |_| Ok(()),
+        )
         .map(|_| ())
     }
 }
@@ -1133,6 +1369,518 @@ mod tests {
     fn persist(repo: &Repository, plan: &ReferencePlan) {
         repo.atomic_write(&repo.common_metadata.join(JOURNAL), &plan.bytes().unwrap())
             .unwrap();
+    }
+
+    #[test]
+    fn restricted_recovery_checks_journal_scope_on_open_and_every_later_lock() {
+        use crate::protocol::{Operation, ScopedUploadState, UploadBinding};
+        let temp = Temp::new();
+        let (repo, mut plan, after) = fixture(&temp);
+        let unscoped = plan.clone();
+        let payload = b"frozen scoped upload";
+        let binding = UploadBinding::for_payload(
+            Operation::Push {
+                branch: "main".into(),
+                expected: None,
+                force: false,
+            },
+            payload,
+        )
+        .unwrap();
+        let scope = ScopedExecution {
+            actor: "alice".into(),
+            repository: "repo".into(),
+            session: "a".repeat(64),
+            binding: binding.clone(),
+        };
+        repo.scoped_upload_slice(
+            &scope.repository,
+            &scope.actor,
+            &scope.session,
+            &binding,
+            0,
+            payload,
+        )
+        .unwrap();
+        let gate = repo.service_lock(std::time::Duration::ZERO).unwrap();
+        repo.scoped_upload_applying(
+            &gate,
+            &scope.repository,
+            &scope.actor,
+            &scope.session,
+            &binding,
+        )
+        .unwrap();
+        drop(gate);
+        let mut wrong_actor = scope.clone();
+        wrong_actor.actor = "bob".into();
+        let mut wrong_repository = scope.clone();
+        wrong_repository.repository = "other".into();
+        let mut wrong_session = scope.clone();
+        wrong_session.session = "b".repeat(64);
+        let mut wrong_binding = scope.clone();
+        wrong_binding.binding = UploadBinding::for_payload(
+            Operation::Push {
+                branch: "other".into(),
+                expected: None,
+                force: false,
+            },
+            payload,
+        )
+        .unwrap();
+        let foreign = [wrong_actor, wrong_repository, wrong_session, wrong_binding];
+        let no_scope = Repository::open_for_recovery(&repo.root, None).unwrap();
+        let wrong_scopes: Vec<_> = foreign
+            .iter()
+            .map(|scope| Repository::open_for_recovery(&repo.root, Some(scope)).unwrap())
+            .collect();
+        plan.version = 3;
+        plan.message = "receive-atomic".into();
+        plan.changes.clear();
+        let journal = ScopedReferenceJournal {
+            version: 4,
+            plan,
+            receipt: ScopedReceipt::aborted(&scope),
+        };
+        repo.atomic_write(
+            &repo.common_metadata.join(JOURNAL),
+            &journal.bytes().unwrap(),
+        )
+        .unwrap();
+
+        assert!(no_scope.lock().is_err());
+        assert!(Repository::open_for_recovery(&repo.root, None).is_err());
+        for (expected, reopened) in foreign.iter().zip(&wrong_scopes) {
+            assert!(reopened.lock().is_err());
+            assert!(Repository::open_for_recovery(&repo.root, Some(expected)).is_err());
+        }
+        assert!(matches!(
+            repo.scoped_record(&scope.session).unwrap().unwrap().state,
+            ScopedUploadState::ApplyingV4 { .. }
+        ));
+        assert!(repo.common_metadata.join(JOURNAL).exists());
+        let recovered = Repository::open_for_recovery(&repo.root, Some(&scope)).unwrap();
+        assert!(matches!(
+            recovered
+                .scoped_record(&scope.session)
+                .unwrap()
+                .unwrap()
+                .state,
+            ScopedUploadState::Aborted { .. }
+        ));
+
+        persist(&repo, &unscoped);
+        assert!(no_scope.lock().is_err());
+        assert!(recovered.lock().is_err());
+        assert!(Repository::open_for_recovery(&repo.root, Some(&scope)).is_err());
+        let ordinary = Repository::open(&repo.root).unwrap();
+        assert_eq!(ordinary.snapshot().unwrap().manifest.refs, after.refs);
+    }
+
+    #[test]
+    fn scoped_receipt_recovers_every_commit_and_receipt_boundary() {
+        use crate::protocol::{
+            BatchPublication, Operation, RefNamespace, RefUpdate, ScopedUploadState, UploadBinding,
+        };
+        for stop in 0..=5 {
+            let temp = Temp::new();
+            let (repo, mut plan, _) = fixture(&temp);
+            plan.version = 3;
+            plan.message = "receive-atomic".into();
+            let updates: Vec<_> = plan
+                .changes
+                .iter()
+                .map(|change| {
+                    let (namespace, name) =
+                        if let Some(name) = change.reference.strip_prefix("refs/heads/") {
+                            (RefNamespace::Branch, name)
+                        } else {
+                            (
+                                RefNamespace::Tag,
+                                change.reference.strip_prefix("refs/tags/").unwrap(),
+                            )
+                        };
+                    RefUpdate {
+                        namespace,
+                        name: name.into(),
+                        expected: change.old.clone(),
+                        new: change.new.clone(),
+                        force: false,
+                    }
+                })
+                .collect();
+            let payload = crate::binary::encode(&BatchPublication {
+                updates: updates.clone(),
+                bundle: Vec::new(),
+            })
+            .unwrap();
+            let binding = UploadBinding::for_payload(Operation::PublishBatch {}, &payload).unwrap();
+            let session = "7".repeat(64);
+            let scope = ScopedExecution {
+                actor: "alice".into(),
+                repository: "repo".into(),
+                session: session.clone(),
+                binding: binding.clone(),
+            };
+            #[cfg(feature = "server")]
+            let install_policy = |generation: u64, digit: &str, alice: bool| {
+                let grant = serde_json::json!({"repository":"repo","read":true,"write":["refs/heads/*","refs/tags/*"],"force":true,"create":false});
+                let policy = serde_json::json!({"version":3,"principals":[
+                    {"name":"alice","token_sha256":null,"grants":if alice { vec![grant.clone()] } else { vec![] }},
+                    {"name":"bob","token_sha256":null,"grants":[grant]}
+                ]});
+                let request = serde_json::json!({"version":1,"operation_id":digit.repeat(64),"expected_generation":generation,"policy":policy});
+                let input = temp.0.join("policy-request.json");
+                fs::write(&input, serde_json::to_vec(&request).unwrap()).unwrap();
+                crate::server::run(&[
+                    "server".into(),
+                    "policy-set".into(),
+                    temp.0.to_str().unwrap().into(),
+                    input.to_str().unwrap().into(),
+                ])
+                .unwrap();
+            };
+            #[cfg(feature = "server")]
+            install_policy(0, "a", true);
+            repo.scoped_upload_slice(
+                &scope.repository,
+                &scope.actor,
+                &session,
+                &binding,
+                0,
+                &payload,
+            )
+            .unwrap();
+            let gate = repo.service_lock(std::time::Duration::ZERO).unwrap();
+            repo.scoped_upload_applying(&gate, &scope.repository, &scope.actor, &session, &binding)
+                .unwrap();
+            drop(gate);
+            let receipt =
+                ScopedReceipt::success(&scope, &updates, &vec![None; updates.len()], false)
+                    .unwrap();
+            let journal = ScopedReferenceJournal {
+                version: 4,
+                plan: plan.clone(),
+                receipt: receipt.clone(),
+            };
+            let after = plan.after().unwrap();
+            if stop > 0 {
+                let _writer = repo.lock_named("write.lock").unwrap();
+                repo.atomic_write(
+                    &repo.common_metadata.join(JOURNAL),
+                    &journal.bytes().unwrap(),
+                )
+                .unwrap();
+                if stop == 1 {
+                    // A committed old journal must remain recoverable while
+                    // the old single-file ledger is first migrated.
+                    let record = repo.scoped_record(&session).unwrap().unwrap();
+                    let old = super::super::scoped_transfer_storage::ScopedLedger {
+                        version: 3,
+                        records: BTreeMap::from([(session.clone(), record)]),
+                    };
+                    repo.atomic_write(
+                        &repo.common_metadata.join("scoped-uploads.bin"),
+                        &crate::binary::encode(&old).unwrap(),
+                    )
+                    .unwrap();
+                }
+                if stop == 2 {
+                    let mut writes = 0;
+                    assert!(repo
+                        .apply_reference_plan(&plan, &after, || {
+                            writes += 1;
+                            if writes == 1 {
+                                Err("power loss".into())
+                            } else {
+                                Ok(())
+                            }
+                        })
+                        .is_err());
+                }
+                if stop >= 3 {
+                    repo.apply_reference_plan(&plan, &after, || Ok(())).unwrap();
+                }
+                if stop >= 4 {
+                    repo.scoped_finish_from_journal(&receipt).unwrap();
+                }
+                if stop >= 5 {
+                    repo.clear_reference_transaction().unwrap();
+                }
+            }
+            #[cfg(feature = "server")]
+            {
+                install_policy(1, "b", false);
+                let request = |operation| crate::protocol::Request {
+                    version: 1,
+                    repository: scope.repository.clone(),
+                    operation,
+                };
+                // A different authorized actor opens the repository after the
+                // fence. Only an existing journal may be rolled forward.
+                crate::server::test_authorized_process(
+                    &temp.0,
+                    "bob",
+                    request(Operation::Advertise {}),
+                    &[],
+                )
+                .unwrap();
+                assert!(crate::server::test_authorized_process(
+                    &temp.0,
+                    "alice",
+                    request(Operation::ApplyScopedUpload {
+                        session: session.clone(),
+                        binding: binding.clone()
+                    }),
+                    &[]
+                )
+                .is_err());
+                assert!(crate::server::test_authorized_process(
+                    &temp.0,
+                    "bob",
+                    request(Operation::QueryScopedUpload {
+                        session: session.clone(),
+                        binding: binding.clone()
+                    }),
+                    &[]
+                )
+                .is_err());
+                install_policy(2, "c", true);
+                let (response, bytes) = crate::server::test_authorized_process(
+                    &temp.0,
+                    "alice",
+                    request(Operation::QueryScopedUpload {
+                        session: session.clone(),
+                        binding: binding.clone(),
+                    }),
+                    &[],
+                )
+                .unwrap();
+                assert!(response.ok);
+                let checked: crate::protocol::ScopedUploadStatus =
+                    crate::binary::decode(&bytes).unwrap();
+                if stop == 0 {
+                    assert!(matches!(
+                        checked.state,
+                        Some(ScopedUploadState::Aborted { .. })
+                    ));
+                } else {
+                    assert!(matches!(
+                        checked.state,
+                        Some(ScopedUploadState::FinishedV4 { .. })
+                    ));
+                }
+            }
+            let reopened = Repository::open(&repo.root).unwrap();
+            let gate = reopened.service_lock(std::time::Duration::ZERO).unwrap();
+            let status = reopened
+                .scoped_upload_status(&gate, &scope.repository, &scope.actor, &session, &binding)
+                .unwrap();
+            if stop == 0 {
+                assert!(matches!(
+                    status.state,
+                    Some(ScopedUploadState::Aborted { .. })
+                ));
+                assert_eq!(reopened.snapshot().unwrap().manifest.refs, plan.before.refs);
+            } else {
+                assert!(
+                    matches!(status.state, Some(ScopedUploadState::FinishedV4 { receipt }) if receipt.response.ok)
+                );
+                let snapshot = reopened.snapshot().unwrap();
+                assert_eq!(snapshot.manifest.refs, after.refs);
+                assert_eq!(snapshot.manifest.tags, after.tags);
+                assert!(!reopened.common_metadata.join(JOURNAL).exists());
+            }
+        }
+    }
+
+    #[test]
+    fn old_near_full_ledger_recovers_committed_receipt_growth() {
+        use super::super::scoped_transfer_storage::{ScopedLedger, ScopedRecord};
+        use crate::protocol::{
+            BatchPublication, Operation, RefNamespace, RefUpdate, Response, ScopedUploadState,
+            UploadBinding,
+        };
+
+        let temp = Temp::new();
+        let (repo, mut plan, _) = fixture(&temp);
+        let change = plan.changes.first().unwrap().clone();
+        let (namespace, name) = if let Some(name) = change.reference.strip_prefix("refs/heads/") {
+            (RefNamespace::Branch, name)
+        } else {
+            (
+                RefNamespace::Tag,
+                change.reference.strip_prefix("refs/tags/").unwrap(),
+            )
+        };
+        let update = RefUpdate {
+            namespace,
+            name: name.into(),
+            expected: change.old,
+            new: change.new,
+            force: false,
+        };
+        let payload = crate::binary::encode(&crate::protocol::OptionsPublication {
+            publication: BatchPublication {
+                updates: vec![update.clone()],
+                bundle: Vec::new(),
+            },
+            options: Vec::new(),
+        })
+        .unwrap();
+        let binding =
+            UploadBinding::for_payload(Operation::PublishPartial { dry_run: false }, &payload)
+                .unwrap();
+        let session = "7".repeat(64);
+        let scope = ScopedExecution {
+            actor: "alice".into(),
+            repository: "repo".into(),
+            session: session.clone(),
+            binding: binding.clone(),
+        };
+        let receipt =
+            ScopedReceipt::success(&scope, &[update], &[Some("r".repeat(65_536))], false).unwrap();
+        let applying = ScopedRecord {
+            actor: scope.actor.clone(),
+            binding: binding.clone(),
+            state: ScopedUploadState::ApplyingV4 {
+                repository: scope.repository.clone(),
+            },
+            repository: Some(scope.repository.clone()),
+        };
+        let previous = "8".repeat(64);
+        let previous_record = ScopedRecord {
+            actor: scope.actor.clone(),
+            binding,
+            state: ScopedUploadState::Finished {
+                response: Response {
+                    version: 1,
+                    ok: true,
+                    publication_unknown: false,
+                    error: None,
+                    state: None,
+                    tip: None,
+                },
+                payload: vec![0x5a; MAX_TRANSACTION_BYTES as usize - 8192],
+            },
+            repository: Some(scope.repository.clone()),
+        };
+        let before_record = crate::binary::encode(&applying).unwrap().len();
+        let mut finished = applying.clone();
+        finished.state = ScopedUploadState::FinishedV4 {
+            receipt: Box::new(receipt.clone()),
+        };
+        let after_record = crate::binary::encode(&finished).unwrap().len();
+        let old = ScopedLedger {
+            version: 3,
+            records: BTreeMap::from([
+                (session.clone(), applying),
+                (previous.clone(), previous_record),
+            ]),
+        };
+        let old_bytes = crate::binary::encode(&old).unwrap();
+        assert!(old_bytes.len() < MAX_TRANSACTION_BYTES as usize);
+        assert!(old_bytes.len() - before_record + after_record > MAX_TRANSACTION_BYTES as usize);
+        repo.atomic_write(&repo.common_metadata.join("scoped-uploads.bin"), &old_bytes)
+            .unwrap();
+        drop(old_bytes);
+        drop(old);
+        plan.version = 3;
+        plan.message = "receive-atomic".into();
+        plan.changes.clear();
+        let journal = ScopedReferenceJournal {
+            version: 4,
+            plan,
+            receipt,
+        };
+        repo.atomic_write(
+            &repo.common_metadata.join(JOURNAL),
+            &journal.bytes().unwrap(),
+        )
+        .unwrap();
+        let reopened = Repository::open(&repo.root).unwrap();
+        assert!(matches!(
+            reopened.scoped_record(&session).unwrap().unwrap().state,
+            ScopedUploadState::FinishedV4 { .. }
+        ));
+        assert!(
+            matches!(reopened.scoped_record(&previous).unwrap().unwrap().state,
+            ScopedUploadState::Finished { payload, .. } if payload.len() == MAX_TRANSACTION_BYTES as usize - 8192)
+        );
+        assert!(!reopened.common_metadata.join(JOURNAL).exists());
+    }
+
+    #[test]
+    fn scoped_recovery_refuses_foreign_identity_before_installing_refs() {
+        use crate::protocol::{
+            BatchPublication, Operation, RefNamespace, RefUpdate, UploadBinding,
+        };
+        let temp = Temp::new();
+        let (repo, mut plan, _) = fixture(&temp);
+        plan.version = 3;
+        plan.message = "receive-atomic".into();
+        let updates: Vec<_> = plan
+            .changes
+            .iter()
+            .map(|change| {
+                let (namespace, name) =
+                    if let Some(name) = change.reference.strip_prefix("refs/heads/") {
+                        (RefNamespace::Branch, name)
+                    } else {
+                        (
+                            RefNamespace::Tag,
+                            change.reference.strip_prefix("refs/tags/").unwrap(),
+                        )
+                    };
+                RefUpdate {
+                    namespace,
+                    name: name.into(),
+                    expected: change.old.clone(),
+                    new: change.new.clone(),
+                    force: false,
+                }
+            })
+            .collect();
+        let payload = crate::binary::encode(&BatchPublication {
+            updates: updates.clone(),
+            bundle: Vec::new(),
+        })
+        .unwrap();
+        let binding = UploadBinding::for_payload(Operation::PublishBatch {}, &payload).unwrap();
+        let session = "8".repeat(64);
+        repo.scoped_upload_slice("project", "alice", &session, &binding, 0, &payload)
+            .unwrap();
+        let gate = repo.service_lock(std::time::Duration::ZERO).unwrap();
+        repo.scoped_upload_applying(&gate, "project", "alice", &session, &binding)
+            .unwrap();
+        drop(gate);
+        let scope = ScopedExecution {
+            actor: "bob".into(),
+            repository: "project".into(),
+            session,
+            binding,
+        };
+        let receipt =
+            ScopedReceipt::success(&scope, &updates, &vec![None; updates.len()], false).unwrap();
+        let journal = ScopedReferenceJournal {
+            version: 4,
+            plan: plan.clone(),
+            receipt,
+        };
+        repo.atomic_write(
+            &repo.common_metadata.join(JOURNAL),
+            &journal.bytes().unwrap(),
+        )
+        .unwrap();
+        assert!(Repository::open(&repo.root).is_err());
+        assert_eq!(
+            repo.read_named_refs("refs", false).unwrap(),
+            plan.before.refs
+        );
+        assert_eq!(
+            repo.read_named_refs("tags", true).unwrap(),
+            plan.before.tags
+        );
     }
 
     #[test]
@@ -1314,10 +2062,10 @@ mod tests {
                 "abort me",
             )
             .unwrap();
-        assert!(repo.common_metadata.join("write.lock").exists());
+        assert!(repo.lock_named("write.lock").is_err());
         assert!(!repo.common_metadata.join(JOURNAL).exists());
         drop(prepared);
-        assert!(!repo.common_metadata.join("write.lock").exists());
+        assert!(repo.lock_named("write.lock").is_ok());
         assert!(!repo
             .read_named_refs("tags", true)
             .unwrap()
@@ -1670,12 +2418,12 @@ mod tests {
                 fs::read(primary.common_metadata.join(JOURNAL)).unwrap(),
                 plan.bytes().unwrap()
             );
-            assert!(!primary.common_metadata.join("write.lock").exists());
+            assert!(primary.lock_named("write.lock").is_ok());
         }
     }
 
     #[test]
-    fn stale_writer_lock_is_preserved_until_explicit_removal_before_head_recovery() {
+    fn legacy_writer_lock_is_preserved_until_controlled_removal_before_head_recovery() {
         let temp = Temp::new();
         let (primary, peer, origin, plan, _) = head_fixture(&temp, true);
         persist(&primary, &plan);

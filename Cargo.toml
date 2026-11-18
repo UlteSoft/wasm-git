@@ -7,7 +7,7 @@ description = "Lossless core WebAssembly auditing and decentralized version hist
 [features]
 default = ["client"]
 client = []
-server = []
+server = ["dep:rusqlite"]
 
 [[bin]]
 name = "wasm-git"
@@ -37,12 +37,16 @@ ed25519-dalek = "=2.2.0"
 getrandom = "=0.3.4"
 zeroize = "=1.9.1"
 gimli = { version = "=0.34.0", default-features = false, features = ["read", "std"] }
+rusqlite = { version = "=0.43.0", default-features = false, features = ["bundled", "limits"], optional = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 rayon = "=1.11.0"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading"] }
 
 [dev-dependencies]
 wat = "=1.263.0"
